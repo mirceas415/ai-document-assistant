@@ -5,6 +5,21 @@ Accept: application/json
 
 ###
 
+GET {{AI.DocumentAssistant.Server_HostAddress}}/api/projects
+Accept: application/json
+
+###
+
+POST {{AI.DocumentAssistant.Server_HostAddress}}/api/projects
+Content-Type: application/json
+
+{
+  "name": "University Courses",
+  "description": "Documents and notes for university subjects."
+}
+
+###
+
 POST {{AI.DocumentAssistant.Server_HostAddress}}/api/auth/register
 Content-Type: application/json
 

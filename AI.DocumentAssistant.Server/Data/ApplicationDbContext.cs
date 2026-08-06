@@ -13,6 +13,8 @@ public sealed class ApplicationDbContext
     {
     }
 
+    public DbSet<Project> Projects => Set<Project>();
+
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
@@ -29,6 +31,33 @@ public sealed class ApplicationDbContext
             user.HasIndex(value => value.NormalizedEmail)
                 .HasDatabaseName("EmailIndex")
                 .IsUnique();
+        });
+
+        builder.Entity<Project>(project =>
+        {
+            project.ToTable("Projects");
+
+            project.HasKey(value => value.Id);
+
+            project.Property(value => value.Name)
+                .HasMaxLength(100)
+                .IsRequired();
+
+            project.Property(value => value.Description)
+                .HasMaxLength(1_000);
+
+            project.Property(value => value.CreatedAtUtc)
+                .IsRequired();
+
+            project.Property(value => value.UpdatedAtUtc)
+                .IsRequired();
+
+            project.HasOne(value => value.Owner)
+                .WithMany(user => user.OwnedProjects)
+                .HasForeignKey(value => value.OwnerId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            project.HasIndex(value => new { value.OwnerId, value.UpdatedAtUtc });
         });
     }
 }
