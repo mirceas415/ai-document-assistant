@@ -1,0 +1,31 @@
+# Visual Studio
+.vs/
+bin/
+obj/
+
+# Rider
+.idea/
+
+# VS Code
+.vscode/
+
+# Node
+node_modules/
+dist/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+
+# User secrets
+secrets.json
+
+# User files
+Uploads/
+
+# OS
+.DS_Store
+Thumbs.db

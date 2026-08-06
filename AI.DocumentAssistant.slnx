@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="ai.documentassistant.client/ai.documentassistant.client.esproj">
+    <Build />
+    <Deploy />
+  </Project>
+  <Project Path="AI.DocumentAssistant.Server/AI.DocumentAssistant.Server.csproj" />
+</Solution>
