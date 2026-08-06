@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from 'react';
 import {
     ApiRequestError,
@@ -7,6 +7,7 @@ import {
 } from './api';
 import type {
     CurrentUser,
+    DocumentChunk,
     DocumentDetails,
     DocumentSummary,
     ExtractedTextSection,
@@ -291,11 +292,22 @@ function DocumentsSection({
     const [isUploading, setIsUploading] = useState(false);
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [retryingId, setRetryingId] = useState<string | null>(null);
-    const [viewerDocument, setViewerDocument] = useState<DocumentSummary | null>(null);
+    const [rebuildingId, setRebuildingId] = useState<string | null>(null);
+    const [textViewerDocument, setTextViewerDocument] = useState<DocumentSummary | null>(null);
+    const [chunkViewerDocument, setChunkViewerDocument] = useState<DocumentSummary | null>(null);
 
     const shouldPoll = documents.some(
         (document) => document.status === 'Uploaded' || document.status === 'Processing',
     );
+
+    const refreshDocuments = useCallback(async () => {
+        const response = await apiRequest<DocumentSummary[]>(
+            `/api/projects/${projectId}/documents`,
+        );
+        onDocumentsChanged(response);
+        setError('');
+        return response;
+    }, [projectId, onDocumentsChanged]);
 
     useEffect(() => {
         if (!shouldPoll) return;
@@ -308,7 +320,10 @@ function DocumentsSection({
                     `/api/projects/${projectId}/documents`,
                 );
 
-                if (isActive) onDocumentsChanged(response);
+                if (isActive) {
+                    onDocumentsChanged(response);
+                    setError('');
+                }
             } catch (requestError) {
                 if (isActive) setError(getErrorMessage(requestError));
             }
@@ -349,6 +364,7 @@ function DocumentsSection({
                 uploadedDocument,
                 ...currentDocuments.filter((document) => document.id !== uploadedDocument.id),
             ]);
+            setError('');
         } catch (requestError) {
             setError(getErrorMessage(requestError));
         } finally {
@@ -373,6 +389,7 @@ function DocumentsSection({
             );
             onDocumentsChanged((currentDocuments) =>
                 currentDocuments.filter((item) => item.id !== document.id));
+            setError('');
         } catch (requestError) {
             setError(getErrorMessage(requestError));
         } finally {
@@ -389,14 +406,44 @@ function DocumentsSection({
                 `/api/projects/${projectId}/documents/${document.id}/process`,
                 { method: 'POST' },
             );
-            onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
-                item.id === document.id
-                    ? { ...item, status: 'Uploaded', processingError: null }
-                    : item));
+            await refreshDocuments();
         } catch (requestError) {
-            setError(getErrorMessage(requestError));
+            try {
+                await refreshDocuments();
+            } catch {
+                setError(getErrorMessage(requestError));
+            }
         } finally {
             setRetryingId(null);
+        }
+    };
+
+    const rebuildChunks = async (document: DocumentSummary) => {
+        const confirmed = window.confirm(
+            `Rebuild chunks for “${document.originalFileName}” from its stored extracted text?`,
+        );
+
+        if (!confirmed) return;
+
+        setError('');
+        setRebuildingId(document.id);
+
+        try {
+            const rebuiltDocument = await apiRequest<DocumentDetails>(
+                `/api/projects/${projectId}/documents/${document.id}/chunks/rebuild`,
+                { method: 'POST' },
+            );
+            onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
+                item.id === document.id ? rebuiltDocument : item));
+            setError('');
+        } catch (requestError) {
+            try {
+                await refreshDocuments();
+            } catch {
+                setError(getErrorMessage(requestError));
+            }
+        } finally {
+            setRebuildingId(null);
         }
     };
 
@@ -467,12 +514,13 @@ function DocumentsSection({
                                     <p className="processing-note ready-note">
                                         {document.extractedSectionCount} {document.extractedSectionCount === 1 ? 'section' : 'sections'}
                                         {' · '}{document.extractedCharacterCount.toLocaleString()} characters
-                                        {document.processedAtUtc && ` · Completed ${formatDate(document.processedAtUtc)}`}
+                                        {' · '}{document.chunkCount} {document.chunkCount === 1 ? 'chunk' : 'chunks'}
+                                        {document.chunkedAtUtc && ` · Chunked ${formatDate(document.chunkedAtUtc)}`}
                                     </p>
                                 )}
                                 {document.status === 'Failed' && (
                                     <p className="processing-note failed-note">
-                                        {document.processingError || 'Text extraction failed. You can retry processing.'}
+                                        {document.chunkingError || document.processingError || 'Document processing failed. You can retry processing.'}
                                     </p>
                                 )}
                                 {document.status === 'Uploaded' && (
@@ -482,49 +530,76 @@ function DocumentsSection({
                             <span className={`status-pill status-${document.status.toLowerCase()}`}>
                                 {document.status}
                             </span>
-                            <div className="document-actions">
-                                {document.status === 'Ready' && (
+                            {document.status !== 'Processing' && (
+                                <div className="document-actions">
+                                    {document.status === 'Ready' && (
+                                        <>
+                                            <button
+                                                className="secondary-button compact-button"
+                                                type="button"
+                                                onClick={() => setTextViewerDocument(document)}
+                                            >
+                                                View extracted text
+                                            </button>
+                                            <button
+                                                className="secondary-button compact-button"
+                                                type="button"
+                                                onClick={() => setChunkViewerDocument(document)}
+                                            >
+                                                View chunks
+                                            </button>
+                                            <button
+                                                className="secondary-button compact-button"
+                                                type="button"
+                                                disabled={rebuildingId === document.id}
+                                                onClick={() => void rebuildChunks(document)}
+                                            >
+                                                {rebuildingId === document.id ? 'Rebuilding…' : 'Rebuild chunks'}
+                                            </button>
+                                        </>
+                                    )}
+                                    {(document.status === 'Failed' || document.status === 'Uploaded') && (
+                                        <button
+                                            className="secondary-button compact-button"
+                                            type="button"
+                                            disabled={retryingId === document.id}
+                                            onClick={() => void retryProcessing(document)}
+                                        >
+                                            {retryingId === document.id
+                                                ? 'Queueing…'
+                                                : document.status === 'Failed'
+                                                    ? 'Retry processing'
+                                                    : 'Process document'}
+                                        </button>
+                                    )}
                                     <button
-                                        className="secondary-button compact-button"
+                                        className="danger-button compact-button document-delete-button"
                                         type="button"
-                                        onClick={() => setViewerDocument(document)}
+                                        disabled={deletingId === document.id}
+                                        onClick={() => void deleteDocument(document)}
                                     >
-                                        View extracted text
+                                        {deletingId === document.id ? 'Deleting…' : 'Delete'}
                                     </button>
-                                )}
-                                {(document.status === 'Failed' || document.status === 'Uploaded') && (
-                                    <button
-                                        className="secondary-button compact-button"
-                                        type="button"
-                                        disabled={retryingId === document.id}
-                                        onClick={() => void retryProcessing(document)}
-                                    >
-                                        {retryingId === document.id
-                                            ? 'Queueing…'
-                                            : document.status === 'Failed'
-                                                ? 'Retry processing'
-                                                : 'Process document'}
-                                    </button>
-                                )}
-                                <button
-                                    className="danger-button compact-button document-delete-button"
-                                    type="button"
-                                    disabled={deletingId === document.id}
-                                    onClick={() => void deleteDocument(document)}
-                                >
-                                    {deletingId === document.id ? 'Deleting…' : 'Delete'}
-                                </button>
-                            </div>
+                                </div>
+                            )}
                         </article>
                     ))}
                 </div>
             )}
 
-            {viewerDocument && (
+            {textViewerDocument && (
                 <ExtractedTextViewer
                     projectId={projectId}
-                    document={viewerDocument}
-                    onClose={() => setViewerDocument(null)}
+                    document={textViewerDocument}
+                    onClose={() => setTextViewerDocument(null)}
+                />
+            )}
+
+            {chunkViewerDocument && (
+                <DocumentChunkViewer
+                    projectId={projectId}
+                    document={chunkViewerDocument}
+                    onClose={() => setChunkViewerDocument(null)}
                 />
             )}
         </section>
@@ -603,6 +678,96 @@ function ExtractedTextViewer({
                                 </div>
                                 {section.sectionTitle && <h3>{section.sectionTitle}</h3>}
                                 <p>{section.content}</p>
+                            </article>
+                        ))}
+                    </div>
+                )}
+
+                <div className="modal-actions">
+                    <button className="secondary-button" type="button" onClick={onClose}>Close</button>
+                </div>
+            </section>
+        </div>
+    );
+}
+
+interface DocumentChunkViewerProps {
+    projectId: string;
+    document: DocumentSummary;
+    onClose: () => void;
+}
+
+function DocumentChunkViewer({
+    projectId,
+    document,
+    onClose,
+}: DocumentChunkViewerProps) {
+    const [chunks, setChunks] = useState<DocumentChunk[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    useEffect(() => {
+        let isActive = true;
+
+        const loadChunks = async () => {
+            try {
+                const response = await apiRequest<DocumentChunk[]>(
+                    `/api/projects/${projectId}/documents/${document.id}/chunks`,
+                );
+                if (isActive) {
+                    setChunks(response);
+                    setError('');
+                }
+            } catch (requestError) {
+                if (isActive) setError(getErrorMessage(requestError));
+            } finally {
+                if (isActive) setIsLoading(false);
+            }
+        };
+
+        void loadChunks();
+        return () => { isActive = false; };
+    }, [projectId, document.id]);
+
+    return (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+            if (event.target === event.currentTarget) onClose();
+        }}>
+            <section
+                className="modal-card extracted-text-modal chunk-viewer-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="chunk-viewer-title"
+            >
+                <div className="modal-heading extracted-text-heading">
+                    <div>
+                        <p className="eyebrow">Retrieval chunks</p>
+                        <h2 id="chunk-viewer-title">{document.originalFileName}</h2>
+                    </div>
+                    <button className="icon-button" type="button" aria-label="Close chunks" onClick={onClose}>×</button>
+                </div>
+
+                {isLoading ? (
+                    <div className="extracted-text-state" aria-live="polite">
+                        <div className="spinner small-spinner" aria-hidden="true" />
+                        <span>Loading chunks…</span>
+                    </div>
+                ) : error ? (
+                    <div className="alert" role="alert">{error}</div>
+                ) : chunks.length === 0 ? (
+                    <div className="extracted-text-state">No chunks are available.</div>
+                ) : (
+                    <div className="extracted-section-list chunk-list">
+                        {chunks.map((chunk) => (
+                            <article className="extracted-section chunk-card" key={chunk.chunkIndex}>
+                                <div className="extracted-section-meta chunk-meta">
+                                    <span>Chunk {chunk.chunkIndex + 1}</span>
+                                    <span>{chunk.tokenCount.toLocaleString()} tokens</span>
+                                    <span>{chunk.characterCount.toLocaleString()} characters</span>
+                                    <span>{formatChunkPages(chunk)}</span>
+                                </div>
+                                {chunk.sectionTitle && <h3>{chunk.sectionTitle}</h3>}
+                                <p>{chunk.content}</p>
                             </article>
                         ))}
                     </div>
@@ -783,6 +948,13 @@ function formatFileSize(bytes: number) {
     if (bytes < 1_024) return `${bytes} B`;
     if (bytes < 1_024 * 1_024) return `${(bytes / 1_024).toFixed(1)} KB`;
     return `${(bytes / (1_024 * 1_024)).toFixed(1)} MB`;
+}
+
+function formatChunkPages(chunk: DocumentChunk) {
+    if (chunk.pageStart === null && chunk.pageEnd === null) return 'Pages unavailable';
+    if (chunk.pageStart === chunk.pageEnd || chunk.pageEnd === null) return `Page ${chunk.pageStart}`;
+    if (chunk.pageStart === null) return `Page ${chunk.pageEnd}`;
+    return `Pages ${chunk.pageStart}–${chunk.pageEnd}`;
 }
 
 function getFileExtensionLabel(fileName: string) {

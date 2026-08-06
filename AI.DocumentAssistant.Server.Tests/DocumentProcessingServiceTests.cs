@@ -1,9 +1,11 @@
+using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using StoredDocument = AI.DocumentAssistant.Server.Models.Document;
 
 namespace AI.DocumentAssistant.Server.Tests;
@@ -28,6 +30,9 @@ public sealed class DocumentProcessingServiceTests
         var storedSections = await database.Context.DocumentTextSections
             .OrderBy(section => section.SectionIndex)
             .ToListAsync();
+        var storedChunks = await database.Context.DocumentChunks
+            .OrderBy(chunk => chunk.ChunkIndex)
+            .ToListAsync();
 
         Assert.Equal(DocumentStatus.Ready, storedDocument.Status);
         Assert.NotNull(storedDocument.ProcessingStartedAtUtc);
@@ -35,10 +40,16 @@ public sealed class DocumentProcessingServiceTests
         Assert.Null(storedDocument.ProcessingError);
         Assert.Equal(2, storedDocument.ExtractedSectionCount);
         Assert.Equal(27, storedDocument.ExtractedCharacterCount);
+        Assert.Equal(1, storedDocument.ChunkCount);
+        Assert.NotNull(storedDocument.ChunkedAtUtc);
+        Assert.Null(storedDocument.ChunkingError);
         Assert.Collection(
             storedSections,
             first => Assert.Equal("First section", first.Content),
             second => Assert.Equal("Second section", second.Content));
+        Assert.Single(storedChunks);
+        Assert.Contains("First section", storedChunks[0].Content);
+        Assert.Contains("Second section", storedChunks[0].Content);
     }
 
     [Fact]
@@ -52,6 +63,18 @@ public sealed class DocumentProcessingServiceTests
             DocumentId = document.Id,
             SectionIndex = 0,
             Content = "Stale partial content",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        database.Context.DocumentChunks.Add(new DocumentChunk
+        {
+            Id = Guid.NewGuid(),
+            DocumentId = document.Id,
+            ChunkIndex = 0,
+            Content = "Stale chunk",
+            CharacterCount = 11,
+            TokenCount = 3,
+            SourceSectionStartIndex = 0,
+            SourceSectionEndIndex = 0,
             CreatedAtUtc = DateTime.UtcNow
         });
         await database.Context.SaveChangesAsync();
@@ -73,6 +96,34 @@ public sealed class DocumentProcessingServiceTests
         Assert.Equal(0, storedDocument.ExtractedSectionCount);
         Assert.Equal(0, storedDocument.ExtractedCharacterCount);
         Assert.Empty(await database.Context.DocumentTextSections.ToListAsync());
+        Assert.Empty(await database.Context.DocumentChunks.ToListAsync());
+    }
+
+    [Fact]
+    public async Task FailedChunkingRetainsExtractedSectionsAndRemovesChunks()
+    {
+        await using var database = await ProcessingTestDatabase.CreateAsync();
+        var document = await database.AddDocumentAsync(DocumentStatus.Uploaded);
+        var extractor = new StubExtractor([
+            new ExtractedTextSection(0, "Text extras în limba română.", PageNumber: 1)
+        ]);
+        var service = database.CreateService(
+            new ThrowingChunkGenerator(),
+            extractor);
+
+        var exception = await Assert.ThrowsAsync<DocumentChunkingException>(
+            () => service.ProcessAsync(document.Id, CancellationToken.None));
+
+        database.Context.ChangeTracker.Clear();
+        var storedDocument = await database.Context.Documents.SingleAsync();
+
+        Assert.Equal("The test chunks could not be generated.", exception.SafeMessage);
+        Assert.Equal(DocumentStatus.Failed, storedDocument.Status);
+        Assert.Null(storedDocument.ProcessingError);
+        Assert.Equal("The test chunks could not be generated.", storedDocument.ChunkingError);
+        Assert.Equal(1, storedDocument.ExtractedSectionCount);
+        Assert.Single(await database.Context.DocumentTextSections.ToListAsync());
+        Assert.Empty(await database.Context.DocumentChunks.ToListAsync());
     }
 
     [Fact]
@@ -155,11 +206,29 @@ public sealed class DocumentProcessingServiceTests
 
         public DocumentProcessingService CreateService(
             params IDocumentTextExtractor[] extractors) =>
-            new(
+            CreateService(CreateGenerator(), extractors);
+
+        public DocumentProcessingService CreateService(
+            IDocumentChunkGenerator generator,
+            params IDocumentTextExtractor[] extractors)
+        {
+            var chunkingService = new DocumentChunkingService(
+                Context,
+                generator,
+                NullLogger<DocumentChunkingService>.Instance);
+
+            return new DocumentProcessingService(
                 Context,
                 new StubFileStorage(),
                 extractors,
+                chunkingService,
                 NullLogger<DocumentProcessingService>.Instance);
+        }
+
+        private static IDocumentChunkGenerator CreateGenerator() =>
+            new DocumentChunkGenerator(
+                new Cl100kDocumentTokenizer(),
+                Options.Create(new DocumentChunkingOptions()));
 
         public async ValueTask DisposeAsync()
         {
@@ -189,6 +258,15 @@ public sealed class DocumentProcessingServiceTests
                 ? Task.FromResult(_sections!)
                 : Task.FromException<IReadOnlyList<ExtractedTextSection>>(_exception);
         }
+    }
+
+    private sealed class ThrowingChunkGenerator : IDocumentChunkGenerator
+    {
+        public IReadOnlyList<GeneratedDocumentChunk> Generate(
+            IReadOnlyList<ChunkSourceSection> sourceSections,
+            CancellationToken cancellationToken = default) =>
+            throw new DocumentChunkingException(
+                "The test chunks could not be generated.");
     }
 
     private sealed class StubFileStorage : IFileStorageService

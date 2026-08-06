@@ -15,7 +15,10 @@ public sealed record DocumentSummary(
     DateTime? ProcessedAtUtc,
     int ExtractedSectionCount,
     long ExtractedCharacterCount,
-    string? ProcessingError);
+    string? ProcessingError,
+    int ChunkCount,
+    DateTime? ChunkedAtUtc,
+    string? ChunkingError);
 
 public sealed record DocumentDetails(
     Guid Id,
@@ -30,13 +33,27 @@ public sealed record DocumentDetails(
     DateTime? ProcessedAtUtc,
     int ExtractedSectionCount,
     long ExtractedCharacterCount,
-    string? ProcessingError);
+    string? ProcessingError,
+    int ChunkCount,
+    DateTime? ChunkedAtUtc,
+    string? ChunkingError);
 
 public sealed record ExtractedTextSectionResponse(
     int SectionIndex,
     int? PageNumber,
     string? SectionTitle,
     string Content);
+
+public sealed record DocumentChunkResponse(
+    int ChunkIndex,
+    string Content,
+    int TokenCount,
+    int CharacterCount,
+    int? PageStart,
+    int? PageEnd,
+    string? SectionTitle,
+    int SourceSectionStartIndex,
+    int SourceSectionEndIndex);
 
 public sealed class UploadDocumentRequest
 {

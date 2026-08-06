@@ -1,4 +1,5 @@
 using AI.DocumentAssistant.Server.Contracts;
+using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Processing;
@@ -22,8 +23,25 @@ builder.Services.AddSingleton<IFileStorageService, LocalFileStorageService>();
 builder.Services.AddSingleton<IDocumentProcessingQueue, DocumentProcessingQueue>();
 builder.Services.AddSingleton<IDocumentTextExtractor, PdfDocumentTextExtractor>();
 builder.Services.AddSingleton<IDocumentTextExtractor, DocxDocumentTextExtractor>();
+builder.Services.AddSingleton<IDocumentTokenizer, Cl100kDocumentTokenizer>();
+builder.Services.AddSingleton<IDocumentChunkGenerator, DocumentChunkGenerator>();
+builder.Services.AddScoped<IDocumentChunkingService, DocumentChunkingService>();
 builder.Services.AddScoped<IDocumentProcessingService, DocumentProcessingService>();
 builder.Services.AddHostedService<DocumentProcessingWorker>();
+
+builder.Services.AddOptions<DocumentChunkingOptions>()
+    .Bind(builder.Configuration.GetSection(DocumentChunkingOptions.SectionName))
+    .ValidateDataAnnotations()
+    .Validate(
+        options => options.MinimumTokens <= options.TargetTokens,
+        "Chunking MinimumTokens must not exceed TargetTokens.")
+    .Validate(
+        options => options.TargetTokens <= options.MaximumTokens,
+        "Chunking TargetTokens must not exceed MaximumTokens.")
+    .Validate(
+        options => options.OverlapTokens <= options.MinimumTokens,
+        "Chunking OverlapTokens must not exceed MinimumTokens.")
+    .ValidateOnStart();
 
 builder.Services
     .AddIdentity<ApplicationUser, IdentityRole<Guid>>(options =>
@@ -126,10 +144,10 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.MapGet("/api/health", () => Results.Ok(new
-    {
-        status = "ok",
-        service = "AI Document Assistant"
-    }))
+{
+    status = "ok",
+    service = "AI Document Assistant"
+}))
     .AllowAnonymous();
 
 app.MapFallbackToFile("/index.html");

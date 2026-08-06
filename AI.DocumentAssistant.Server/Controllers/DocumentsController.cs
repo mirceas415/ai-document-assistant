@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Security.Claims;
+using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
@@ -32,17 +33,20 @@ public sealed class DocumentsController : ControllerBase
     private readonly ApplicationDbContext _dbContext;
     private readonly IFileStorageService _fileStorage;
     private readonly IDocumentProcessingQueue _processingQueue;
+    private readonly IDocumentChunkingService _chunkingService;
     private readonly ILogger<DocumentsController> _logger;
 
     public DocumentsController(
         ApplicationDbContext dbContext,
         IFileStorageService fileStorage,
         IDocumentProcessingQueue processingQueue,
+        IDocumentChunkingService chunkingService,
         ILogger<DocumentsController> logger)
     {
         _dbContext = dbContext;
         _fileStorage = fileStorage;
         _processingQueue = processingQueue;
+        _chunkingService = chunkingService;
         _logger = logger;
     }
 
@@ -87,6 +91,11 @@ public sealed class DocumentsController : ControllerBase
                 document.ExtractedCharacterCount,
                 document.Status == DocumentStatus.Failed
                     ? document.ProcessingError
+                    : null,
+                document.ChunkCount,
+                document.ChunkedAtUtc,
+                document.Status == DocumentStatus.Failed
+                    ? document.ChunkingError
                     : null))
             .ToListAsync(cancellationToken);
 
@@ -125,6 +134,11 @@ public sealed class DocumentsController : ControllerBase
                 document.ExtractedCharacterCount,
                 document.Status == DocumentStatus.Failed
                     ? document.ProcessingError
+                    : null,
+                document.ChunkCount,
+                document.ChunkedAtUtc,
+                document.Status == DocumentStatus.Failed
+                    ? document.ChunkingError
                     : null))
             .SingleOrDefaultAsync(cancellationToken);
 
@@ -264,11 +278,13 @@ public sealed class DocumentsController : ControllerBase
 
         var previousStatus = document.Status;
         var previousError = document.ProcessingError;
+        var previousChunkingError = document.ChunkingError;
 
         if (document.Status == DocumentStatus.Failed)
         {
             document.Status = DocumentStatus.Uploaded;
             document.ProcessingError = null;
+            document.ChunkingError = null;
             document.UpdatedAtUtc = DateTime.UtcNow;
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
@@ -279,6 +295,7 @@ public sealed class DocumentsController : ControllerBase
             {
                 document.Status = previousStatus;
                 document.ProcessingError = previousError;
+                document.ChunkingError = previousChunkingError;
                 document.UpdatedAtUtc = DateTime.UtcNow;
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
@@ -347,6 +364,123 @@ public sealed class DocumentsController : ControllerBase
             .ToListAsync(cancellationToken);
 
         return Ok(sections);
+    }
+
+    [HttpGet("{documentId:guid}/chunks")]
+    public async Task<ActionResult<IReadOnlyList<DocumentChunkResponse>>> GetChunks(
+        Guid projectId,
+        Guid documentId,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetOwnerId(out var ownerId))
+        {
+            return AuthenticationError();
+        }
+
+        var status = await _dbContext.Documents
+            .AsNoTracking()
+            .Where(document =>
+                document.Id == documentId &&
+                document.ProjectId == projectId &&
+                document.Project.OwnerId == ownerId)
+            .Select(document => (DocumentStatus?)document.Status)
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (status is null)
+        {
+            return ResourceNotFound();
+        }
+
+        if (status != DocumentStatus.Ready)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Document chunks are available only after processing is complete."));
+        }
+
+        var chunks = await _dbContext.DocumentChunks
+            .AsNoTracking()
+            .Where(chunk =>
+                chunk.DocumentId == documentId &&
+                chunk.Document.ProjectId == projectId &&
+                chunk.Document.Project.OwnerId == ownerId)
+            .OrderBy(chunk => chunk.ChunkIndex)
+            .Select(chunk => new DocumentChunkResponse(
+                chunk.ChunkIndex,
+                chunk.Content,
+                chunk.TokenCount,
+                chunk.CharacterCount,
+                chunk.PageStart,
+                chunk.PageEnd,
+                chunk.SectionTitle,
+                chunk.SourceSectionStartIndex,
+                chunk.SourceSectionEndIndex))
+            .ToListAsync(cancellationToken);
+
+        return Ok(chunks);
+    }
+
+    [HttpPost("{documentId:guid}/chunks/rebuild")]
+    public async Task<ActionResult<DocumentDetails>> RebuildChunks(
+        Guid projectId,
+        Guid documentId,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetOwnerId(out var ownerId))
+        {
+            return AuthenticationError();
+        }
+
+        var document = await _dbContext.Documents
+            .SingleOrDefaultAsync(
+                item =>
+                    item.Id == documentId &&
+                    item.ProjectId == projectId &&
+                    item.Project.OwnerId == ownerId,
+                cancellationToken);
+
+        if (document is null)
+        {
+            return ResourceNotFound();
+        }
+
+        if (document.Status == DocumentStatus.Processing)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Chunks cannot be rebuilt while the document is processing."));
+        }
+
+        var hasSourceSections = await _dbContext.DocumentTextSections
+            .AsNoTracking()
+            .AnyAsync(
+                section => section.DocumentId == documentId,
+                cancellationToken);
+
+        if (!hasSourceSections)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Extracted text is required before chunks can be rebuilt."));
+        }
+
+        try
+        {
+            var result = await _chunkingService.RebuildAsync(
+                documentId,
+                cancellationToken);
+
+            _logger.LogInformation(
+                "User requested chunk rebuild for document {DocumentId} in project {ProjectId}; generated {ChunkCount} chunks.",
+                documentId,
+                projectId,
+                result.ChunkCount);
+
+            return Ok(ToDetails(document));
+        }
+        catch (DocumentChunkingException exception)
+        {
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                new ApiErrorResponse(exception.SafeMessage));
+        }
     }
 
     [HttpDelete("{documentId:guid}")]
@@ -534,6 +668,11 @@ public sealed class DocumentsController : ControllerBase
             document.ExtractedCharacterCount,
             document.Status == DocumentStatus.Failed
                 ? document.ProcessingError
+                : null,
+            document.ChunkCount,
+            document.ChunkedAtUtc,
+            document.Status == DocumentStatus.Failed
+                ? document.ChunkingError
                 : null);
 
     private sealed record ValidatedFile(

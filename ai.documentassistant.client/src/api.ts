@@ -30,6 +30,9 @@ export interface DocumentSummary {
     extractedSectionCount: number;
     extractedCharacterCount: number;
     processingError: string | null;
+    chunkCount: number;
+    chunkedAtUtc: string | null;
+    chunkingError: string | null;
 }
 
 export type DocumentDetails = DocumentSummary & {
@@ -41,6 +44,18 @@ export interface ExtractedTextSection {
     pageNumber: number | null;
     sectionTitle: string | null;
     content: string;
+}
+
+export interface DocumentChunk {
+    chunkIndex: number;
+    content: string;
+    tokenCount: number;
+    characterCount: number;
+    pageStart: number | null;
+    pageEnd: number | null;
+    sectionTitle: string | null;
+    sourceSectionStartIndex: number;
+    sourceSectionEndIndex: number;
 }
 
 interface ApiError {

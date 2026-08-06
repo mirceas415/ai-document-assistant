@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using AI.DocumentAssistant.Server.Chunking;
+using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Controllers;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
@@ -8,6 +10,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using StoredDocument = AI.DocumentAssistant.Server.Models.Document;
 
 namespace AI.DocumentAssistant.Server.Tests;
@@ -30,6 +33,22 @@ public sealed class DocumentsControllerAuthorizationTests
     }
 
     [Fact]
+    public async Task UnauthenticatedChunkRebuildIsRejected()
+    {
+        await using var database = await ControllerTestDatabase.CreateAsync(
+            DocumentStatus.Ready,
+            includeText: true);
+        var controller = database.CreateController(null);
+
+        var result = await controller.RebuildChunks(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None);
+
+        Assert.IsType<UnauthorizedObjectResult>(result.Result);
+    }
+
+    [Fact]
     public async Task UserCannotProcessOrViewAnotherUsersDocument()
     {
         await using var database = await ControllerTestDatabase.CreateAsync(
@@ -46,10 +65,50 @@ public sealed class DocumentsControllerAuthorizationTests
             database.ProjectId,
             database.DocumentId,
             CancellationToken.None);
+        var chunksResult = await controller.GetChunks(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None);
+        var rebuildResult = await controller.RebuildChunks(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None);
 
         Assert.IsType<NotFoundObjectResult>(processResult);
         Assert.IsType<NotFoundObjectResult>(textResult.Result);
+        Assert.IsType<NotFoundObjectResult>(chunksResult.Result);
+        Assert.IsType<NotFoundObjectResult>(rebuildResult.Result);
         Assert.Empty(database.Queue.EnqueuedDocumentIds);
+    }
+
+    [Fact]
+    public async Task OwnerCanViewAndRebuildChunksFromStoredText()
+    {
+        await using var database = await ControllerTestDatabase.CreateAsync(
+            DocumentStatus.Ready,
+            includeText: true);
+        var controller = database.CreateController(database.OwnerId);
+
+        var before = await controller.GetChunks(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None);
+        var rebuild = await controller.RebuildChunks(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None);
+        var after = await controller.GetChunks(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None);
+
+        var originalChunks = Assert.IsAssignableFrom<IReadOnlyList<DocumentChunkResponse>>(
+            Assert.IsType<OkObjectResult>(before.Result).Value);
+        Assert.Single(originalChunks);
+        Assert.IsType<OkObjectResult>(rebuild.Result);
+        var rebuiltChunks = Assert.IsAssignableFrom<IReadOnlyList<DocumentChunkResponse>>(
+            Assert.IsType<OkObjectResult>(after.Result).Value);
+        Assert.Contains(rebuiltChunks, chunk => chunk.Content.Contains("Protected text", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -152,7 +211,9 @@ public sealed class DocumentsControllerAuthorizationTests
                 UpdatedAtUtc = now,
                 ExtractedSectionCount = includeText ? 1 : 0,
                 ExtractedCharacterCount = includeText ? 14 : 0,
-                ProcessedAtUtc = includeText ? now : null
+                ProcessedAtUtc = includeText ? now : null,
+                ChunkCount = includeText ? 1 : 0,
+                ChunkedAtUtc = includeText ? now : null
             };
 
             context.Documents.Add(document);
@@ -166,6 +227,20 @@ public sealed class DocumentsControllerAuthorizationTests
                     SectionIndex = 0,
                     PageNumber = 1,
                     Content = "Protected text",
+                    CreatedAtUtc = now
+                });
+                context.DocumentChunks.Add(new DocumentChunk
+                {
+                    Id = Guid.NewGuid(),
+                    DocumentId = documentId,
+                    ChunkIndex = 0,
+                    Content = "Protected text",
+                    CharacterCount = 14,
+                    TokenCount = 2,
+                    PageStart = 1,
+                    PageEnd = 1,
+                    SourceSectionStartIndex = 0,
+                    SourceSectionEndIndex = 0,
                     CreatedAtUtc = now
                 });
             }
@@ -189,10 +264,19 @@ public sealed class DocumentsControllerAuthorizationTests
                 User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"))
             };
 
+            var generator = new DocumentChunkGenerator(
+                new Cl100kDocumentTokenizer(),
+                Options.Create(new DocumentChunkingOptions()));
+            var chunkingService = new DocumentChunkingService(
+                Context,
+                generator,
+                NullLogger<DocumentChunkingService>.Instance);
+
             return new DocumentsController(
                 Context,
                 new StubFileStorage(),
                 Queue,
+                chunkingService,
                 NullLogger<DocumentsController>.Instance)
             {
                 ControllerContext = new ControllerContext { HttpContext = httpContext }

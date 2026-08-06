@@ -32,5 +32,13 @@ public sealed class Document
 
     public int ExtractedSectionCount { get; set; }
 
+    public int ChunkCount { get; set; }
+
+    public DateTime? ChunkedAtUtc { get; set; }
+
+    public string? ChunkingError { get; set; }
+
     public ICollection<DocumentTextSection> TextSections { get; } = new List<DocumentTextSection>();
+
+    public ICollection<DocumentChunk> Chunks { get; } = new List<DocumentChunk>();
 }

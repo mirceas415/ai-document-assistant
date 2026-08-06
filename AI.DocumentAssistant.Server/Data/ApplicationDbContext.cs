@@ -19,6 +19,8 @@ public sealed class ApplicationDbContext
 
     public DbSet<DocumentTextSection> DocumentTextSections => Set<DocumentTextSection>();
 
+    public DbSet<DocumentChunk> DocumentChunks => Set<DocumentChunk>();
+
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
@@ -90,6 +92,9 @@ public sealed class ApplicationDbContext
             document.Property(value => value.ProcessingError)
                 .HasMaxLength(500);
 
+            document.Property(value => value.ChunkingError)
+                .HasMaxLength(500);
+
             document.Property(value => value.CreatedAtUtc)
                 .IsRequired();
 
@@ -126,6 +131,33 @@ public sealed class ApplicationDbContext
                 .OnDelete(DeleteBehavior.Cascade);
 
             section.HasIndex(value => new { value.DocumentId, value.SectionIndex })
+                .IsUnique();
+        });
+
+        builder.Entity<DocumentChunk>(chunk =>
+        {
+            chunk.ToTable("DocumentChunks");
+
+            chunk.HasKey(value => value.Id);
+
+            chunk.Property(value => value.Content)
+                .HasColumnType("text")
+                .IsRequired();
+
+            chunk.Property(value => value.SectionTitle)
+                .HasMaxLength(500);
+
+            chunk.Property(value => value.CreatedAtUtc)
+                .IsRequired();
+
+            chunk.HasOne(value => value.Document)
+                .WithMany(document => document.Chunks)
+                .HasForeignKey(value => value.DocumentId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            chunk.HasIndex(value => value.DocumentId);
+
+            chunk.HasIndex(value => new { value.DocumentId, value.ChunkIndex })
                 .IsUnique();
         });
     }

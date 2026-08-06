@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Storage;
@@ -14,17 +15,20 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
     private readonly ApplicationDbContext _dbContext;
     private readonly IFileStorageService _fileStorage;
     private readonly IReadOnlyList<IDocumentTextExtractor> _extractors;
+    private readonly IDocumentChunkingService _chunkingService;
     private readonly ILogger<DocumentProcessingService> _logger;
 
     public DocumentProcessingService(
         ApplicationDbContext dbContext,
         IFileStorageService fileStorage,
         IEnumerable<IDocumentTextExtractor> extractors,
+        IDocumentChunkingService chunkingService,
         ILogger<DocumentProcessingService> logger)
     {
         _dbContext = dbContext;
         _fileStorage = fileStorage;
         _extractors = extractors.ToArray();
+        _chunkingService = chunkingService;
         _logger = logger;
     }
 
@@ -56,6 +60,9 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         document.ProcessingError = null;
         document.ExtractedCharacterCount = 0;
         document.ExtractedSectionCount = 0;
+        document.ChunkCount = 0;
+        document.ChunkedAtUtc = null;
+        document.ChunkingError = null;
         document.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -64,6 +71,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         var extension = Path.GetExtension(document.StoredFileName);
         var extractor = _extractors.SingleOrDefault(candidate =>
             candidate.CanProcess(document.ContentType, extension));
+        var extractionStored = false;
 
         try
         {
@@ -97,6 +105,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                 cancellationToken);
 
             await DeleteExistingSectionsAsync(document.Id, cancellationToken);
+            await DeleteExistingChunksAsync(document.Id, cancellationToken);
 
             var completedAtUtc = DateTime.UtcNow;
             var storedSections = extractedSections
@@ -115,12 +124,15 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
 
             _dbContext.DocumentTextSections.AddRange(storedSections);
 
-            document.Status = DocumentStatus.Ready;
-            document.ProcessedAtUtc = completedAtUtc;
+            document.Status = DocumentStatus.Processing;
+            document.ProcessedAtUtc = null;
             document.ProcessingError = null;
             document.ExtractedSectionCount = storedSections.Length;
             document.ExtractedCharacterCount = storedSections.Sum(
                 section => (long)section.Content.Length);
+            document.ChunkCount = 0;
+            document.ChunkedAtUtc = null;
+            document.ChunkingError = null;
             document.UpdatedAtUtc = completedAtUtc;
 
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -129,15 +141,27 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                 await transaction.CommitAsync(cancellationToken);
             }
 
+            extractionStored = true;
+
+            _logger.LogInformation(
+                "Chunking document {DocumentId} in project {ProjectId} from {SectionCount} stored text sections.",
+                document.Id,
+                document.ProjectId,
+                storedSections.Length);
+
+            var chunkingResult = await _chunkingService.RebuildAsync(
+                document.Id,
+                cancellationToken);
+
             stopwatch.Stop();
             _logger.LogInformation(
-                "Document {DocumentId} processing completed with status {DocumentStatus} using {ExtractorType} in {ElapsedMilliseconds} ms. Extracted {SectionCount} sections and {CharacterCount} characters.",
+                "Document {DocumentId} processing completed with status Ready using {ExtractorType} in {ElapsedMilliseconds} ms. Extracted {SectionCount} sections and {CharacterCount} characters and generated {ChunkCount} chunks.",
                 document.Id,
-                document.Status,
                 extractor.GetType().Name,
                 stopwatch.ElapsedMilliseconds,
                 document.ExtractedSectionCount,
-                document.ExtractedCharacterCount);
+                document.ExtractedCharacterCount,
+                chunkingResult.ChunkCount);
         }
         catch (Exception exception)
         {
@@ -145,21 +169,25 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
 
             var safeMessage = exception switch
             {
+                DocumentChunkingException chunkingException => chunkingException.SafeMessage,
                 DocumentExtractionException extractionException => extractionException.SafeMessage,
                 OperationCanceledException => "Processing was interrupted. Please retry.",
                 _ => "Document processing failed. Please retry."
             };
 
-            try
+            if (!extractionStored)
             {
-                await MarkFailedAsync(document.Id, safeMessage);
-            }
-            catch (Exception failureUpdateException)
-            {
-                _logger.LogError(
-                    failureUpdateException,
-                    "Could not persist Failed status for document {DocumentId}.",
-                    document.Id);
+                try
+                {
+                    await MarkExtractionFailedAsync(document.Id, safeMessage);
+                }
+                catch (Exception failureUpdateException)
+                {
+                    _logger.LogError(
+                        failureUpdateException,
+                        "Could not persist Failed status for document {DocumentId}.",
+                        document.Id);
+                }
             }
 
             _logger.LogError(
@@ -174,7 +202,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         }
     }
 
-    private async Task MarkFailedAsync(Guid documentId, string safeMessage)
+    private async Task MarkExtractionFailedAsync(Guid documentId, string safeMessage)
     {
         _dbContext.ChangeTracker.Clear();
 
@@ -195,12 +223,16 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         }
 
         await DeleteExistingSectionsAsync(documentId, CancellationToken.None);
+        await DeleteExistingChunksAsync(documentId, CancellationToken.None);
 
         document.Status = DocumentStatus.Failed;
         document.ProcessedAtUtc = null;
         document.ProcessingError = Truncate(safeMessage, MaximumErrorLength);
         document.ExtractedCharacterCount = 0;
         document.ExtractedSectionCount = 0;
+        document.ChunkCount = 0;
+        document.ChunkedAtUtc = null;
+        document.ChunkingError = null;
         document.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();
@@ -224,6 +256,23 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         }
 
         _dbContext.DocumentTextSections.RemoveRange(
+            await query.ToListAsync(cancellationToken));
+    }
+
+    private async Task DeleteExistingChunksAsync(
+        Guid documentId,
+        CancellationToken cancellationToken)
+    {
+        var query = _dbContext.DocumentChunks
+            .Where(chunk => chunk.DocumentId == documentId);
+
+        if (_dbContext.Database.IsRelational())
+        {
+            await query.ExecuteDeleteAsync(cancellationToken);
+            return;
+        }
+
+        _dbContext.DocumentChunks.RemoveRange(
             await query.ToListAsync(cancellationToken));
     }
 

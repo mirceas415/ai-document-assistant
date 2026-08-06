@@ -42,6 +42,15 @@ Accept: application/json
 
 ###
 
+GET {{AI.DocumentAssistant.Server_HostAddress}}/api/projects/{{ProjectId}}/documents/{{DocumentId}}/chunks
+Accept: application/json
+
+###
+
+POST {{AI.DocumentAssistant.Server_HostAddress}}/api/projects/{{ProjectId}}/documents/{{DocumentId}}/chunks/rebuild
+
+###
+
 GET {{AI.DocumentAssistant.Server_HostAddress}}/api/projects
 Accept: application/json
 

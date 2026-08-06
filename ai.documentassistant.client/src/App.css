@@ -744,6 +744,10 @@ button:disabled {
   width: min(100%, 850px);
 }
 
+.chunk-viewer-modal {
+  width: min(100%, 920px);
+}
+
 .extracted-text-heading h2 {
   max-width: 700px;
   overflow-wrap: anywhere;
@@ -777,6 +781,16 @@ button:disabled {
   font-weight: 750;
   gap: 12px;
   text-transform: uppercase;
+}
+
+.chunk-meta {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.chunk-card p {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
 }
 
 .extracted-section h3 {
