@@ -1,6 +1,7 @@
 using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
+using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Storage;
 using Microsoft.EntityFrameworkCore;
@@ -45,11 +46,139 @@ public sealed class DocumentProcessingServiceTests
         Assert.Null(storedDocument.ChunkingError);
         Assert.Collection(
             storedSections,
-            first => Assert.Equal("First section", first.Content),
-            second => Assert.Equal("Second section", second.Content));
+            first =>
+            {
+                Assert.Equal("First section", first.Content);
+                Assert.Equal("First section", first.NormalizedContent);
+            },
+            second =>
+            {
+                Assert.Equal("Second section", second.Content);
+                Assert.Equal("Second section", second.NormalizedContent);
+            });
         Assert.Single(storedChunks);
         Assert.Contains("First section", storedChunks[0].Content);
         Assert.Contains("Second section", storedChunks[0].Content);
+    }
+
+    [Fact]
+    public async Task ProcessingNormalizesBeforeChunkingAndPreservesRawSections()
+    {
+        await using var database = await ProcessingTestDatabase.CreateAsync();
+        var document = await database.AddDocumentAsync(DocumentStatus.Uploaded);
+        var extractor = new StubExtractor([
+            new ExtractedTextSection(0, "LEGAL HEADER\nMeaningful first page\nPage 1", PageNumber: 1),
+            new ExtractedTextSection(1, "LEGAL HEADER\nMeaningful second page\nPage 2", PageNumber: 2),
+            new ExtractedTextSection(2, "LEGAL HEADER\nMeaningful third page\nPage 3", PageNumber: 3)
+        ]);
+
+        await database.CreateService(extractor).ProcessAsync(document.Id, CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var storedDocument = await database.Context.Documents.SingleAsync();
+        var sections = await database.Context.DocumentTextSections
+            .OrderBy(section => section.SectionIndex)
+            .ToListAsync();
+        var chunks = await database.Context.DocumentChunks.ToListAsync();
+
+        Assert.Equal(DocumentStatus.Ready, storedDocument.Status);
+        Assert.NotNull(storedDocument.NormalizedAtUtc);
+        Assert.Equal(3, storedDocument.NormalizationChangedSectionCount);
+        Assert.True(storedDocument.NormalizationRemovedCharacterCount > 0);
+        Assert.Equal("LEGAL HEADER\nMeaningful first page\nPage 1", sections[0].Content);
+        Assert.Equal("Meaningful first page", sections[0].NormalizedContent);
+        Assert.All(chunks, chunk =>
+        {
+            Assert.DoesNotContain("LEGAL HEADER", chunk.Content, StringComparison.Ordinal);
+            Assert.DoesNotContain("Page 1", chunk.Content, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public async Task NormalizationFailureSetsFailedAndRetainsNoPartialReplacement()
+    {
+        await using var database = await ProcessingTestDatabase.CreateAsync();
+        var document = await database.AddDocumentAsync(DocumentStatus.Uploaded);
+        database.Context.DocumentTextSections.Add(new DocumentTextSection
+        {
+            Id = Guid.NewGuid(),
+            DocumentId = document.Id,
+            SectionIndex = 0,
+            Content = "Stale raw section",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        database.Context.DocumentChunks.Add(new DocumentChunk
+        {
+            Id = Guid.NewGuid(),
+            DocumentId = document.Id,
+            ChunkIndex = 0,
+            Content = "Stale chunk",
+            CharacterCount = 11,
+            TokenCount = 2,
+            SourceSectionStartIndex = 0,
+            SourceSectionEndIndex = 0,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await database.Context.SaveChangesAsync();
+
+        var service = database.CreateService(
+            new ThrowingNormalizer(),
+            new StubExtractor([new ExtractedTextSection(0, "New raw text", PageNumber: 1)]));
+
+        await Assert.ThrowsAsync<DocumentNormalizationException>(
+            () => service.ProcessAsync(document.Id, CancellationToken.None));
+
+        database.Context.ChangeTracker.Clear();
+        var storedDocument = await database.Context.Documents.SingleAsync();
+        Assert.Equal(DocumentStatus.Failed, storedDocument.Status);
+        Assert.Equal("Document normalization failed. Please retry.", storedDocument.NormalizationError);
+        Assert.Empty(await database.Context.DocumentTextSections.ToListAsync());
+        Assert.Empty(await database.Context.DocumentChunks.ToListAsync());
+    }
+
+    [Fact]
+    public async Task ReprocessingReplacesRawNormalizedSectionsAndChunksTogether()
+    {
+        await using var database = await ProcessingTestDatabase.CreateAsync();
+        var document = await database.AddDocumentAsync(DocumentStatus.Failed);
+        database.Context.DocumentTextSections.Add(new DocumentTextSection
+        {
+            Id = Guid.NewGuid(),
+            DocumentId = document.Id,
+            SectionIndex = 0,
+            Content = "Old raw text",
+            NormalizedContent = "Old normalized text",
+            NormalizationChanged = true,
+            RemovedCharacterCount = 4,
+            NormalizedAtUtc = DateTime.UtcNow,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        database.Context.DocumentChunks.Add(new DocumentChunk
+        {
+            Id = Guid.NewGuid(),
+            DocumentId = document.Id,
+            ChunkIndex = 0,
+            Content = "Old chunk",
+            CharacterCount = 9,
+            TokenCount = 2,
+            SourceSectionStartIndex = 0,
+            SourceSectionEndIndex = 0,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await database.Context.SaveChangesAsync();
+
+        await database.CreateService(new StubExtractor([
+            new ExtractedTextSection(0, "New   raw text", PageNumber: 1)
+        ])).ProcessAsync(document.Id, CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var sections = await database.Context.DocumentTextSections.ToListAsync();
+        var chunks = await database.Context.DocumentChunks.ToListAsync();
+        Assert.Single(sections);
+        Assert.Equal("New   raw text", sections[0].Content);
+        Assert.Equal("New raw text", sections[0].NormalizedContent);
+        Assert.DoesNotContain(chunks, chunk => chunk.Content == "Old chunk");
+        Assert.Contains(chunks, chunk => chunk.Content.Contains("New raw text", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -100,7 +229,7 @@ public sealed class DocumentProcessingServiceTests
     }
 
     [Fact]
-    public async Task FailedChunkingRetainsExtractedSectionsAndRemovesChunks()
+    public async Task FailedChunkingRetainsNoPartialNewSectionsOrChunks()
     {
         await using var database = await ProcessingTestDatabase.CreateAsync();
         var document = await database.AddDocumentAsync(DocumentStatus.Uploaded);
@@ -121,8 +250,8 @@ public sealed class DocumentProcessingServiceTests
         Assert.Equal(DocumentStatus.Failed, storedDocument.Status);
         Assert.Null(storedDocument.ProcessingError);
         Assert.Equal("The test chunks could not be generated.", storedDocument.ChunkingError);
-        Assert.Equal(1, storedDocument.ExtractedSectionCount);
-        Assert.Single(await database.Context.DocumentTextSections.ToListAsync());
+        Assert.Equal(0, storedDocument.ExtractedSectionCount);
+        Assert.Empty(await database.Context.DocumentTextSections.ToListAsync());
         Assert.Empty(await database.Context.DocumentChunks.ToListAsync());
     }
 
@@ -211,17 +340,27 @@ public sealed class DocumentProcessingServiceTests
         public DocumentProcessingService CreateService(
             IDocumentChunkGenerator generator,
             params IDocumentTextExtractor[] extractors)
-        {
-            var chunkingService = new DocumentChunkingService(
-                Context,
+            => CreateService(
+                new DocumentTextNormalizer(Options.Create(new DocumentNormalizationOptions())),
                 generator,
-                NullLogger<DocumentChunkingService>.Instance);
+                extractors);
 
+        public DocumentProcessingService CreateService(
+            IDocumentTextNormalizer normalizer,
+            params IDocumentTextExtractor[] extractors)
+            => CreateService(normalizer, CreateGenerator(), extractors);
+
+        private DocumentProcessingService CreateService(
+            IDocumentTextNormalizer normalizer,
+            IDocumentChunkGenerator generator,
+            params IDocumentTextExtractor[] extractors)
+        {
             return new DocumentProcessingService(
                 Context,
                 new StubFileStorage(),
                 extractors,
-                chunkingService,
+                normalizer,
+                generator,
                 NullLogger<DocumentProcessingService>.Instance);
         }
 
@@ -234,6 +373,15 @@ public sealed class DocumentProcessingServiceTests
         {
             await Context.DisposeAsync();
         }
+    }
+
+    private sealed class ThrowingNormalizer : IDocumentTextNormalizer
+    {
+        public DocumentNormalizationResult Normalize(
+            IReadOnlyList<NormalizationSourceSection> sections,
+            bool isPdf,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Synthetic normalization failure.");
     }
 
     private sealed class StubExtractor : IDocumentTextExtractor

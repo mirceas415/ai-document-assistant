@@ -2,6 +2,7 @@ using System.Diagnostics;
 using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
+using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -15,20 +16,23 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
     private readonly ApplicationDbContext _dbContext;
     private readonly IFileStorageService _fileStorage;
     private readonly IReadOnlyList<IDocumentTextExtractor> _extractors;
-    private readonly IDocumentChunkingService _chunkingService;
+    private readonly IDocumentTextNormalizer _normalizer;
+    private readonly IDocumentChunkGenerator _chunkGenerator;
     private readonly ILogger<DocumentProcessingService> _logger;
 
     public DocumentProcessingService(
         ApplicationDbContext dbContext,
         IFileStorageService fileStorage,
         IEnumerable<IDocumentTextExtractor> extractors,
-        IDocumentChunkingService chunkingService,
+        IDocumentTextNormalizer normalizer,
+        IDocumentChunkGenerator chunkGenerator,
         ILogger<DocumentProcessingService> logger)
     {
         _dbContext = dbContext;
         _fileStorage = fileStorage;
         _extractors = extractors.ToArray();
-        _chunkingService = chunkingService;
+        _normalizer = normalizer;
+        _chunkGenerator = chunkGenerator;
         _logger = logger;
     }
 
@@ -60,6 +64,11 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         document.ProcessingError = null;
         document.ExtractedCharacterCount = 0;
         document.ExtractedSectionCount = 0;
+        document.NormalizedCharacterCount = 0;
+        document.NormalizationRemovedCharacterCount = 0;
+        document.NormalizationChangedSectionCount = 0;
+        document.NormalizedAtUtc = null;
+        document.NormalizationError = null;
         document.ChunkCount = 0;
         document.ChunkedAtUtc = null;
         document.ChunkingError = null;
@@ -71,7 +80,6 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         var extension = Path.GetExtension(document.StoredFileName);
         var extractor = _extractors.SingleOrDefault(candidate =>
             candidate.CanProcess(document.ContentType, extension));
-        var extractionStored = false;
 
         try
         {
@@ -101,6 +109,52 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                     "No extractable text was found. OCR is not supported yet.");
             }
 
+            var normalizationStopwatch = Stopwatch.StartNew();
+            DocumentNormalizationResult normalizationResult;
+            try
+            {
+                normalizationResult = _normalizer.Normalize(
+                    extractedSections.Select(section => new NormalizationSourceSection(
+                        section.SectionIndex,
+                        section.Content,
+                        section.PageNumber,
+                        section.SectionTitle)).ToArray(),
+                    string.Equals(document.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase),
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                throw new DocumentNormalizationException(
+                    "Document normalization failed. Please retry.",
+                    exception);
+            }
+            normalizationStopwatch.Stop();
+
+            _logger.LogInformation(
+                "Normalized document {DocumentId} in {ElapsedMilliseconds} ms. PDF pages: {PdfPageCount}; source sections: {SourceSectionCount}; candidate blocks: {CandidateBlockCount}; confirmed repeated blocks: {ConfirmedRepeatedBlockCount}; changed sections: {ChangedSectionCount}; removed characters: {RemovedCharacterCount}; original characters: {OriginalCharacterCount}; normalized characters: {NormalizedCharacterCount}.",
+                document.Id,
+                normalizationStopwatch.ElapsedMilliseconds,
+                normalizationResult.PdfPageCount,
+                extractedSections.Count,
+                normalizationResult.CandidateBlockCount,
+                normalizationResult.ConfirmedRepeatedBlockCount,
+                normalizationResult.ChangedSectionCount,
+                normalizationResult.RemovedCharacterCount,
+                normalizationResult.OriginalCharacterCount,
+                normalizationResult.NormalizedCharacterCount);
+
+            var generatedChunks = _chunkGenerator.Generate(
+                normalizationResult.Sections.Select(section => new ChunkSourceSection(
+                    section.SectionIndex,
+                    section.Content,
+                    section.PageNumber,
+                    section.SectionTitle)).ToArray(),
+                cancellationToken);
+
             await using var transaction = await BeginTransactionIfSupportedAsync(
                 cancellationToken);
 
@@ -108,6 +162,8 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
             await DeleteExistingChunksAsync(document.Id, cancellationToken);
 
             var completedAtUtc = DateTime.UtcNow;
+            var normalizedByIndex = normalizationResult.Sections.ToDictionary(
+                section => section.SectionIndex);
             var storedSections = extractedSections
                 .OrderBy(section => section.SectionIndex)
                 .Select((section, index) => new DocumentTextSection
@@ -116,6 +172,10 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                     DocumentId = document.Id,
                     SectionIndex = index,
                     Content = section.Content,
+                    NormalizedContent = normalizedByIndex[section.SectionIndex].Content,
+                    NormalizationChanged = normalizedByIndex[section.SectionIndex].Changed,
+                    RemovedCharacterCount = normalizedByIndex[section.SectionIndex].RemovedCharacterCount,
+                    NormalizedAtUtc = completedAtUtc,
                     PageNumber = section.PageNumber,
                     SectionTitle = Truncate(section.SectionTitle, 500),
                     CreatedAtUtc = completedAtUtc
@@ -124,14 +184,36 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
 
             _dbContext.DocumentTextSections.AddRange(storedSections);
 
-            document.Status = DocumentStatus.Processing;
-            document.ProcessedAtUtc = null;
+            var chunks = generatedChunks.Select(chunk => new DocumentChunk
+            {
+                Id = Guid.NewGuid(),
+                DocumentId = document.Id,
+                ChunkIndex = chunk.ChunkIndex,
+                Content = chunk.Content,
+                CharacterCount = chunk.CharacterCount,
+                TokenCount = chunk.TokenCount,
+                PageStart = chunk.PageStart,
+                PageEnd = chunk.PageEnd,
+                SectionTitle = Truncate(chunk.SectionTitle, 500),
+                SourceSectionStartIndex = chunk.SourceSectionStartIndex,
+                SourceSectionEndIndex = chunk.SourceSectionEndIndex,
+                CreatedAtUtc = completedAtUtc
+            }).ToArray();
+            _dbContext.DocumentChunks.AddRange(chunks);
+
+            document.Status = DocumentStatus.Ready;
+            document.ProcessedAtUtc = completedAtUtc;
             document.ProcessingError = null;
             document.ExtractedSectionCount = storedSections.Length;
             document.ExtractedCharacterCount = storedSections.Sum(
                 section => (long)section.Content.Length);
-            document.ChunkCount = 0;
-            document.ChunkedAtUtc = null;
+            document.NormalizedCharacterCount = normalizationResult.NormalizedCharacterCount;
+            document.NormalizationRemovedCharacterCount = normalizationResult.RemovedCharacterCount;
+            document.NormalizationChangedSectionCount = normalizationResult.ChangedSectionCount;
+            document.NormalizedAtUtc = completedAtUtc;
+            document.NormalizationError = null;
+            document.ChunkCount = chunks.Length;
+            document.ChunkedAtUtc = completedAtUtc;
             document.ChunkingError = null;
             document.UpdatedAtUtc = completedAtUtc;
 
@@ -141,27 +223,16 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                 await transaction.CommitAsync(cancellationToken);
             }
 
-            extractionStored = true;
-
-            _logger.LogInformation(
-                "Chunking document {DocumentId} in project {ProjectId} from {SectionCount} stored text sections.",
-                document.Id,
-                document.ProjectId,
-                storedSections.Length);
-
-            var chunkingResult = await _chunkingService.RebuildAsync(
-                document.Id,
-                cancellationToken);
-
             stopwatch.Stop();
             _logger.LogInformation(
-                "Document {DocumentId} processing completed with status Ready using {ExtractorType} in {ElapsedMilliseconds} ms. Extracted {SectionCount} sections and {CharacterCount} characters and generated {ChunkCount} chunks.",
+                "Document {DocumentId} processing completed with status Ready using {ExtractorType} in {ElapsedMilliseconds} ms. Extracted {SectionCount} sections and {CharacterCount} characters, normalized to {NormalizedCharacterCount} characters, and generated {ChunkCount} chunks.",
                 document.Id,
                 extractor.GetType().Name,
                 stopwatch.ElapsedMilliseconds,
                 document.ExtractedSectionCount,
                 document.ExtractedCharacterCount,
-                chunkingResult.ChunkCount);
+                document.NormalizedCharacterCount,
+                document.ChunkCount);
         }
         catch (Exception exception)
         {
@@ -170,24 +241,26 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
             var safeMessage = exception switch
             {
                 DocumentChunkingException chunkingException => chunkingException.SafeMessage,
+                DocumentNormalizationException normalizationException => normalizationException.SafeMessage,
                 DocumentExtractionException extractionException => extractionException.SafeMessage,
                 OperationCanceledException => "Processing was interrupted. Please retry.",
                 _ => "Document processing failed. Please retry."
             };
 
-            if (!extractionStored)
+            try
             {
-                try
-                {
-                    await MarkExtractionFailedAsync(document.Id, safeMessage);
-                }
-                catch (Exception failureUpdateException)
-                {
-                    _logger.LogError(
-                        failureUpdateException,
-                        "Could not persist Failed status for document {DocumentId}.",
-                        document.Id);
-                }
+                await MarkExtractionFailedAsync(
+                    document.Id,
+                    safeMessage,
+                    exception is DocumentNormalizationException,
+                    exception is DocumentChunkingException);
+            }
+            catch (Exception failureUpdateException)
+            {
+                _logger.LogError(
+                    failureUpdateException,
+                    "Could not persist Failed status for document {DocumentId}.",
+                    document.Id);
             }
 
             _logger.LogError(
@@ -202,7 +275,11 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         }
     }
 
-    private async Task MarkExtractionFailedAsync(Guid documentId, string safeMessage)
+    private async Task MarkExtractionFailedAsync(
+        Guid documentId,
+        string safeMessage,
+        bool normalizationFailed,
+        bool chunkingFailed)
     {
         _dbContext.ChangeTracker.Clear();
 
@@ -227,12 +304,23 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
 
         document.Status = DocumentStatus.Failed;
         document.ProcessedAtUtc = null;
-        document.ProcessingError = Truncate(safeMessage, MaximumErrorLength);
+        document.ProcessingError = normalizationFailed || chunkingFailed
+            ? null
+            : Truncate(safeMessage, MaximumErrorLength);
         document.ExtractedCharacterCount = 0;
         document.ExtractedSectionCount = 0;
+        document.NormalizedCharacterCount = 0;
+        document.NormalizationRemovedCharacterCount = 0;
+        document.NormalizationChangedSectionCount = 0;
+        document.NormalizedAtUtc = null;
+        document.NormalizationError = normalizationFailed
+            ? Truncate(safeMessage, MaximumErrorLength)
+            : null;
         document.ChunkCount = 0;
         document.ChunkedAtUtc = null;
-        document.ChunkingError = null;
+        document.ChunkingError = chunkingFailed
+            ? Truncate(safeMessage, MaximumErrorLength)
+            : null;
         document.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();

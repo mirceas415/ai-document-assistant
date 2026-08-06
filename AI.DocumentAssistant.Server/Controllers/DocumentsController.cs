@@ -4,6 +4,7 @@ using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
+using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Storage;
 using Microsoft.AspNetCore.Authorization;
@@ -34,6 +35,7 @@ public sealed class DocumentsController : ControllerBase
     private readonly IFileStorageService _fileStorage;
     private readonly IDocumentProcessingQueue _processingQueue;
     private readonly IDocumentChunkingService _chunkingService;
+    private readonly IDocumentNormalizationService _normalizationService;
     private readonly ILogger<DocumentsController> _logger;
 
     public DocumentsController(
@@ -41,12 +43,14 @@ public sealed class DocumentsController : ControllerBase
         IFileStorageService fileStorage,
         IDocumentProcessingQueue processingQueue,
         IDocumentChunkingService chunkingService,
+        IDocumentNormalizationService normalizationService,
         ILogger<DocumentsController> logger)
     {
         _dbContext = dbContext;
         _fileStorage = fileStorage;
         _processingQueue = processingQueue;
         _chunkingService = chunkingService;
+        _normalizationService = normalizationService;
         _logger = logger;
     }
 
@@ -96,6 +100,13 @@ public sealed class DocumentsController : ControllerBase
                 document.ChunkedAtUtc,
                 document.Status == DocumentStatus.Failed
                     ? document.ChunkingError
+                    : null,
+                document.NormalizedCharacterCount,
+                document.NormalizationRemovedCharacterCount,
+                document.NormalizationChangedSectionCount,
+                document.NormalizedAtUtc,
+                document.Status == DocumentStatus.Failed
+                    ? document.NormalizationError
                     : null))
             .ToListAsync(cancellationToken);
 
@@ -139,6 +150,13 @@ public sealed class DocumentsController : ControllerBase
                 document.ChunkedAtUtc,
                 document.Status == DocumentStatus.Failed
                     ? document.ChunkingError
+                    : null,
+                document.NormalizedCharacterCount,
+                document.NormalizationRemovedCharacterCount,
+                document.NormalizationChangedSectionCount,
+                document.NormalizedAtUtc,
+                document.Status == DocumentStatus.Failed
+                    ? document.NormalizationError
                     : null))
             .SingleOrDefaultAsync(cancellationToken);
 
@@ -279,12 +297,14 @@ public sealed class DocumentsController : ControllerBase
         var previousStatus = document.Status;
         var previousError = document.ProcessingError;
         var previousChunkingError = document.ChunkingError;
+        var previousNormalizationError = document.NormalizationError;
 
         if (document.Status == DocumentStatus.Failed)
         {
             document.Status = DocumentStatus.Uploaded;
             document.ProcessingError = null;
             document.ChunkingError = null;
+            document.NormalizationError = null;
             document.UpdatedAtUtc = DateTime.UtcNow;
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
@@ -296,6 +316,7 @@ public sealed class DocumentsController : ControllerBase
                 document.Status = previousStatus;
                 document.ProcessingError = previousError;
                 document.ChunkingError = previousChunkingError;
+                document.NormalizationError = previousNormalizationError;
                 document.UpdatedAtUtc = DateTime.UtcNow;
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
@@ -322,31 +343,49 @@ public sealed class DocumentsController : ControllerBase
     public async Task<ActionResult<IReadOnlyList<ExtractedTextSectionResponse>>> GetText(
         Guid projectId,
         Guid documentId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromQuery] string view = "raw")
     {
         if (!TryGetOwnerId(out var ownerId))
         {
             return AuthenticationError();
         }
 
-        var status = await _dbContext.Documents
+        var normalizedView = string.Equals(view, "normalized", StringComparison.OrdinalIgnoreCase);
+        if (!normalizedView && !string.Equals(view, "raw", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new ApiErrorResponse(
+                "The text view must be either 'raw' or 'normalized'."));
+        }
+
+        var documentState = await _dbContext.Documents
             .AsNoTracking()
             .Where(document =>
                 document.Id == documentId &&
                 document.ProjectId == projectId &&
                 document.Project.OwnerId == ownerId)
-            .Select(document => (DocumentStatus?)document.Status)
+            .Select(document => new
+            {
+                document.Status,
+                HasNormalization = document.NormalizedAtUtc != null
+            })
             .SingleOrDefaultAsync(cancellationToken);
 
-        if (status is null)
+        if (documentState is null)
         {
             return ResourceNotFound();
         }
 
-        if (status != DocumentStatus.Ready)
+        if (documentState.Status != DocumentStatus.Ready)
         {
             return Conflict(new ApiErrorResponse(
                 "Extracted text is available only after processing is complete."));
+        }
+
+        if (normalizedView && !documentState.HasNormalization)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Normalized text is not available. Rebuild normalization first."));
         }
 
         var sections = await _dbContext.DocumentTextSections
@@ -360,10 +399,117 @@ public sealed class DocumentsController : ControllerBase
                 section.SectionIndex,
                 section.PageNumber,
                 section.SectionTitle,
-                section.Content))
+                normalizedView ? section.NormalizedContent! : section.Content,
+                section.Content.Length,
+                section.NormalizedContent == null ? null : section.NormalizedContent.Length,
+                section.RemovedCharacterCount,
+                section.NormalizationChanged,
+                section.NormalizedAtUtc))
             .ToListAsync(cancellationToken);
 
         return Ok(sections);
+    }
+
+    [HttpPost("{documentId:guid}/normalization/rebuild")]
+    public async Task<ActionResult<DocumentDetails>> RebuildNormalization(
+        Guid projectId,
+        Guid documentId,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetOwnerId(out var ownerId))
+        {
+            return AuthenticationError();
+        }
+
+        var document = await _dbContext.Documents
+            .SingleOrDefaultAsync(
+                item =>
+                    item.Id == documentId &&
+                    item.ProjectId == projectId &&
+                    item.Project.OwnerId == ownerId,
+                cancellationToken);
+
+        if (document is null)
+        {
+            return ResourceNotFound();
+        }
+
+        if (document.Status == DocumentStatus.Processing)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Normalization cannot be rebuilt while the document is processing."));
+        }
+
+        var hasSourceSections = await _dbContext.DocumentTextSections
+            .AsNoTracking()
+            .AnyAsync(section => section.DocumentId == documentId, cancellationToken);
+        if (!hasSourceSections)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Extracted text is required before normalization can be rebuilt."));
+        }
+
+        if (_dbContext.Database.IsRelational())
+        {
+            var updated = await _dbContext.Documents
+                .Where(item =>
+                    item.Id == documentId &&
+                    item.ProjectId == projectId &&
+                    item.Project.OwnerId == ownerId &&
+                    item.Status != DocumentStatus.Processing)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Status, DocumentStatus.Processing)
+                    .SetProperty(item => item.ProcessingStartedAtUtc, DateTime.UtcNow)
+                    .SetProperty(item => item.ProcessingError, (string?)null)
+                    .SetProperty(item => item.NormalizationError, (string?)null)
+                    .SetProperty(item => item.ChunkingError, (string?)null)
+                    .SetProperty(item => item.UpdatedAtUtc, DateTime.UtcNow),
+                    cancellationToken);
+
+            if (updated == 0)
+            {
+                return Conflict(new ApiErrorResponse(
+                    "Normalization is already being rebuilt."));
+            }
+
+            _dbContext.ChangeTracker.Clear();
+        }
+        else
+        {
+            document.Status = DocumentStatus.Processing;
+            document.ProcessingStartedAtUtc = DateTime.UtcNow;
+            document.ProcessingError = null;
+            document.NormalizationError = null;
+            document.ChunkingError = null;
+            document.UpdatedAtUtc = DateTime.UtcNow;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        try
+        {
+            var result = await _normalizationService.RebuildAsync(
+                documentId,
+                cancellationToken);
+            var refreshedDocument = await _dbContext.Documents
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == documentId, cancellationToken);
+
+            _logger.LogInformation(
+                "User-requested normalization rebuild completed for document {DocumentId} in project {ProjectId}; changed {ChangedSectionCount} sections, removed {RemovedCharacterCount} characters, and generated {ChunkCount} chunks.",
+                documentId,
+                projectId,
+                result.ChangedSectionCount,
+                result.RemovedCharacterCount,
+                result.ChunkCount);
+
+            return Ok(ToDetails(refreshedDocument));
+        }
+        catch (DocumentNormalizationException exception)
+        {
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                new ApiErrorResponse(exception.SafeMessage));
+        }
     }
 
     [HttpGet("{documentId:guid}/chunks")]
@@ -673,6 +819,13 @@ public sealed class DocumentsController : ControllerBase
             document.ChunkedAtUtc,
             document.Status == DocumentStatus.Failed
                 ? document.ChunkingError
+                : null,
+            document.NormalizedCharacterCount,
+            document.NormalizationRemovedCharacterCount,
+            document.NormalizationChangedSectionCount,
+            document.NormalizedAtUtc,
+            document.Status == DocumentStatus.Failed
+                ? document.NormalizationError
                 : null);
 
     private sealed record ValidatedFile(

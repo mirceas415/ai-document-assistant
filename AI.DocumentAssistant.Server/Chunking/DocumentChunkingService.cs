@@ -40,7 +40,7 @@ public sealed class DocumentChunkingService : IDocumentChunkingService
                 .OrderBy(section => section.SectionIndex)
                 .Select(section => new ChunkSourceSection(
                     section.SectionIndex,
-                    section.Content,
+                    section.NormalizedContent ?? section.Content,
                     section.PageNumber,
                     section.SectionTitle))
                 .ToListAsync(cancellationToken);

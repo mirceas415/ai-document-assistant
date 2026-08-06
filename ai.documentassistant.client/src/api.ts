@@ -33,6 +33,11 @@ export interface DocumentSummary {
     chunkCount: number;
     chunkedAtUtc: string | null;
     chunkingError: string | null;
+    normalizedCharacterCount: number;
+    normalizationRemovedCharacterCount: number;
+    normalizationChangedSectionCount: number;
+    normalizedAtUtc: string | null;
+    normalizationError: string | null;
 }
 
 export type DocumentDetails = DocumentSummary & {
@@ -44,6 +49,11 @@ export interface ExtractedTextSection {
     pageNumber: number | null;
     sectionTitle: string | null;
     content: string;
+    rawCharacterCount: number;
+    normalizedCharacterCount: number | null;
+    removedCharacterCount: number;
+    normalizationChanged: boolean;
+    normalizedAtUtc: string | null;
 }
 
 export interface DocumentChunk {

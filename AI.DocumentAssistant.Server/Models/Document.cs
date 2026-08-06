@@ -38,6 +38,16 @@ public sealed class Document
 
     public string? ChunkingError { get; set; }
 
+    public long NormalizedCharacterCount { get; set; }
+
+    public long NormalizationRemovedCharacterCount { get; set; }
+
+    public int NormalizationChangedSectionCount { get; set; }
+
+    public DateTime? NormalizedAtUtc { get; set; }
+
+    public string? NormalizationError { get; set; }
+
     public ICollection<DocumentTextSection> TextSections { get; } = new List<DocumentTextSection>();
 
     public ICollection<DocumentChunk> Chunks { get; } = new List<DocumentChunk>();

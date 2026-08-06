@@ -95,6 +95,9 @@ public sealed class ApplicationDbContext
             document.Property(value => value.ChunkingError)
                 .HasMaxLength(500);
 
+            document.Property(value => value.NormalizationError)
+                .HasMaxLength(500);
+
             document.Property(value => value.CreatedAtUtc)
                 .IsRequired();
 
@@ -118,6 +121,9 @@ public sealed class ApplicationDbContext
             section.Property(value => value.Content)
                 .HasColumnType("text")
                 .IsRequired();
+
+            section.Property(value => value.NormalizedContent)
+                .HasColumnType("text");
 
             section.Property(value => value.SectionTitle)
                 .HasMaxLength(500);

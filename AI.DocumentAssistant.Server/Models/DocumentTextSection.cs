@@ -12,6 +12,14 @@ public sealed class DocumentTextSection
 
     public string Content { get; set; } = string.Empty;
 
+    public string? NormalizedContent { get; set; }
+
+    public bool NormalizationChanged { get; set; }
+
+    public int RemovedCharacterCount { get; set; }
+
+    public DateTime? NormalizedAtUtc { get; set; }
+
     public int? PageNumber { get; set; }
 
     public string? SectionTitle { get; set; }

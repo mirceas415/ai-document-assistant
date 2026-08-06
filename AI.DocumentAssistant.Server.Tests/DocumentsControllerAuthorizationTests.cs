@@ -4,6 +4,7 @@ using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Controllers;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
+using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Storage;
 using Microsoft.AspNetCore.Http;
@@ -73,12 +74,75 @@ public sealed class DocumentsControllerAuthorizationTests
             database.ProjectId,
             database.DocumentId,
             CancellationToken.None);
+        var normalizationResult = await controller.RebuildNormalization(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None);
 
         Assert.IsType<NotFoundObjectResult>(processResult);
         Assert.IsType<NotFoundObjectResult>(textResult.Result);
         Assert.IsType<NotFoundObjectResult>(chunksResult.Result);
         Assert.IsType<NotFoundObjectResult>(rebuildResult.Result);
+        Assert.IsType<NotFoundObjectResult>(normalizationResult.Result);
         Assert.Empty(database.Queue.EnqueuedDocumentIds);
+    }
+
+    [Fact]
+    public async Task OwnerCanRebuildNormalizationFromStoredRawText()
+    {
+        await using var database = await ControllerTestDatabase.CreateAsync(
+            DocumentStatus.Ready,
+            includeText: true);
+        var controller = database.CreateController(database.OwnerId);
+
+        var rebuild = await controller.RebuildNormalization(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None);
+        var normalizedText = await controller.GetText(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None,
+            "normalized");
+
+        Assert.IsType<OkObjectResult>(rebuild.Result);
+        var sections = Assert.IsAssignableFrom<IReadOnlyList<ExtractedTextSectionResponse>>(
+            Assert.IsType<OkObjectResult>(normalizedText.Result).Value);
+        Assert.Single(sections);
+        Assert.Equal("Protected text", sections[0].Content);
+    }
+
+    [Fact]
+    public async Task NormalizedTextCannotBeReadBeforeNormalizationExists()
+    {
+        await using var database = await ControllerTestDatabase.CreateAsync(
+            DocumentStatus.Ready,
+            includeText: true);
+        var controller = database.CreateController(database.OwnerId);
+
+        var result = await controller.GetText(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None,
+            "normalized");
+
+        Assert.IsType<ConflictObjectResult>(result.Result);
+    }
+
+    [Fact]
+    public async Task NormalizationRebuildIsRejectedWhileProcessing()
+    {
+        await using var database = await ControllerTestDatabase.CreateAsync(
+            DocumentStatus.Processing,
+            includeText: true);
+        var controller = database.CreateController(database.OwnerId);
+
+        var result = await controller.RebuildNormalization(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None);
+
+        Assert.IsType<ConflictObjectResult>(result.Result);
     }
 
     [Fact]
@@ -271,12 +335,20 @@ public sealed class DocumentsControllerAuthorizationTests
                 Context,
                 generator,
                 NullLogger<DocumentChunkingService>.Instance);
+            var normalizer = new DocumentTextNormalizer(
+                Options.Create(new DocumentNormalizationOptions()));
+            var normalizationService = new DocumentNormalizationService(
+                Context,
+                normalizer,
+                generator,
+                NullLogger<DocumentNormalizationService>.Instance);
 
             return new DocumentsController(
                 Context,
                 new StubFileStorage(),
                 Queue,
                 chunkingService,
+                normalizationService,
                 NullLogger<DocumentsController>.Instance)
             {
                 ControllerContext = new ControllerContext { HttpContext = httpContext }

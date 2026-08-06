@@ -293,6 +293,8 @@ function DocumentsSection({
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [retryingId, setRetryingId] = useState<string | null>(null);
     const [rebuildingId, setRebuildingId] = useState<string | null>(null);
+    const [normalizingId, setNormalizingId] = useState<string | null>(null);
+    const [chunkViewerRefreshKey, setChunkViewerRefreshKey] = useState(0);
     const [textViewerDocument, setTextViewerDocument] = useState<DocumentSummary | null>(null);
     const [chunkViewerDocument, setChunkViewerDocument] = useState<DocumentSummary | null>(null);
 
@@ -435,6 +437,7 @@ function DocumentsSection({
             );
             onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
                 item.id === document.id ? rebuiltDocument : item));
+            setChunkViewerRefreshKey((value) => value + 1);
             setError('');
         } catch (requestError) {
             try {
@@ -444,6 +447,44 @@ function DocumentsSection({
             }
         } finally {
             setRebuildingId(null);
+        }
+    };
+
+    const rebuildNormalization = async (document: DocumentSummary) => {
+        const confirmed = window.confirm(
+            `Rebuild normalized text and chunks for “${document.originalFileName}” from its stored raw extraction?`,
+        );
+
+        if (!confirmed) return;
+
+        setError('');
+        setNormalizingId(document.id);
+        onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
+            item.id === document.id ? { ...item, status: 'Processing' } : item));
+
+        try {
+            const rebuiltDocument = await apiRequest<DocumentDetails>(
+                `/api/projects/${projectId}/documents/${document.id}/normalization/rebuild`,
+                { method: 'POST' },
+            );
+            onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
+                item.id === document.id ? rebuiltDocument : item));
+            setTextViewerDocument((current) =>
+                current?.id === document.id ? rebuiltDocument : current);
+            setChunkViewerDocument((current) =>
+                current?.id === document.id ? rebuiltDocument : current);
+            setChunkViewerRefreshKey((value) => value + 1);
+            setError('');
+        } catch (requestError) {
+            const actionError = getErrorMessage(requestError);
+            try {
+                await refreshDocuments();
+            } catch {
+                // The rebuild error remains the most useful action-specific message.
+            }
+            setError(actionError);
+        } finally {
+            setNormalizingId(null);
         }
     };
 
@@ -511,16 +552,25 @@ function DocumentsSection({
                                     </p>
                                 )}
                                 {document.status === 'Ready' && (
-                                    <p className="processing-note ready-note">
-                                        {document.extractedSectionCount} {document.extractedSectionCount === 1 ? 'section' : 'sections'}
-                                        {' · '}{document.extractedCharacterCount.toLocaleString()} characters
-                                        {' · '}{document.chunkCount} {document.chunkCount === 1 ? 'chunk' : 'chunks'}
-                                        {document.chunkedAtUtc && ` · Chunked ${formatDate(document.chunkedAtUtc)}`}
-                                    </p>
+                                    <>
+                                        <p className="processing-note ready-note">
+                                            {document.extractedSectionCount} {document.extractedSectionCount === 1 ? 'section' : 'sections'}
+                                            {' · '}{document.extractedCharacterCount.toLocaleString()} raw characters
+                                            {' · '}{document.chunkCount} {document.chunkCount === 1 ? 'chunk' : 'chunks'}
+                                        </p>
+                                        {document.normalizedAtUtc && (
+                                            <p className="processing-note normalization-note">
+                                                {document.normalizedCharacterCount.toLocaleString()} normalized
+                                                {' · '}{document.normalizationRemovedCharacterCount.toLocaleString()} removed
+                                                {' · '}{document.normalizationChangedSectionCount} changed {document.normalizationChangedSectionCount === 1 ? 'section' : 'sections'}
+                                                {' · '}Normalized {formatDate(document.normalizedAtUtc)}
+                                            </p>
+                                        )}
+                                    </>
                                 )}
                                 {document.status === 'Failed' && (
                                     <p className="processing-note failed-note">
-                                        {document.chunkingError || document.processingError || 'Document processing failed. You can retry processing.'}
+                                        {document.normalizationError || document.chunkingError || document.processingError || 'Document processing failed. You can retry processing.'}
                                     </p>
                                 )}
                                 {document.status === 'Uploaded' && (
@@ -547,6 +597,14 @@ function DocumentsSection({
                                                 onClick={() => setChunkViewerDocument(document)}
                                             >
                                                 View chunks
+                                            </button>
+                                            <button
+                                                className="secondary-button compact-button"
+                                                type="button"
+                                                disabled={normalizingId === document.id}
+                                                onClick={() => void rebuildNormalization(document)}
+                                            >
+                                                {normalizingId === document.id ? 'Normalizing…' : 'Rebuild normalization'}
                                             </button>
                                             <button
                                                 className="secondary-button compact-button"
@@ -599,6 +657,7 @@ function DocumentsSection({
                 <DocumentChunkViewer
                     projectId={projectId}
                     document={chunkViewerDocument}
+                    refreshKey={chunkViewerRefreshKey}
                     onClose={() => setChunkViewerDocument(null)}
                 />
             )}
@@ -617,19 +676,27 @@ function ExtractedTextViewer({
     document,
     onClose,
 }: ExtractedTextViewerProps) {
-    const [sections, setSections] = useState<ExtractedTextSection[]>([]);
+    const [view, setView] = useState<'raw' | 'normalized'>('raw');
+    const [sectionsByView, setSectionsByView] = useState<Partial<Record<'raw' | 'normalized', ExtractedTextSection[]>>>({});
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState('');
 
     useEffect(() => {
+        const cachedSections = sectionsByView[view];
+        if (cachedSections) {
+            return;
+        }
+
         let isActive = true;
 
         const loadText = async () => {
             try {
                 const response = await apiRequest<ExtractedTextSection[]>(
-                    `/api/projects/${projectId}/documents/${document.id}/text`,
+                    `/api/projects/${projectId}/documents/${document.id}/text?view=${view}`,
                 );
-                if (isActive) setSections(response);
+                if (isActive) {
+                    setSectionsByView((current) => ({ ...current, [view]: response }));
+                }
             } catch (requestError) {
                 if (isActive) setError(getErrorMessage(requestError));
             } finally {
@@ -639,7 +706,14 @@ function ExtractedTextViewer({
 
         void loadText();
         return () => { isActive = false; };
-    }, [projectId, document.id]);
+    }, [projectId, document.id, view, sectionsByView]);
+
+    const sections = sectionsByView[view] ?? [];
+    const selectView = (nextView: 'raw' | 'normalized') => {
+        setIsLoading(!sectionsByView[nextView]);
+        setError('');
+        setView(nextView);
+    };
 
     return (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
@@ -659,6 +733,27 @@ function ExtractedTextViewer({
                     <button className="icon-button" type="button" aria-label="Close extracted text" onClick={onClose}>×</button>
                 </div>
 
+                <div className="text-view-tabs" role="tablist" aria-label="Text representation">
+                    <button
+                        className={view === 'raw' ? 'active' : ''}
+                        type="button"
+                        role="tab"
+                        aria-selected={view === 'raw'}
+                        onClick={() => selectView('raw')}
+                    >
+                        Raw extracted text
+                    </button>
+                    <button
+                        className={view === 'normalized' ? 'active' : ''}
+                        type="button"
+                        role="tab"
+                        aria-selected={view === 'normalized'}
+                        onClick={() => selectView('normalized')}
+                    >
+                        Normalized text
+                    </button>
+                </div>
+
                 {isLoading ? (
                     <div className="extracted-text-state" aria-live="polite">
                         <div className="spinner small-spinner" aria-hidden="true" />
@@ -675,6 +770,12 @@ function ExtractedTextViewer({
                                 <div className="extracted-section-meta">
                                     <span>Section {section.sectionIndex + 1}</span>
                                     {section.pageNumber && <span>Page {section.pageNumber}</span>}
+                                    <span>{section.rawCharacterCount.toLocaleString()} raw</span>
+                                    {section.normalizedCharacterCount !== null && (
+                                        <span>{section.normalizedCharacterCount.toLocaleString()} normalized</span>
+                                    )}
+                                    <span>{section.removedCharacterCount.toLocaleString()} removed</span>
+                                    <span>{section.normalizationChanged ? 'Changed' : 'Unchanged'}</span>
                                 </div>
                                 {section.sectionTitle && <h3>{section.sectionTitle}</h3>}
                                 <p>{section.content}</p>
@@ -694,12 +795,14 @@ function ExtractedTextViewer({
 interface DocumentChunkViewerProps {
     projectId: string;
     document: DocumentSummary;
+    refreshKey: number;
     onClose: () => void;
 }
 
 function DocumentChunkViewer({
     projectId,
     document,
+    refreshKey,
     onClose,
 }: DocumentChunkViewerProps) {
     const [chunks, setChunks] = useState<DocumentChunk[]>([]);
@@ -727,7 +830,7 @@ function DocumentChunkViewer({
 
         void loadChunks();
         return () => { isActive = false; };
-    }, [projectId, document.id]);
+    }, [projectId, document.id, refreshKey]);
 
     return (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {

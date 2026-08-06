@@ -18,7 +18,12 @@ public sealed record DocumentSummary(
     string? ProcessingError,
     int ChunkCount,
     DateTime? ChunkedAtUtc,
-    string? ChunkingError);
+    string? ChunkingError,
+    long NormalizedCharacterCount,
+    long NormalizationRemovedCharacterCount,
+    int NormalizationChangedSectionCount,
+    DateTime? NormalizedAtUtc,
+    string? NormalizationError);
 
 public sealed record DocumentDetails(
     Guid Id,
@@ -36,13 +41,23 @@ public sealed record DocumentDetails(
     string? ProcessingError,
     int ChunkCount,
     DateTime? ChunkedAtUtc,
-    string? ChunkingError);
+    string? ChunkingError,
+    long NormalizedCharacterCount,
+    long NormalizationRemovedCharacterCount,
+    int NormalizationChangedSectionCount,
+    DateTime? NormalizedAtUtc,
+    string? NormalizationError);
 
 public sealed record ExtractedTextSectionResponse(
     int SectionIndex,
     int? PageNumber,
     string? SectionTitle,
-    string Content);
+    string Content,
+    int RawCharacterCount,
+    int? NormalizedCharacterCount,
+    int RemovedCharacterCount,
+    bool NormalizationChanged,
+    DateTime? NormalizedAtUtc);
 
 public sealed record DocumentChunkResponse(
     int ChunkIndex,

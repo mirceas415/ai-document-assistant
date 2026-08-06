@@ -2,6 +2,7 @@ using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
+using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Storage;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -25,7 +26,9 @@ builder.Services.AddSingleton<IDocumentTextExtractor, PdfDocumentTextExtractor>(
 builder.Services.AddSingleton<IDocumentTextExtractor, DocxDocumentTextExtractor>();
 builder.Services.AddSingleton<IDocumentTokenizer, Cl100kDocumentTokenizer>();
 builder.Services.AddSingleton<IDocumentChunkGenerator, DocumentChunkGenerator>();
+builder.Services.AddSingleton<IDocumentTextNormalizer, DocumentTextNormalizer>();
 builder.Services.AddScoped<IDocumentChunkingService, DocumentChunkingService>();
+builder.Services.AddScoped<IDocumentNormalizationService, DocumentNormalizationService>();
 builder.Services.AddScoped<IDocumentProcessingService, DocumentProcessingService>();
 builder.Services.AddHostedService<DocumentProcessingWorker>();
 
@@ -41,6 +44,20 @@ builder.Services.AddOptions<DocumentChunkingOptions>()
     .Validate(
         options => options.OverlapTokens <= options.MinimumTokens,
         "Chunking OverlapTokens must not exceed MinimumTokens.")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<DocumentNormalizationOptions>()
+    .Bind(builder.Configuration.GetSection(DocumentNormalizationOptions.SectionName))
+    .ValidateDataAnnotations()
+    .Validate(
+        options => options.MinimumPageCountForBoilerplateDetection >= 3,
+        "DocumentNormalization MinimumPageCountForBoilerplateDetection must be at least 3.")
+    .Validate(
+        options => options.MinimumCandidateBlockLength <= options.MinimumLocalCandidateBlockLength,
+        "DocumentNormalization MinimumCandidateBlockLength must not exceed MinimumLocalCandidateBlockLength.")
+    .Validate(
+        options => options.MinimumLocalCandidateBlockLength <= options.MaximumCandidateLength,
+        "DocumentNormalization MinimumLocalCandidateBlockLength must not exceed MaximumCandidateLength.")
     .ValidateOnStart();
 
 builder.Services
