@@ -496,7 +496,7 @@ button:disabled {
 }
 
 .details-card,
-.next-milestone-card {
+.documents-card {
   background: rgba(255, 255, 255, 0.97);
   border: 1px solid #e4e7ec;
   border-radius: 19px;
@@ -521,36 +521,179 @@ button:disabled {
   margin: 0;
 }
 
-.next-milestone-card {
+.documents-card {
+  margin-top: 24px;
+  padding: 30px;
+}
+
+.documents-heading {
   align-items: center;
-  border-style: dashed;
-  box-shadow: none;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+}
+
+.documents-heading h2 {
+  font-size: 27px;
+  margin: 0 0 6px;
+}
+
+.documents-heading p:last-child {
+  color: #667085;
+  font-size: 13px;
+  margin: 0;
+}
+
+.upload-button {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  margin: 0;
+  min-width: 155px;
+}
+
+.disabled-upload {
+  cursor: wait;
+  opacity: 0.62;
+  pointer-events: none;
+}
+
+.visually-hidden {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.document-alert {
+  margin: 22px 0 0;
+}
+
+.upload-progress {
+  align-items: center;
+  background: #f5f7ff;
+  border: 1px solid #dce4ff;
+  border-radius: 12px;
+  color: #3157d5;
+  display: flex;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 11px;
+  margin-top: 22px;
+  padding: 13px 15px;
+}
+
+.small-spinner {
+  height: 20px;
+  margin: 0;
+  width: 20px;
+}
+
+.document-empty-state {
+  align-items: center;
+  border: 1px dashed #cfd6e1;
+  border-radius: 14px;
   color: #667085;
   display: flex;
   flex-direction: column;
   margin-top: 24px;
-  padding: 46px;
+  padding: 38px 20px;
   text-align: center;
 }
 
-.next-milestone-card > div {
-  align-items: center;
-  background: #f2f4f7;
-  border-radius: 50%;
-  color: #667085;
-  display: flex;
-  font-size: 25px;
-  height: 52px;
-  justify-content: center;
-  width: 52px;
-}
-
-.next-milestone-card h2 {
+.document-empty-state h3 {
+  color: #344054;
   margin: 14px 0 4px;
 }
 
-.next-milestone-card p {
+.document-empty-state p {
+  font-size: 13px;
   margin: 0;
+}
+
+.document-list {
+  display: grid;
+  gap: 11px;
+  margin-top: 24px;
+}
+
+.document-card {
+  align-items: center;
+  background: #fbfcfe;
+  border: 1px solid #e4e7ec;
+  border-radius: 13px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  padding: 15px;
+}
+
+.document-file-icon {
+  align-items: center;
+  background: #e9edff;
+  border-radius: 10px;
+  color: #3157d5;
+  display: flex;
+  font-size: 10px;
+  font-weight: 850;
+  height: 42px;
+  justify-content: center;
+  letter-spacing: -0.02em;
+  width: 42px;
+}
+
+.document-copy {
+  min-width: 0;
+}
+
+.document-copy h3 {
+  color: #1d2939;
+  font-size: 14px;
+  margin: 0 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-copy p {
+  color: #667085;
+  font-size: 11px;
+  margin: 0;
+}
+
+.status-pill {
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 750;
+  padding: 5px 9px;
+}
+
+.status-uploaded {
+  background: #eef4ff;
+  color: #3538cd;
+}
+
+.status-processing {
+  background: #fffaeb;
+  color: #b54708;
+}
+
+.status-ready {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.status-failed {
+  background: #fff3f2;
+  color: #b42318;
+}
+
+.document-delete-button {
+  justify-self: end;
 }
 
 .modal-backdrop {
@@ -633,8 +776,26 @@ button:disabled {
   }
 
   .details-card,
-  .next-milestone-card {
+  .documents-card {
     padding: 26px;
+  }
+
+  .documents-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .upload-button {
+    width: 100%;
+  }
+
+  .document-card {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .document-delete-button {
+    grid-column: 2 / -1;
+    justify-self: stretch;
   }
 }
 
@@ -655,6 +816,20 @@ button:disabled {
   .project-dates,
   .details-dates {
     grid-template-columns: 1fr;
+  }
+
+  .document-card {
+    align-items: start;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .status-pill {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .document-delete-button {
+    grid-column: 1 / -1;
   }
 
   .modal-actions {

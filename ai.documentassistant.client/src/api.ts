@@ -15,6 +15,22 @@ export interface ProjectSummary {
 
 export type ProjectDetails = ProjectSummary;
 
+export type DocumentStatus = 'Uploaded' | 'Processing' | 'Ready' | 'Failed';
+
+export interface DocumentSummary {
+    id: string;
+    originalFileName: string;
+    contentType: string;
+    fileSizeBytes: number;
+    status: DocumentStatus;
+    createdAtUtc: string;
+    updatedAtUtc: string;
+}
+
+export type DocumentDetails = DocumentSummary & {
+    projectId: string;
+};
+
 interface ApiError {
     message?: string;
     errors?: Record<string, string[]>;
@@ -31,11 +47,13 @@ export class ApiRequestError extends Error {
 }
 
 export const apiRequest = async <T,>(url: string, options?: RequestInit): Promise<T> => {
+    const hasJsonBody = Boolean(options?.body) && !(options?.body instanceof FormData);
+
     const response = await fetch(url, {
         ...options,
         credentials: 'include',
         headers: {
-            ...(options?.body ? { 'Content-Type': 'application/json' } : {}),
+            ...(hasJsonBody ? { 'Content-Type': 'application/json' } : {}),
             ...options?.headers,
         },
     });

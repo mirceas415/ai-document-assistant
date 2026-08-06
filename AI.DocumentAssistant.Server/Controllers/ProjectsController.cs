@@ -2,6 +2,7 @@ using System.Security.Claims;
 using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
+using AI.DocumentAssistant.Server.Storage;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -14,10 +15,14 @@ namespace AI.DocumentAssistant.Server.Controllers;
 public sealed class ProjectsController : ControllerBase
 {
     private readonly ApplicationDbContext _dbContext;
+    private readonly IFileStorageService _fileStorage;
 
-    public ProjectsController(ApplicationDbContext dbContext)
+    public ProjectsController(
+        ApplicationDbContext dbContext,
+        IFileStorageService fileStorage)
     {
         _dbContext = dbContext;
+        _fileStorage = fileStorage;
     }
 
     [HttpGet]
@@ -158,13 +163,38 @@ public sealed class ProjectsController : ControllerBase
             return AuthenticationError();
         }
 
-        var deletedCount = await _dbContext.Projects
+        var ownsProject = await _dbContext.Projects
+            .AsNoTracking()
+            .AnyAsync(
+                project => project.Id == id && project.OwnerId == ownerId,
+                cancellationToken);
+
+        if (!ownsProject)
+        {
+            return ProjectNotFound();
+        }
+
+        var storedFileNames = await _dbContext.Documents
+            .AsNoTracking()
+            .Where(document =>
+                document.ProjectId == id &&
+                document.Project.OwnerId == ownerId)
+            .Select(document => document.StoredFileName)
+            .ToListAsync(cancellationToken);
+
+        foreach (var storedFileName in storedFileNames)
+        {
+            if (await _fileStorage.ExistsAsync(storedFileName, cancellationToken))
+            {
+                await _fileStorage.DeleteAsync(storedFileName, cancellationToken);
+            }
+        }
+
+        await _dbContext.Projects
             .Where(project => project.Id == id && project.OwnerId == ownerId)
             .ExecuteDeleteAsync(cancellationToken);
 
-        return deletedCount == 0
-            ? ProjectNotFound()
-            : NoContent();
+        return NoContent();
     }
 
     private bool TryGetOwnerId(out Guid ownerId) =>

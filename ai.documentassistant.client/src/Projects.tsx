@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import type { Dispatch, FormEvent, ReactNode, SetStateAction } from 'react';
 import {
     ApiRequestError,
     apiRequest,
@@ -7,6 +7,8 @@ import {
 } from './api';
 import type {
     CurrentUser,
+    DocumentDetails,
+    DocumentSummary,
     ProjectDetails,
     ProjectSummary,
 } from './api';
@@ -174,6 +176,7 @@ export function ProjectDetailsPage({
     onSignedOut,
 }: ProjectDetailsPageProps) {
     const [project, setProject] = useState<ProjectDetails | null>(null);
+    const [documents, setDocuments] = useState<DocumentSummary[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState('');
     const [notFound, setNotFound] = useState(false);
@@ -189,8 +192,15 @@ export function ProjectDetailsPage({
             }
 
             try {
-                const response = await apiRequest<ProjectDetails>(`/api/projects/${projectId}`);
-                if (isActive) setProject(response);
+                const [projectResponse, documentResponse] = await Promise.all([
+                    apiRequest<ProjectDetails>(`/api/projects/${projectId}`),
+                    apiRequest<DocumentSummary[]>(`/api/projects/${projectId}/documents`),
+                ]);
+
+                if (isActive) {
+                    setProject(projectResponse);
+                    setDocuments(documentResponse);
+                }
             } catch (requestError) {
                 if (!isActive) return;
 
@@ -253,15 +263,164 @@ export function ProjectDetailsPage({
                             </dl>
                         </section>
 
-                        <section className="next-milestone-card">
-                            <div aria-hidden="true">＋</div>
-                            <h2>Documents</h2>
-                            <p>Documents will be added in the next milestone.</p>
-                        </section>
+                        <DocumentsSection
+                            projectId={project.id}
+                            documents={documents}
+                            onDocumentsChanged={setDocuments}
+                        />
                     </>
                 ) : null}
             </main>
         </AuthenticatedLayout>
+    );
+}
+
+interface DocumentsSectionProps {
+    projectId: string;
+    documents: DocumentSummary[];
+    onDocumentsChanged: Dispatch<SetStateAction<DocumentSummary[]>>;
+}
+
+function DocumentsSection({
+    projectId,
+    documents,
+    onDocumentsChanged,
+}: DocumentsSectionProps) {
+    const [error, setError] = useState('');
+    const [isUploading, setIsUploading] = useState(false);
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+
+    const uploadDocument = async (file: File) => {
+        setError('');
+
+        const validationError = validateDocumentFile(file);
+        if (validationError) {
+            setError(validationError);
+            return;
+        }
+
+        setIsUploading(true);
+
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const uploadedDocument = await apiRequest<DocumentDetails>(
+                `/api/projects/${projectId}/documents`,
+                {
+                    method: 'POST',
+                    body: formData,
+                },
+            );
+
+            onDocumentsChanged((currentDocuments) => [
+                uploadedDocument,
+                ...currentDocuments.filter((document) => document.id !== uploadedDocument.id),
+            ]);
+        } catch (requestError) {
+            setError(getErrorMessage(requestError));
+        } finally {
+            setIsUploading(false);
+        }
+    };
+
+    const deleteDocument = async (document: DocumentSummary) => {
+        const confirmed = window.confirm(
+            `Delete “${document.originalFileName}”? This removes the uploaded file permanently.`,
+        );
+
+        if (!confirmed) return;
+
+        setError('');
+        setDeletingId(document.id);
+
+        try {
+            await apiRequest<void>(
+                `/api/projects/${projectId}/documents/${document.id}`,
+                { method: 'DELETE' },
+            );
+            onDocumentsChanged((currentDocuments) =>
+                currentDocuments.filter((item) => item.id !== document.id));
+        } catch (requestError) {
+            setError(getErrorMessage(requestError));
+        } finally {
+            setDeletingId(null);
+        }
+    };
+
+    return (
+        <section className="documents-card" aria-labelledby="documents-heading">
+            <div className="documents-heading">
+                <div>
+                    <p className="eyebrow">Project files</p>
+                    <h2 id="documents-heading">Documents</h2>
+                    <p>PDF and DOCX files up to 20 MB.</p>
+                </div>
+
+                <label className={`primary-button upload-button${isUploading ? ' disabled-upload' : ''}`} htmlFor="document-upload">
+                    {isUploading
+                        ? 'Uploading…'
+                        : documents.length > 0
+                            ? 'Upload another document'
+                            : 'Upload document'}
+                </label>
+                <input
+                    id="document-upload"
+                    className="visually-hidden"
+                    type="file"
+                    accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    disabled={isUploading}
+                    onChange={(event) => {
+                        const input = event.currentTarget;
+                        const selectedFile = input.files?.[0];
+                        input.value = '';
+                        if (selectedFile) void uploadDocument(selectedFile);
+                    }}
+                />
+            </div>
+
+            {error && <div className="alert document-alert" role="alert">{error}</div>}
+
+            {isUploading && (
+                <div className="upload-progress" aria-live="polite">
+                    <div className="spinner small-spinner" aria-hidden="true" />
+                    <span>Uploading…</span>
+                </div>
+            )}
+
+            {documents.length === 0 && !isUploading ? (
+                <div className="document-empty-state">
+                    <div className="document-file-icon" aria-hidden="true">DOC</div>
+                    <h3>No documents uploaded yet.</h3>
+                    <p>Upload a PDF or DOCX file to this project.</p>
+                </div>
+            ) : (
+                <div className="document-list">
+                    {documents.map((document) => (
+                        <article className="document-card" key={document.id}>
+                            <div className="document-file-icon" aria-hidden="true">
+                                {getFileExtensionLabel(document.originalFileName)}
+                            </div>
+                            <div className="document-copy">
+                                <h3>{document.originalFileName}</h3>
+                                <p>{formatFileSize(document.fileSizeBytes)} · Uploaded {formatDate(document.createdAtUtc)}</p>
+                            </div>
+                            <span className={`status-pill status-${document.status.toLowerCase()}`}>
+                                {document.status}
+                            </span>
+                            <button
+                                className="danger-button compact-button document-delete-button"
+                                type="button"
+                                disabled={deletingId === document.id}
+                                onClick={() => void deleteDocument(document)}
+                            >
+                                {deletingId === document.id ? 'Deleting…' : 'Delete'}
+                            </button>
+                        </article>
+                    ))}
+                </div>
+            )}
+        </section>
     );
 }
 
@@ -426,6 +585,46 @@ function formatDate(value: string) {
         dateStyle: 'medium',
         timeStyle: 'short',
     }).format(new Date(value));
+}
+
+function formatFileSize(bytes: number) {
+    if (bytes < 1_024) return `${bytes} B`;
+    if (bytes < 1_024 * 1_024) return `${(bytes / 1_024).toFixed(1)} KB`;
+    return `${(bytes / (1_024 * 1_024)).toFixed(1)} MB`;
+}
+
+function getFileExtensionLabel(fileName: string) {
+    const extension = fileName.split('.').pop()?.toUpperCase();
+    return extension === 'PDF' || extension === 'DOCX' ? extension : 'DOC';
+}
+
+function validateDocumentFile(file: File) {
+    const maxFileSizeBytes = 20 * 1_024 * 1_024;
+    const fileName = file.name.toLowerCase();
+    const isPdf = fileName.endsWith('.pdf');
+    const isDocx = fileName.endsWith('.docx');
+
+    if (!isPdf && !isDocx) {
+        return 'Only PDF and DOCX files are supported.';
+    }
+
+    if (file.size === 0) {
+        return 'The selected file is empty.';
+    }
+
+    if (file.size > maxFileSizeBytes) {
+        return 'The file cannot exceed 20 MB.';
+    }
+
+    const expectedContentType = isPdf
+        ? 'application/pdf'
+        : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+    if (file.type.toLowerCase() !== expectedContentType) {
+        return `The content type does not match the ${isPdf ? 'PDF' : 'DOCX'} file type.`;
+    }
+
+    return '';
 }
 
 function isGuid(value: string) {

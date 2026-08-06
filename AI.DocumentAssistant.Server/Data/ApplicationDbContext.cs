@@ -15,6 +15,8 @@ public sealed class ApplicationDbContext
 
     public DbSet<Project> Projects => Set<Project>();
 
+    public DbSet<Document> Documents => Set<Document>();
+
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
@@ -58,6 +60,43 @@ public sealed class ApplicationDbContext
                 .OnDelete(DeleteBehavior.Cascade);
 
             project.HasIndex(value => new { value.OwnerId, value.UpdatedAtUtc });
+        });
+
+        builder.Entity<Document>(document =>
+        {
+            document.ToTable("Documents");
+
+            document.HasKey(value => value.Id);
+
+            document.Property(value => value.OriginalFileName)
+                .HasMaxLength(255)
+                .IsRequired();
+
+            document.Property(value => value.StoredFileName)
+                .HasMaxLength(100)
+                .IsRequired();
+
+            document.Property(value => value.ContentType)
+                .HasMaxLength(150)
+                .IsRequired();
+
+            document.Property(value => value.Status)
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            document.Property(value => value.CreatedAtUtc)
+                .IsRequired();
+
+            document.Property(value => value.UpdatedAtUtc)
+                .IsRequired();
+
+            document.HasOne(value => value.Project)
+                .WithMany(project => project.Documents)
+                .HasForeignKey(value => value.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            document.HasIndex(value => new { value.ProjectId, value.CreatedAtUtc });
         });
     }
 }

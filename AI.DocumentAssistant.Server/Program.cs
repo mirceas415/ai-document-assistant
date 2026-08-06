@@ -1,6 +1,7 @@
 using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
+using AI.DocumentAssistant.Server.Storage;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Identity;
@@ -15,6 +16,8 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(connectionString));
+
+builder.Services.AddSingleton<IFileStorageService, LocalFileStorageService>();
 
 builder.Services
     .AddIdentity<ApplicationUser, IdentityRole<Guid>>(options =>

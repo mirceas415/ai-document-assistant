@@ -1,7 +1,35 @@
 @AI.DocumentAssistant.Server_HostAddress = http://localhost:5297
+@ProjectId = 00000000-0000-0000-0000-000000000000
+@DocumentId = 00000000-0000-0000-0000-000000000000
 
 GET {{AI.DocumentAssistant.Server_HostAddress}}/api/health
 Accept: application/json
+
+###
+
+GET {{AI.DocumentAssistant.Server_HostAddress}}/api/projects/{{ProjectId}}/documents
+Accept: application/json
+
+###
+
+GET {{AI.DocumentAssistant.Server_HostAddress}}/api/projects/{{ProjectId}}/documents/{{DocumentId}}
+Accept: application/json
+
+###
+
+POST {{AI.DocumentAssistant.Server_HostAddress}}/api/projects/{{ProjectId}}/documents
+Content-Type: multipart/form-data; boundary=document-boundary
+
+--document-boundary
+Content-Disposition: form-data; name="file"; filename="sample.pdf"
+Content-Type: application/pdf
+
+< ./sample.pdf
+--document-boundary--
+
+###
+
+DELETE {{AI.DocumentAssistant.Server_HostAddress}}/api/projects/{{ProjectId}}/documents/{{DocumentId}}
 
 ###
 

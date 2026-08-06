@@ -15,4 +15,6 @@ public sealed class Project
     public DateTime CreatedAtUtc { get; set; }
 
     public DateTime UpdatedAtUtc { get; set; }
+
+    public ICollection<Document> Documents { get; } = new List<Document>();
 }
