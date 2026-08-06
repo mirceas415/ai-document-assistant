@@ -3,6 +3,7 @@ using System.Security.Claims;
 using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Models;
+using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Storage;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -30,15 +31,18 @@ public sealed class DocumentsController : ControllerBase
 
     private readonly ApplicationDbContext _dbContext;
     private readonly IFileStorageService _fileStorage;
+    private readonly IDocumentProcessingQueue _processingQueue;
     private readonly ILogger<DocumentsController> _logger;
 
     public DocumentsController(
         ApplicationDbContext dbContext,
         IFileStorageService fileStorage,
+        IDocumentProcessingQueue processingQueue,
         ILogger<DocumentsController> logger)
     {
         _dbContext = dbContext;
         _fileStorage = fileStorage;
+        _processingQueue = processingQueue;
         _logger = logger;
     }
 
@@ -76,7 +80,14 @@ public sealed class DocumentsController : ControllerBase
                 document.FileSizeBytes,
                 document.Status,
                 document.CreatedAtUtc,
-                document.UpdatedAtUtc))
+                document.UpdatedAtUtc,
+                document.ProcessingStartedAtUtc,
+                document.ProcessedAtUtc,
+                document.ExtractedSectionCount,
+                document.ExtractedCharacterCount,
+                document.Status == DocumentStatus.Failed
+                    ? document.ProcessingError
+                    : null))
             .ToListAsync(cancellationToken);
 
         return Ok(documents);
@@ -107,7 +118,14 @@ public sealed class DocumentsController : ControllerBase
                 document.FileSizeBytes,
                 document.Status,
                 document.CreatedAtUtc,
-                document.UpdatedAtUtc))
+                document.UpdatedAtUtc,
+                document.ProcessingStartedAtUtc,
+                document.ProcessedAtUtc,
+                document.ExtractedSectionCount,
+                document.ExtractedCharacterCount,
+                document.Status == DocumentStatus.Failed
+                    ? document.ProcessingError
+                    : null))
             .SingleOrDefaultAsync(cancellationToken);
 
         return document is null
@@ -175,6 +193,14 @@ public sealed class DocumentsController : ControllerBase
             _dbContext.Documents.Add(document);
             await _dbContext.SaveChangesAsync(cancellationToken);
 
+            if (!_processingQueue.TryEnqueue(document.Id))
+            {
+                _logger.LogWarning(
+                    "Document {DocumentId} in project {ProjectId} was uploaded but could not be queued because the in-memory processing queue is full.",
+                    document.Id,
+                    document.ProjectId);
+            }
+
             var response = ToDetails(document);
             return CreatedAtAction(
                 nameof(GetById),
@@ -200,6 +226,127 @@ public sealed class DocumentsController : ControllerBase
 
             throw;
         }
+    }
+
+    [HttpPost("{documentId:guid}/process")]
+    public async Task<IActionResult> Process(
+        Guid projectId,
+        Guid documentId,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetOwnerId(out var ownerId))
+        {
+            return AuthenticationError();
+        }
+
+        var document = await _dbContext.Documents
+            .SingleOrDefaultAsync(
+                item =>
+                    item.Id == documentId &&
+                    item.ProjectId == projectId &&
+                    item.Project.OwnerId == ownerId,
+                cancellationToken);
+
+        if (document is null)
+        {
+            return ResourceNotFound();
+        }
+
+        if (document.Status == DocumentStatus.Processing)
+        {
+            return Conflict(new ApiErrorResponse("The document is already processing."));
+        }
+
+        if (document.Status == DocumentStatus.Ready)
+        {
+            return Conflict(new ApiErrorResponse("The document has already been processed."));
+        }
+
+        var previousStatus = document.Status;
+        var previousError = document.ProcessingError;
+
+        if (document.Status == DocumentStatus.Failed)
+        {
+            document.Status = DocumentStatus.Uploaded;
+            document.ProcessingError = null;
+            document.UpdatedAtUtc = DateTime.UtcNow;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        if (!_processingQueue.TryEnqueue(document.Id))
+        {
+            if (previousStatus == DocumentStatus.Failed)
+            {
+                document.Status = previousStatus;
+                document.ProcessingError = previousError;
+                document.UpdatedAtUtc = DateTime.UtcNow;
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            }
+
+            _logger.LogWarning(
+                "Manual processing request for document {DocumentId} in project {ProjectId} could not be queued because the in-memory queue is full.",
+                document.Id,
+                document.ProjectId);
+
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new ApiErrorResponse("Document processing is temporarily busy. Please retry."));
+        }
+
+        _logger.LogInformation(
+            "Document {DocumentId} in project {ProjectId} was queued manually for processing.",
+            document.Id,
+            document.ProjectId);
+
+        return Accepted(new { message = "Document processing was queued." });
+    }
+
+    [HttpGet("{documentId:guid}/text")]
+    public async Task<ActionResult<IReadOnlyList<ExtractedTextSectionResponse>>> GetText(
+        Guid projectId,
+        Guid documentId,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetOwnerId(out var ownerId))
+        {
+            return AuthenticationError();
+        }
+
+        var status = await _dbContext.Documents
+            .AsNoTracking()
+            .Where(document =>
+                document.Id == documentId &&
+                document.ProjectId == projectId &&
+                document.Project.OwnerId == ownerId)
+            .Select(document => (DocumentStatus?)document.Status)
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (status is null)
+        {
+            return ResourceNotFound();
+        }
+
+        if (status != DocumentStatus.Ready)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Extracted text is available only after processing is complete."));
+        }
+
+        var sections = await _dbContext.DocumentTextSections
+            .AsNoTracking()
+            .Where(section =>
+                section.DocumentId == documentId &&
+                section.Document.ProjectId == projectId &&
+                section.Document.Project.OwnerId == ownerId)
+            .OrderBy(section => section.SectionIndex)
+            .Select(section => new ExtractedTextSectionResponse(
+                section.SectionIndex,
+                section.PageNumber,
+                section.SectionTitle,
+                section.Content))
+            .ToListAsync(cancellationToken);
+
+        return Ok(sections);
     }
 
     [HttpDelete("{documentId:guid}")]
@@ -380,7 +527,14 @@ public sealed class DocumentsController : ControllerBase
             document.FileSizeBytes,
             document.Status,
             document.CreatedAtUtc,
-            document.UpdatedAtUtc);
+            document.UpdatedAtUtc,
+            document.ProcessingStartedAtUtc,
+            document.ProcessedAtUtc,
+            document.ExtractedSectionCount,
+            document.ExtractedCharacterCount,
+            document.Status == DocumentStatus.Failed
+                ? document.ProcessingError
+                : null);
 
     private sealed record ValidatedFile(
         string OriginalFileName,

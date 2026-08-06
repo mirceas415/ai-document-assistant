@@ -21,4 +21,16 @@ public sealed class Document
     public DateTime CreatedAtUtc { get; set; }
 
     public DateTime UpdatedAtUtc { get; set; }
+
+    public DateTime? ProcessingStartedAtUtc { get; set; }
+
+    public DateTime? ProcessedAtUtc { get; set; }
+
+    public string? ProcessingError { get; set; }
+
+    public long ExtractedCharacterCount { get; set; }
+
+    public int ExtractedSectionCount { get; set; }
+
+    public ICollection<DocumentTextSection> TextSections { get; } = new List<DocumentTextSection>();
 }

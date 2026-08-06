@@ -9,6 +9,7 @@ import type {
     CurrentUser,
     DocumentDetails,
     DocumentSummary,
+    ExtractedTextSection,
     ProjectDetails,
     ProjectSummary,
 } from './api';
@@ -289,6 +290,37 @@ function DocumentsSection({
     const [error, setError] = useState('');
     const [isUploading, setIsUploading] = useState(false);
     const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [retryingId, setRetryingId] = useState<string | null>(null);
+    const [viewerDocument, setViewerDocument] = useState<DocumentSummary | null>(null);
+
+    const shouldPoll = documents.some(
+        (document) => document.status === 'Uploaded' || document.status === 'Processing',
+    );
+
+    useEffect(() => {
+        if (!shouldPoll) return;
+
+        let isActive = true;
+
+        const refreshDocuments = async () => {
+            try {
+                const response = await apiRequest<DocumentSummary[]>(
+                    `/api/projects/${projectId}/documents`,
+                );
+
+                if (isActive) onDocumentsChanged(response);
+            } catch (requestError) {
+                if (isActive) setError(getErrorMessage(requestError));
+            }
+        };
+
+        const timer = window.setInterval(() => void refreshDocuments(), 2_500);
+
+        return () => {
+            isActive = false;
+            window.clearInterval(timer);
+        };
+    }, [projectId, shouldPoll, onDocumentsChanged]);
 
     const uploadDocument = async (file: File) => {
         setError('');
@@ -348,6 +380,26 @@ function DocumentsSection({
         }
     };
 
+    const retryProcessing = async (document: DocumentSummary) => {
+        setError('');
+        setRetryingId(document.id);
+
+        try {
+            await apiRequest<void>(
+                `/api/projects/${projectId}/documents/${document.id}/process`,
+                { method: 'POST' },
+            );
+            onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
+                item.id === document.id
+                    ? { ...item, status: 'Uploaded', processingError: null }
+                    : item));
+        } catch (requestError) {
+            setError(getErrorMessage(requestError));
+        } finally {
+            setRetryingId(null);
+        }
+    };
+
     return (
         <section className="documents-card" aria-labelledby="documents-heading">
             <div className="documents-heading">
@@ -404,23 +456,163 @@ function DocumentsSection({
                             <div className="document-copy">
                                 <h3>{document.originalFileName}</h3>
                                 <p>{formatFileSize(document.fileSizeBytes)} · Uploaded {formatDate(document.createdAtUtc)}</p>
+                                {document.status === 'Processing' && (
+                                    <p className="processing-note">
+                                        Extraction started {document.processingStartedAtUtc
+                                            ? formatDate(document.processingStartedAtUtc)
+                                            : 'recently'}.
+                                    </p>
+                                )}
+                                {document.status === 'Ready' && (
+                                    <p className="processing-note ready-note">
+                                        {document.extractedSectionCount} {document.extractedSectionCount === 1 ? 'section' : 'sections'}
+                                        {' · '}{document.extractedCharacterCount.toLocaleString()} characters
+                                        {document.processedAtUtc && ` · Completed ${formatDate(document.processedAtUtc)}`}
+                                    </p>
+                                )}
+                                {document.status === 'Failed' && (
+                                    <p className="processing-note failed-note">
+                                        {document.processingError || 'Text extraction failed. You can retry processing.'}
+                                    </p>
+                                )}
+                                {document.status === 'Uploaded' && (
+                                    <p className="processing-note">Waiting for text extraction.</p>
+                                )}
                             </div>
                             <span className={`status-pill status-${document.status.toLowerCase()}`}>
                                 {document.status}
                             </span>
-                            <button
-                                className="danger-button compact-button document-delete-button"
-                                type="button"
-                                disabled={deletingId === document.id}
-                                onClick={() => void deleteDocument(document)}
-                            >
-                                {deletingId === document.id ? 'Deleting…' : 'Delete'}
-                            </button>
+                            <div className="document-actions">
+                                {document.status === 'Ready' && (
+                                    <button
+                                        className="secondary-button compact-button"
+                                        type="button"
+                                        onClick={() => setViewerDocument(document)}
+                                    >
+                                        View extracted text
+                                    </button>
+                                )}
+                                {(document.status === 'Failed' || document.status === 'Uploaded') && (
+                                    <button
+                                        className="secondary-button compact-button"
+                                        type="button"
+                                        disabled={retryingId === document.id}
+                                        onClick={() => void retryProcessing(document)}
+                                    >
+                                        {retryingId === document.id
+                                            ? 'Queueing…'
+                                            : document.status === 'Failed'
+                                                ? 'Retry processing'
+                                                : 'Process document'}
+                                    </button>
+                                )}
+                                <button
+                                    className="danger-button compact-button document-delete-button"
+                                    type="button"
+                                    disabled={deletingId === document.id}
+                                    onClick={() => void deleteDocument(document)}
+                                >
+                                    {deletingId === document.id ? 'Deleting…' : 'Delete'}
+                                </button>
+                            </div>
                         </article>
                     ))}
                 </div>
             )}
+
+            {viewerDocument && (
+                <ExtractedTextViewer
+                    projectId={projectId}
+                    document={viewerDocument}
+                    onClose={() => setViewerDocument(null)}
+                />
+            )}
         </section>
+    );
+}
+
+interface ExtractedTextViewerProps {
+    projectId: string;
+    document: DocumentSummary;
+    onClose: () => void;
+}
+
+function ExtractedTextViewer({
+    projectId,
+    document,
+    onClose,
+}: ExtractedTextViewerProps) {
+    const [sections, setSections] = useState<ExtractedTextSection[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    useEffect(() => {
+        let isActive = true;
+
+        const loadText = async () => {
+            try {
+                const response = await apiRequest<ExtractedTextSection[]>(
+                    `/api/projects/${projectId}/documents/${document.id}/text`,
+                );
+                if (isActive) setSections(response);
+            } catch (requestError) {
+                if (isActive) setError(getErrorMessage(requestError));
+            } finally {
+                if (isActive) setIsLoading(false);
+            }
+        };
+
+        void loadText();
+        return () => { isActive = false; };
+    }, [projectId, document.id]);
+
+    return (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+            if (event.target === event.currentTarget) onClose();
+        }}>
+            <section
+                className="modal-card extracted-text-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="extracted-text-title"
+            >
+                <div className="modal-heading extracted-text-heading">
+                    <div>
+                        <p className="eyebrow">Extracted content</p>
+                        <h2 id="extracted-text-title">{document.originalFileName}</h2>
+                    </div>
+                    <button className="icon-button" type="button" aria-label="Close extracted text" onClick={onClose}>×</button>
+                </div>
+
+                {isLoading ? (
+                    <div className="extracted-text-state" aria-live="polite">
+                        <div className="spinner small-spinner" aria-hidden="true" />
+                        <span>Loading extracted text…</span>
+                    </div>
+                ) : error ? (
+                    <div className="alert" role="alert">{error}</div>
+                ) : sections.length === 0 ? (
+                    <div className="extracted-text-state">No extracted text is available.</div>
+                ) : (
+                    <div className="extracted-section-list">
+                        {sections.map((section) => (
+                            <article className="extracted-section" key={section.sectionIndex}>
+                                <div className="extracted-section-meta">
+                                    <span>Section {section.sectionIndex + 1}</span>
+                                    {section.pageNumber && <span>Page {section.pageNumber}</span>}
+                                </div>
+                                {section.sectionTitle && <h3>{section.sectionTitle}</h3>}
+                                <p>{section.content}</p>
+                            </article>
+                        ))}
+                    </div>
+                )}
+
+                <div className="modal-actions">
+                    <button className="secondary-button" type="button" onClick={onClose}>Close</button>
+                </div>
+            </section>
+        </div>
     );
 }
 

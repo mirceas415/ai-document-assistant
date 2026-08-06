@@ -33,6 +33,15 @@ DELETE {{AI.DocumentAssistant.Server_HostAddress}}/api/projects/{{ProjectId}}/do
 
 ###
 
+POST {{AI.DocumentAssistant.Server_HostAddress}}/api/projects/{{ProjectId}}/documents/{{DocumentId}}/process
+
+###
+
+GET {{AI.DocumentAssistant.Server_HostAddress}}/api/projects/{{ProjectId}}/documents/{{DocumentId}}/text
+Accept: application/json
+
+###
+
 GET {{AI.DocumentAssistant.Server_HostAddress}}/api/projects
 Accept: application/json
 

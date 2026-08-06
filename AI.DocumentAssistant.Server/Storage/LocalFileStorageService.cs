@@ -56,6 +56,23 @@ public sealed class LocalFileStorageService : IFileStorageService
         return Task.FromResult(File.Exists(GetStoragePath(storedFileName)));
     }
 
+    public Task<Stream> OpenReadAsync(
+        string storedFileName,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Stream stream = new FileStream(
+            GetStoragePath(storedFileName),
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 81_920,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        return Task.FromResult(stream);
+    }
+
     private string GetStoragePath(string storedFileName)
     {
         if (string.IsNullOrWhiteSpace(storedFileName) ||

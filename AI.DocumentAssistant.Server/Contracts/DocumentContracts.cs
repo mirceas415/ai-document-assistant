@@ -10,7 +10,12 @@ public sealed record DocumentSummary(
     long FileSizeBytes,
     DocumentStatus Status,
     DateTime CreatedAtUtc,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    DateTime? ProcessingStartedAtUtc,
+    DateTime? ProcessedAtUtc,
+    int ExtractedSectionCount,
+    long ExtractedCharacterCount,
+    string? ProcessingError);
 
 public sealed record DocumentDetails(
     Guid Id,
@@ -20,7 +25,18 @@ public sealed record DocumentDetails(
     long FileSizeBytes,
     DocumentStatus Status,
     DateTime CreatedAtUtc,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    DateTime? ProcessingStartedAtUtc,
+    DateTime? ProcessedAtUtc,
+    int ExtractedSectionCount,
+    long ExtractedCharacterCount,
+    string? ProcessingError);
+
+public sealed record ExtractedTextSectionResponse(
+    int SectionIndex,
+    int? PageNumber,
+    string? SectionTitle,
+    string Content);
 
 public sealed class UploadDocumentRequest
 {

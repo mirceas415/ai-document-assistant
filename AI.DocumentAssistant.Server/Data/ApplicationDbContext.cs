@@ -17,6 +17,8 @@ public sealed class ApplicationDbContext
 
     public DbSet<Document> Documents => Set<Document>();
 
+    public DbSet<DocumentTextSection> DocumentTextSections => Set<DocumentTextSection>();
+
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
@@ -85,6 +87,9 @@ public sealed class ApplicationDbContext
                 .HasMaxLength(32)
                 .IsRequired();
 
+            document.Property(value => value.ProcessingError)
+                .HasMaxLength(500);
+
             document.Property(value => value.CreatedAtUtc)
                 .IsRequired();
 
@@ -97,6 +102,31 @@ public sealed class ApplicationDbContext
                 .OnDelete(DeleteBehavior.Cascade);
 
             document.HasIndex(value => new { value.ProjectId, value.CreatedAtUtc });
+        });
+
+        builder.Entity<DocumentTextSection>(section =>
+        {
+            section.ToTable("DocumentTextSections");
+
+            section.HasKey(value => value.Id);
+
+            section.Property(value => value.Content)
+                .HasColumnType("text")
+                .IsRequired();
+
+            section.Property(value => value.SectionTitle)
+                .HasMaxLength(500);
+
+            section.Property(value => value.CreatedAtUtc)
+                .IsRequired();
+
+            section.HasOne(value => value.Document)
+                .WithMany(document => document.TextSections)
+                .HasForeignKey(value => value.DocumentId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            section.HasIndex(value => new { value.DocumentId, value.SectionIndex })
+                .IsUnique();
         });
     }
 }

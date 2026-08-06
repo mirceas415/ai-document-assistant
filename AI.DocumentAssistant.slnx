@@ -4,4 +4,5 @@
     <Deploy />
   </Project>
   <Project Path="AI.DocumentAssistant.Server/AI.DocumentAssistant.Server.csproj" />
+  <Project Path="AI.DocumentAssistant.Server.Tests/AI.DocumentAssistant.Server.Tests.csproj" />
 </Solution>

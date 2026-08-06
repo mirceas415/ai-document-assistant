@@ -25,11 +25,23 @@ export interface DocumentSummary {
     status: DocumentStatus;
     createdAtUtc: string;
     updatedAtUtc: string;
+    processingStartedAtUtc: string | null;
+    processedAtUtc: string | null;
+    extractedSectionCount: number;
+    extractedCharacterCount: number;
+    processingError: string | null;
 }
 
 export type DocumentDetails = DocumentSummary & {
     projectId: string;
 };
+
+export interface ExtractedTextSection {
+    sectionIndex: number;
+    pageNumber: number | null;
+    sectionTitle: string | null;
+    content: string;
+}
 
 interface ApiError {
     message?: string;

@@ -622,13 +622,13 @@ button:disabled {
 }
 
 .document-card {
-  align-items: center;
+  align-items: start;
   background: #fbfcfe;
   border: 1px solid #e4e7ec;
   border-radius: 13px;
   display: grid;
   gap: 14px;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   padding: 15px;
 }
 
@@ -665,6 +665,21 @@ button:disabled {
   margin: 0;
 }
 
+.document-copy .processing-note {
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 7px;
+}
+
+.document-copy .ready-note {
+  color: #027a48;
+}
+
+.document-copy .failed-note {
+  color: #b42318;
+}
+
 .status-pill {
   border-radius: 999px;
   font-size: 11px;
@@ -696,6 +711,14 @@ button:disabled {
   justify-self: end;
 }
 
+.document-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 2 / -1;
+  justify-content: flex-end;
+}
+
 .modal-backdrop {
   align-items: center;
   background: rgba(16, 24, 40, 0.56);
@@ -715,6 +738,58 @@ button:disabled {
   overflow-y: auto;
   padding: 30px;
   width: min(100%, 520px);
+}
+
+.extracted-text-modal {
+  width: min(100%, 850px);
+}
+
+.extracted-text-heading h2 {
+  max-width: 700px;
+  overflow-wrap: anywhere;
+}
+
+.extracted-text-state {
+  align-items: center;
+  color: #667085;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  min-height: 160px;
+}
+
+.extracted-section-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+}
+
+.extracted-section {
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.extracted-section-meta {
+  color: #667085;
+  display: flex;
+  font-size: 11px;
+  font-weight: 750;
+  gap: 12px;
+  text-transform: uppercase;
+}
+
+.extracted-section h3 {
+  color: #1d2939;
+  font-size: 16px;
+  margin: 12px 0 0;
+}
+
+.extracted-section p {
+  color: #344054;
+  line-height: 1.65;
+  margin: 12px 0 0;
+  white-space: pre-wrap;
 }
 
 .modal-heading {
@@ -793,9 +868,9 @@ button:disabled {
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
-  .document-delete-button {
+  .document-actions {
     grid-column: 2 / -1;
-    justify-self: stretch;
+    justify-content: flex-start;
   }
 }
 
@@ -828,7 +903,7 @@ button:disabled {
     justify-self: start;
   }
 
-  .document-delete-button {
+  .document-actions {
     grid-column: 1 / -1;
   }
 
