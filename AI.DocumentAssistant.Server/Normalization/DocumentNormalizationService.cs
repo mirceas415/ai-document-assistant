@@ -1,9 +1,11 @@
 using System.Diagnostics;
 using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
+using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Options;
 
 namespace AI.DocumentAssistant.Server.Normalization;
 
@@ -15,17 +17,23 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
     private readonly ApplicationDbContext _dbContext;
     private readonly IDocumentTextNormalizer _normalizer;
     private readonly IDocumentChunkGenerator _chunkGenerator;
+    private readonly ITextEmbeddingService _embeddingService;
+    private readonly OpenAIEmbeddingOptions _embeddingOptions;
     private readonly ILogger<DocumentNormalizationService> _logger;
 
     public DocumentNormalizationService(
         ApplicationDbContext dbContext,
         IDocumentTextNormalizer normalizer,
         IDocumentChunkGenerator chunkGenerator,
+        ITextEmbeddingService embeddingService,
+        IOptions<OpenAIEmbeddingOptions> embeddingOptions,
         ILogger<DocumentNormalizationService> logger)
     {
         _dbContext = dbContext;
         _normalizer = normalizer;
         _chunkGenerator = chunkGenerator;
+        _embeddingService = embeddingService;
+        _embeddingOptions = embeddingOptions.Value;
         _logger = logger;
     }
 
@@ -34,13 +42,15 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
-        var document = await _dbContext.Documents
-            .SingleOrDefaultAsync(item => item.Id == documentId, cancellationToken)
-            ?? throw new DocumentNormalizationException(
-                "The document is not available for normalization.");
+        Document? document = null;
 
         try
         {
+            document = await _dbContext.Documents
+                .SingleOrDefaultAsync(item => item.Id == documentId, cancellationToken)
+                ?? throw new DocumentNormalizationException(
+                    "The document is not available for normalization.");
+
             var sections = await _dbContext.DocumentTextSections
                 .Where(section => section.DocumentId == documentId)
                 .OrderBy(section => section.SectionIndex)
@@ -77,6 +87,15 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
                     section.SectionTitle)).ToArray(),
                 cancellationToken);
 
+            var embeddingResult = await _embeddingService.GenerateEmbeddingsAsync(
+                generatedChunks.Select(chunk => chunk.Content).ToArray(),
+                cancellationToken);
+            EmbeddingResultValidator.Validate(
+                embeddingResult,
+                generatedChunks.Count,
+                _embeddingOptions.EmbeddingModel,
+                EmbeddingArchitecture.Dimensions);
+
             await using var transaction = await BeginTransactionIfSupportedAsync(cancellationToken);
             await DeleteExistingChunksAsync(documentId, cancellationToken);
 
@@ -105,6 +124,16 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
                 SourceSectionEndIndex = chunk.SourceSectionEndIndex,
                 CreatedAtUtc = completedAtUtc
             }).ToArray();
+
+            for (var index = 0; index < chunks.Length; index++)
+            {
+                EmbeddingPersistence.ApplyToChunk(
+                    chunks[index],
+                    embeddingResult.Embeddings[index],
+                    embeddingResult,
+                    completedAtUtc);
+            }
+
             _dbContext.DocumentChunks.AddRange(chunks);
 
             document.Status = DocumentStatus.Ready;
@@ -118,6 +147,11 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
             document.ChunkCount = chunks.Length;
             document.ChunkedAtUtc = completedAtUtc;
             document.ChunkingError = null;
+            EmbeddingPersistence.ApplyToDocument(
+                document,
+                chunks.Length,
+                embeddingResult,
+                completedAtUtc);
             document.UpdatedAtUtc = completedAtUtc;
 
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -128,7 +162,7 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
 
             stopwatch.Stop();
             _logger.LogInformation(
-                "Normalization rebuild completed for document {DocumentId} with status Ready in {ElapsedMilliseconds} ms. PDF pages: {PdfPageCount}; source sections: {SourceSectionCount}; candidate blocks: {CandidateBlockCount}; confirmed repeated blocks: {ConfirmedRepeatedBlockCount}; changed sections: {ChangedSectionCount}; removed characters: {RemovedCharacterCount}; original characters: {OriginalCharacterCount}; normalized characters: {NormalizedCharacterCount}; chunks: {ChunkCount}.",
+                "Normalization rebuild completed for document {DocumentId} with status Ready in {ElapsedMilliseconds} ms. PDF pages: {PdfPageCount}; source sections: {SourceSectionCount}; candidate blocks: {CandidateBlockCount}; confirmed repeated blocks: {ConfirmedRepeatedBlockCount}; changed sections: {ChangedSectionCount}; removed characters: {RemovedCharacterCount}; original characters: {OriginalCharacterCount}; normalized characters: {NormalizedCharacterCount}; embedded chunks: {ChunkCount}; embedding model: {EmbeddingModel}; embedding dimensions: {EmbeddingDimensions}.",
                 document.Id,
                 stopwatch.ElapsedMilliseconds,
                 result.PdfPageCount,
@@ -139,7 +173,9 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
                 result.RemovedCharacterCount,
                 result.OriginalCharacterCount,
                 result.NormalizedCharacterCount,
-                chunks.Length);
+                chunks.Length,
+                embeddingResult.Model,
+                embeddingResult.Dimensions);
 
             return new DocumentNormalizationRebuildResult(
                 result.ChangedSectionCount,
@@ -155,13 +191,18 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
             {
                 DocumentNormalizationException normalizationException => normalizationException.SafeMessage,
                 DocumentChunkingException chunkingException => chunkingException.SafeMessage,
+                DocumentEmbeddingException embeddingException => embeddingException.SafeMessage,
                 OperationCanceledException => "Normalization was interrupted. Please retry.",
                 _ => "Document normalization failed. Please retry."
             };
 
             try
             {
-                await MarkFailedAsync(documentId, safeMessage);
+                await RestoreReadyAfterFailureAsync(
+                    documentId,
+                    safeMessage,
+                    exception is DocumentChunkingException,
+                    exception is DocumentEmbeddingException);
             }
             catch (Exception failureUpdateException)
             {
@@ -173,9 +214,9 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
 
             _logger.LogError(
                 exception,
-                "Normalization rebuild failed for document {DocumentId} in project {ProjectId} after {ElapsedMilliseconds} ms with final status Failed.",
-                document.Id,
-                document.ProjectId,
+                "Normalization rebuild failed for document {DocumentId} in project {ProjectId} after {ElapsedMilliseconds} ms; the previous authoritative normalization, chunks, and embeddings were preserved.",
+                documentId,
+                document?.ProjectId,
                 stopwatch.ElapsedMilliseconds);
 
             if (exception is OperationCanceledException)
@@ -183,11 +224,17 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
                 throw;
             }
 
-            throw new DocumentNormalizationException(safeMessage, exception);
+            throw exception is DocumentEmbeddingException preservedEmbeddingException
+                ? preservedEmbeddingException
+                : new DocumentNormalizationException(safeMessage, exception);
         }
     }
 
-    private async Task MarkFailedAsync(Guid documentId, string safeMessage)
+    private async Task RestoreReadyAfterFailureAsync(
+        Guid documentId,
+        string safeMessage,
+        bool chunkingFailed,
+        bool embeddingFailed)
     {
         _dbContext.ChangeTracker.Clear();
         await using var transaction = await BeginTransactionIfSupportedAsync(CancellationToken.None);
@@ -197,29 +244,16 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
             return;
         }
 
-        await DeleteExistingChunksAsync(documentId, CancellationToken.None);
-        var sections = await _dbContext.DocumentTextSections
-            .Where(section => section.DocumentId == documentId)
-            .ToListAsync();
-        foreach (var section in sections)
-        {
-            section.NormalizedContent = null;
-            section.NormalizationChanged = false;
-            section.RemovedCharacterCount = 0;
-            section.NormalizedAtUtc = null;
-        }
-
-        document.Status = DocumentStatus.Failed;
-        document.ProcessedAtUtc = null;
-        document.ProcessingError = null;
-        document.NormalizedCharacterCount = 0;
-        document.NormalizationRemovedCharacterCount = 0;
-        document.NormalizationChangedSectionCount = 0;
-        document.NormalizedAtUtc = null;
-        document.NormalizationError = Truncate(safeMessage, MaximumErrorLength);
-        document.ChunkCount = 0;
-        document.ChunkedAtUtc = null;
-        document.ChunkingError = null;
+        document.Status = DocumentStatus.Ready;
+        document.NormalizationError = !chunkingFailed && !embeddingFailed
+            ? Truncate(safeMessage, MaximumErrorLength)
+            : null;
+        document.ChunkingError = chunkingFailed
+            ? Truncate(safeMessage, MaximumErrorLength)
+            : null;
+        document.EmbeddingError = embeddingFailed
+            ? Truncate(safeMessage, MaximumErrorLength)
+            : null;
         document.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();

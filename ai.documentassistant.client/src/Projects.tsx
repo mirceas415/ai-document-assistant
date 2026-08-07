@@ -294,6 +294,7 @@ function DocumentsSection({
     const [retryingId, setRetryingId] = useState<string | null>(null);
     const [rebuildingId, setRebuildingId] = useState<string | null>(null);
     const [normalizingId, setNormalizingId] = useState<string | null>(null);
+    const [embeddingId, setEmbeddingId] = useState<string | null>(null);
     const [chunkViewerRefreshKey, setChunkViewerRefreshKey] = useState(0);
     const [textViewerDocument, setTextViewerDocument] = useState<DocumentSummary | null>(null);
     const [chunkViewerDocument, setChunkViewerDocument] = useState<DocumentSummary | null>(null);
@@ -488,6 +489,47 @@ function DocumentsSection({
         }
     };
 
+    const rebuildEmbeddings = async (document: DocumentSummary) => {
+        const hasExistingEmbeddings = document.embeddedChunkCount > 0;
+        const confirmed = window.confirm(
+            hasExistingEmbeddings
+                ? `Rebuild all embeddings for “${document.originalFileName}” from its existing chunks? This replaces the current embedding set and uses OpenAI API credits.`
+                : `Generate embeddings for “${document.originalFileName}” from its existing chunks? This uses OpenAI API credits.`,
+        );
+
+        if (!confirmed) return;
+
+        setError('');
+        setEmbeddingId(document.id);
+
+        try {
+            const rebuiltDocument = await apiRequest<DocumentDetails>(
+                `/api/projects/${projectId}/documents/${document.id}/embeddings/rebuild`,
+                { method: 'POST' },
+            );
+            onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
+                item.id === document.id ? rebuiltDocument : item));
+            setError('');
+        } catch (requestError) {
+            const actionError = getErrorMessage(requestError);
+            try {
+                await refreshDocuments();
+            } catch {
+                // The embedding error remains the most useful action-specific message.
+            }
+            setError(actionError);
+        } finally {
+            setEmbeddingId(null);
+        }
+    };
+
+    const isDocumentActionBusy = (documentId: string) =>
+        deletingId === documentId ||
+        retryingId === documentId ||
+        rebuildingId === documentId ||
+        normalizingId === documentId ||
+        embeddingId === documentId;
+
     return (
         <section className="documents-card" aria-labelledby="documents-heading">
             <div className="documents-heading">
@@ -566,11 +608,27 @@ function DocumentsSection({
                                                 {' · '}Normalized {formatDate(document.normalizedAtUtc)}
                                             </p>
                                         )}
+                                        <p className={`processing-note embedding-note${document.embeddingsAreCurrent ? ' ready-note' : ' embedding-warning-note'}`}>
+                                            {document.embeddingsAreCurrent
+                                                ? 'Embedded'
+                                                : document.embeddedChunkCount > 0
+                                                    ? 'Needs rebuild'
+                                                    : 'Not embedded'}
+                                            {' · '}{document.embeddedChunkCount}/{document.chunkCount} embedded chunks
+                                            {document.embeddingModel && <>{' · '}{document.embeddingModel}</>}
+                                            {document.embeddingDimensions !== null && <>{' · '}{document.embeddingDimensions} dimensions</>}
+                                            {document.embeddedAtUtc && <>{' · '}Embedded {formatDate(document.embeddedAtUtc)}</>}
+                                        </p>
+                                        {(document.embeddingError || document.normalizationError || document.chunkingError) && (
+                                            <p className="processing-note failed-note">
+                                                {document.embeddingError || document.normalizationError || document.chunkingError}
+                                            </p>
+                                        )}
                                     </>
                                 )}
                                 {document.status === 'Failed' && (
                                     <p className="processing-note failed-note">
-                                        {document.normalizationError || document.chunkingError || document.processingError || 'Document processing failed. You can retry processing.'}
+                                        {document.embeddingError || document.normalizationError || document.chunkingError || document.processingError || 'Document processing failed. You can retry processing.'}
                                     </p>
                                 )}
                                 {document.status === 'Uploaded' && (
@@ -587,6 +645,7 @@ function DocumentsSection({
                                             <button
                                                 className="secondary-button compact-button"
                                                 type="button"
+                                                disabled={isDocumentActionBusy(document.id)}
                                                 onClick={() => setTextViewerDocument(document)}
                                             >
                                                 View extracted text
@@ -594,6 +653,7 @@ function DocumentsSection({
                                             <button
                                                 className="secondary-button compact-button"
                                                 type="button"
+                                                disabled={isDocumentActionBusy(document.id)}
                                                 onClick={() => setChunkViewerDocument(document)}
                                             >
                                                 View chunks
@@ -601,7 +661,7 @@ function DocumentsSection({
                                             <button
                                                 className="secondary-button compact-button"
                                                 type="button"
-                                                disabled={normalizingId === document.id}
+                                                disabled={isDocumentActionBusy(document.id)}
                                                 onClick={() => void rebuildNormalization(document)}
                                             >
                                                 {normalizingId === document.id ? 'Normalizing…' : 'Rebuild normalization'}
@@ -609,10 +669,24 @@ function DocumentsSection({
                                             <button
                                                 className="secondary-button compact-button"
                                                 type="button"
-                                                disabled={rebuildingId === document.id}
+                                                disabled={isDocumentActionBusy(document.id)}
                                                 onClick={() => void rebuildChunks(document)}
                                             >
                                                 {rebuildingId === document.id ? 'Rebuilding…' : 'Rebuild chunks'}
+                                            </button>
+                                            <button
+                                                className="secondary-button compact-button"
+                                                type="button"
+                                                disabled={isDocumentActionBusy(document.id)}
+                                                onClick={() => void rebuildEmbeddings(document)}
+                                            >
+                                                {embeddingId === document.id
+                                                    ? document.embeddedChunkCount > 0
+                                                        ? 'Rebuilding embeddings…'
+                                                        : 'Generating embeddings…'
+                                                    : document.embeddedChunkCount > 0
+                                                        ? 'Rebuild embeddings'
+                                                        : 'Generate embeddings'}
                                             </button>
                                         </>
                                     )}
@@ -620,7 +694,7 @@ function DocumentsSection({
                                         <button
                                             className="secondary-button compact-button"
                                             type="button"
-                                            disabled={retryingId === document.id}
+                                            disabled={isDocumentActionBusy(document.id)}
                                             onClick={() => void retryProcessing(document)}
                                         >
                                             {retryingId === document.id
@@ -633,7 +707,7 @@ function DocumentsSection({
                                     <button
                                         className="danger-button compact-button document-delete-button"
                                         type="button"
-                                        disabled={deletingId === document.id}
+                                        disabled={isDocumentActionBusy(document.id)}
                                         onClick={() => void deleteDocument(document)}
                                     >
                                         {deletingId === document.id ? 'Deleting…' : 'Delete'}

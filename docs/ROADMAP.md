@@ -87,22 +87,31 @@ Status: Complete
 - Verified an ignored local diagnostic PDF using aggregate metrics only
 - No persistence-model or frontend changes required
 
-## Milestone 6 — Embeddings and pgvector
+## Milestone 6 — Embedding Infrastructure + pgvector
 
-Status: Planned
+Status: Complete
 
-- Select and configure an embedding provider and model
-- Add embedding-specific persistence and PostgreSQL vector support only in this milestone
-- Generate embeddings from existing `DocumentChunk` rows
-- Add retry, observability, and cost controls
+- Official OpenAI .NET SDK behind a batch-oriented application abstraction
+- Configurable `text-embedding-3-small`, 1536 dimensions, and bounded sequential batching
+- First-class pgvector/Npgsql/EF Core integration with nullable `vector(1536)` chunk storage
+- Per-chunk model, dimensions, time, and exact-content SHA-256 metadata
+- Safe document-level embedding aggregates and legacy-document detection
+- Atomic Extract → Normalize → Chunk → Embed → Persist → Ready processing
+- Fresh embeddings for normalization and chunk rebuilds without partial authoritative replacement
+- Ownership-protected explicit embedding generation/rebuild from persisted chunk content
+- SDK-level transient retries, cancellation, structured safe logging, and cost controls
+- Frontend embedding status and confirmed Generate/Rebuild actions without vector exposure
+- EF Core migration, fake-based automated tests, and architecture documentation
+- No vector index, vector retrieval, query embeddings, semantic search, chat, or RAG
 
-## Milestone 7 — Vector Search
+## Milestone 7 — Semantic Retrieval/Search
 
-Status: Planned
+Status: Planned (Next)
 
-- Introduce PostgreSQL vector support
-- Store and index chunk embeddings
+- Choose and validate the similarity metric
+- Generate query embeddings only for explicit authorized searches
 - Implement ownership-filtered similarity retrieval
+- Select and test the appropriate pgvector index strategy
 - Evaluate retrieval quality and latency
 
 ## Milestone 8 — AI Chat

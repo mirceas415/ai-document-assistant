@@ -680,6 +680,10 @@ button:disabled {
   color: #344054;
 }
 
+.document-copy .embedding-warning-note {
+  color: #b54708;
+}
+
 .document-copy .failed-note {
   color: #b42318;
 }

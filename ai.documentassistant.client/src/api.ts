@@ -38,6 +38,12 @@ export interface DocumentSummary {
     normalizationChangedSectionCount: number;
     normalizedAtUtc: string | null;
     normalizationError: string | null;
+    embeddedChunkCount: number;
+    embeddingModel: string | null;
+    embeddingDimensions: number | null;
+    embeddedAtUtc: string | null;
+    embeddingError: string | null;
+    embeddingsAreCurrent: boolean;
 }
 
 export type DocumentDetails = DocumentSummary & {

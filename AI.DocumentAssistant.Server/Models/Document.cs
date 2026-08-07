@@ -38,6 +38,16 @@ public sealed class Document
 
     public string? ChunkingError { get; set; }
 
+    public int EmbeddedChunkCount { get; set; }
+
+    public string? EmbeddingModel { get; set; }
+
+    public int? EmbeddingDimensions { get; set; }
+
+    public DateTime? EmbeddedAtUtc { get; set; }
+
+    public string? EmbeddingError { get; set; }
+
     public long NormalizedCharacterCount { get; set; }
 
     public long NormalizationRemovedCharacterCount { get; set; }

@@ -1,7 +1,9 @@
 using AI.DocumentAssistant.Server.Data;
+using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Options;
 
 namespace AI.DocumentAssistant.Server.Chunking;
 
@@ -11,15 +13,21 @@ public sealed class DocumentChunkingService : IDocumentChunkingService
 
     private readonly ApplicationDbContext _dbContext;
     private readonly IDocumentChunkGenerator _generator;
+    private readonly ITextEmbeddingService _embeddingService;
+    private readonly OpenAIEmbeddingOptions _embeddingOptions;
     private readonly ILogger<DocumentChunkingService> _logger;
 
     public DocumentChunkingService(
         ApplicationDbContext dbContext,
         IDocumentChunkGenerator generator,
+        ITextEmbeddingService embeddingService,
+        IOptions<OpenAIEmbeddingOptions> embeddingOptions,
         ILogger<DocumentChunkingService> logger)
     {
         _dbContext = dbContext;
         _generator = generator;
+        _embeddingService = embeddingService;
+        _embeddingOptions = embeddingOptions.Value;
         _logger = logger;
     }
 
@@ -27,13 +35,15 @@ public sealed class DocumentChunkingService : IDocumentChunkingService
         Guid documentId,
         CancellationToken cancellationToken)
     {
-        var document = await _dbContext.Documents
-            .SingleOrDefaultAsync(item => item.Id == documentId, cancellationToken)
-            ?? throw new DocumentChunkingException(
-                "The document is not available for chunking.");
+        Document? document = null;
 
         try
         {
+            document = await _dbContext.Documents
+                .SingleOrDefaultAsync(item => item.Id == documentId, cancellationToken)
+                ?? throw new DocumentChunkingException(
+                    "The document is not available for chunking.");
+
             var sourceSections = await _dbContext.DocumentTextSections
                 .AsNoTracking()
                 .Where(section => section.DocumentId == documentId)
@@ -48,6 +58,15 @@ public sealed class DocumentChunkingService : IDocumentChunkingService
             var generatedChunks = _generator.Generate(
                 sourceSections,
                 cancellationToken);
+
+            var embeddingResult = await _embeddingService.GenerateEmbeddingsAsync(
+                generatedChunks.Select(chunk => chunk.Content).ToArray(),
+                cancellationToken);
+            EmbeddingResultValidator.Validate(
+                embeddingResult,
+                generatedChunks.Count,
+                _embeddingOptions.EmbeddingModel,
+                EmbeddingArchitecture.Dimensions);
 
             await using var transaction = await BeginTransactionIfSupportedAsync(
                 cancellationToken);
@@ -71,6 +90,15 @@ public sealed class DocumentChunkingService : IDocumentChunkingService
                 CreatedAtUtc = completedAtUtc
             }).ToArray();
 
+            for (var index = 0; index < chunks.Length; index++)
+            {
+                EmbeddingPersistence.ApplyToChunk(
+                    chunks[index],
+                    embeddingResult.Embeddings[index],
+                    embeddingResult,
+                    completedAtUtc);
+            }
+
             _dbContext.DocumentChunks.AddRange(chunks);
 
             document.Status = DocumentStatus.Ready;
@@ -79,6 +107,11 @@ public sealed class DocumentChunkingService : IDocumentChunkingService
             document.ChunkCount = chunks.Length;
             document.ChunkedAtUtc = completedAtUtc;
             document.ChunkingError = null;
+            EmbeddingPersistence.ApplyToDocument(
+                document,
+                chunks.Length,
+                embeddingResult,
+                completedAtUtc);
             document.UpdatedAtUtc = completedAtUtc;
 
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -88,10 +121,12 @@ public sealed class DocumentChunkingService : IDocumentChunkingService
             }
 
             _logger.LogInformation(
-                "Generated {ChunkCount} chunks for document {DocumentId} in project {ProjectId}.",
+                "Generated and embedded {ChunkCount} chunks for document {DocumentId} in project {ProjectId} using model {EmbeddingModel} with {EmbeddingDimensions} dimensions.",
                 chunks.Length,
                 document.Id,
-                document.ProjectId);
+                document.ProjectId,
+                embeddingResult.Model,
+                embeddingResult.Dimensions);
 
             return new DocumentChunkingResult(chunks.Length, completedAtUtc);
         }
@@ -100,13 +135,17 @@ public sealed class DocumentChunkingService : IDocumentChunkingService
             var safeMessage = exception switch
             {
                 DocumentChunkingException chunkingException => chunkingException.SafeMessage,
+                DocumentEmbeddingException embeddingException => embeddingException.SafeMessage,
                 OperationCanceledException => "Chunk generation was interrupted. Please retry.",
                 _ => "Document chunk generation failed. Please retry."
             };
 
             try
             {
-                await MarkChunkingFailedAsync(documentId, safeMessage);
+                await RestoreReadyAfterFailureAsync(
+                    documentId,
+                    safeMessage,
+                    exception is DocumentEmbeddingException);
             }
             catch (Exception failureUpdateException)
             {
@@ -118,20 +157,25 @@ public sealed class DocumentChunkingService : IDocumentChunkingService
 
             _logger.LogError(
                 exception,
-                "Chunk generation failed for document {DocumentId} in project {ProjectId}.",
-                document.Id,
-                document.ProjectId);
+                "Chunk rebuild failed for document {DocumentId} in project {ProjectId}; the previous authoritative chunks and embeddings were preserved.",
+                documentId,
+                document?.ProjectId);
 
             if (exception is OperationCanceledException)
             {
                 throw;
             }
 
-            throw new DocumentChunkingException(safeMessage, exception);
+            throw exception is DocumentEmbeddingException preservedEmbeddingException
+                ? preservedEmbeddingException
+                : new DocumentChunkingException(safeMessage, exception);
         }
     }
 
-    private async Task MarkChunkingFailedAsync(Guid documentId, string safeMessage)
+    private async Task RestoreReadyAfterFailureAsync(
+        Guid documentId,
+        string safeMessage,
+        bool embeddingFailed)
     {
         _dbContext.ChangeTracker.Clear();
 
@@ -151,14 +195,13 @@ public sealed class DocumentChunkingService : IDocumentChunkingService
             return;
         }
 
-        await DeleteExistingChunksAsync(documentId, CancellationToken.None);
-
-        document.Status = DocumentStatus.Failed;
-        document.ProcessedAtUtc = null;
-        document.ProcessingError = null;
-        document.ChunkCount = 0;
-        document.ChunkedAtUtc = null;
-        document.ChunkingError = Truncate(safeMessage, MaximumErrorLength);
+        document.Status = DocumentStatus.Ready;
+        document.ChunkingError = embeddingFailed
+            ? null
+            : Truncate(safeMessage, MaximumErrorLength);
+        document.EmbeddingError = embeddingFailed
+            ? Truncate(safeMessage, MaximumErrorLength)
+            : null;
         document.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();

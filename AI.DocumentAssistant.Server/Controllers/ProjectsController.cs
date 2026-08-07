@@ -174,6 +174,100 @@ public sealed class ProjectsController : ControllerBase
             return ProjectNotFound();
         }
 
+        if (_dbContext.Database.IsRelational())
+        {
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync(
+                cancellationToken);
+            // FOR UPDATE also conflicts with the key-share lock needed by a concurrent
+            // document insert, so an upload cannot appear after the file snapshot.
+            var lockedProjects = await _dbContext.Projects
+                .FromSqlInterpolated($$"""
+                    SELECT *
+                    FROM "Projects"
+                    WHERE "Id" = {{id}} AND "OwnerId" = {{ownerId}}
+                    FOR UPDATE
+                    """)
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+
+            if (lockedProjects.Count != 1)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return ProjectNotFound();
+            }
+
+            var documents = await _dbContext.Documents
+                .AsNoTracking()
+                .Where(document =>
+                    document.ProjectId == id &&
+                    document.Project.OwnerId == ownerId)
+                .Select(document => new
+                {
+                    document.Id,
+                    document.StoredFileName,
+                    document.Status
+                })
+                .ToListAsync(cancellationToken);
+
+            if (documents.Any(document => document.Status == DocumentStatus.Processing))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Conflict(new ApiErrorResponse(
+                    "The project cannot be deleted while one of its documents is processing or being rebuilt."));
+            }
+
+            var claimedDocuments = await _dbContext.Documents
+                .Where(document =>
+                    document.ProjectId == id &&
+                    document.Project.OwnerId == ownerId &&
+                    document.Status != DocumentStatus.Processing)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(document => document.Status, DocumentStatus.Processing)
+                    .SetProperty(document => document.UpdatedAtUtc, DateTime.UtcNow),
+                    cancellationToken);
+
+            if (claimedDocuments != documents.Count)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Conflict(new ApiErrorResponse(
+                    "The project cannot be deleted while one of its documents is processing or being rebuilt."));
+            }
+
+            foreach (var document in documents)
+            {
+                if (await _fileStorage.ExistsAsync(document.StoredFileName, cancellationToken))
+                {
+                    await _fileStorage.DeleteAsync(document.StoredFileName, cancellationToken);
+                }
+            }
+
+            var deletedProjects = await _dbContext.Projects
+                .Where(project => project.Id == id && project.OwnerId == ownerId)
+                .ExecuteDeleteAsync(cancellationToken);
+            if (deletedProjects != 1)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return ProjectNotFound();
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return NoContent();
+        }
+
+        var hasProcessingDocument = await _dbContext.Documents
+            .AsNoTracking()
+            .AnyAsync(
+                document =>
+                    document.ProjectId == id &&
+                    document.Project.OwnerId == ownerId &&
+                    document.Status == DocumentStatus.Processing,
+                cancellationToken);
+        if (hasProcessingDocument)
+        {
+            return Conflict(new ApiErrorResponse(
+                "The project cannot be deleted while one of its documents is processing or being rebuilt."));
+        }
+
         var storedFileNames = await _dbContext.Documents
             .AsNoTracking()
             .Where(document =>

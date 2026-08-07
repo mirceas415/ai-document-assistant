@@ -3,6 +3,7 @@ using System.Security.Claims;
 using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Data;
+using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Processing;
@@ -10,6 +11,7 @@ using AI.DocumentAssistant.Server.Storage;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace AI.DocumentAssistant.Server.Controllers;
 
@@ -36,6 +38,8 @@ public sealed class DocumentsController : ControllerBase
     private readonly IDocumentProcessingQueue _processingQueue;
     private readonly IDocumentChunkingService _chunkingService;
     private readonly IDocumentNormalizationService _normalizationService;
+    private readonly IDocumentEmbeddingService _embeddingService;
+    private readonly OpenAIEmbeddingOptions _embeddingOptions;
     private readonly ILogger<DocumentsController> _logger;
 
     public DocumentsController(
@@ -44,6 +48,8 @@ public sealed class DocumentsController : ControllerBase
         IDocumentProcessingQueue processingQueue,
         IDocumentChunkingService chunkingService,
         IDocumentNormalizationService normalizationService,
+        IDocumentEmbeddingService embeddingService,
+        IOptions<OpenAIEmbeddingOptions> embeddingOptions,
         ILogger<DocumentsController> logger)
     {
         _dbContext = dbContext;
@@ -51,6 +57,8 @@ public sealed class DocumentsController : ControllerBase
         _processingQueue = processingQueue;
         _chunkingService = chunkingService;
         _normalizationService = normalizationService;
+        _embeddingService = embeddingService;
+        _embeddingOptions = embeddingOptions.Value;
         _logger = logger;
     }
 
@@ -81,36 +89,18 @@ public sealed class DocumentsController : ControllerBase
                 document.ProjectId == projectId &&
                 document.Project.OwnerId == ownerId)
             .OrderByDescending(document => document.CreatedAtUtc)
-            .Select(document => new DocumentSummary(
-                document.Id,
-                document.OriginalFileName,
-                document.ContentType,
-                document.FileSizeBytes,
-                document.Status,
-                document.CreatedAtUtc,
-                document.UpdatedAtUtc,
-                document.ProcessingStartedAtUtc,
-                document.ProcessedAtUtc,
-                document.ExtractedSectionCount,
-                document.ExtractedCharacterCount,
-                document.Status == DocumentStatus.Failed
-                    ? document.ProcessingError
-                    : null,
-                document.ChunkCount,
-                document.ChunkedAtUtc,
-                document.Status == DocumentStatus.Failed
-                    ? document.ChunkingError
-                    : null,
-                document.NormalizedCharacterCount,
-                document.NormalizationRemovedCharacterCount,
-                document.NormalizationChangedSectionCount,
-                document.NormalizedAtUtc,
-                document.Status == DocumentStatus.Failed
-                    ? document.NormalizationError
-                    : null))
             .ToListAsync(cancellationToken);
 
-        return Ok(documents);
+        var embeddingCurrency = await LoadEmbeddingCurrencyAsync(
+            documents,
+            ownerId,
+            cancellationToken);
+
+        return Ok(documents
+            .Select(document => ToSummary(
+                document,
+                embeddingCurrency.GetValueOrDefault(document.Id)))
+            .ToArray());
     }
 
     [HttpGet("{documentId:guid}")]
@@ -126,43 +116,26 @@ public sealed class DocumentsController : ControllerBase
 
         var document = await _dbContext.Documents
             .AsNoTracking()
-            .Where(document =>
-                document.Id == documentId &&
-                document.ProjectId == projectId &&
-                document.Project.OwnerId == ownerId)
-            .Select(document => new DocumentDetails(
-                document.Id,
-                document.ProjectId,
-                document.OriginalFileName,
-                document.ContentType,
-                document.FileSizeBytes,
-                document.Status,
-                document.CreatedAtUtc,
-                document.UpdatedAtUtc,
-                document.ProcessingStartedAtUtc,
-                document.ProcessedAtUtc,
-                document.ExtractedSectionCount,
-                document.ExtractedCharacterCount,
-                document.Status == DocumentStatus.Failed
-                    ? document.ProcessingError
-                    : null,
-                document.ChunkCount,
-                document.ChunkedAtUtc,
-                document.Status == DocumentStatus.Failed
-                    ? document.ChunkingError
-                    : null,
-                document.NormalizedCharacterCount,
-                document.NormalizationRemovedCharacterCount,
-                document.NormalizationChangedSectionCount,
-                document.NormalizedAtUtc,
-                document.Status == DocumentStatus.Failed
-                    ? document.NormalizationError
-                    : null))
-            .SingleOrDefaultAsync(cancellationToken);
+            .SingleOrDefaultAsync(
+                document =>
+                    document.Id == documentId &&
+                    document.ProjectId == projectId &&
+                    document.Project.OwnerId == ownerId,
+                cancellationToken);
 
-        return document is null
-            ? ResourceNotFound()
-            : Ok(document);
+        if (document is null)
+        {
+            return ResourceNotFound();
+        }
+
+        var embeddingCurrency = await LoadEmbeddingCurrencyAsync(
+            [document],
+            ownerId,
+            cancellationToken);
+
+        return Ok(ToDetails(
+            document,
+            embeddingCurrency.GetValueOrDefault(document.Id)));
     }
 
     [HttpPost]
@@ -298,6 +271,7 @@ public sealed class DocumentsController : ControllerBase
         var previousError = document.ProcessingError;
         var previousChunkingError = document.ChunkingError;
         var previousNormalizationError = document.NormalizationError;
+        var previousEmbeddingError = document.EmbeddingError;
 
         if (document.Status == DocumentStatus.Failed)
         {
@@ -305,6 +279,7 @@ public sealed class DocumentsController : ControllerBase
             document.ProcessingError = null;
             document.ChunkingError = null;
             document.NormalizationError = null;
+            document.EmbeddingError = null;
             document.UpdatedAtUtc = DateTime.UtcNow;
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
@@ -317,6 +292,7 @@ public sealed class DocumentsController : ControllerBase
                 document.ProcessingError = previousError;
                 document.ChunkingError = previousChunkingError;
                 document.NormalizationError = previousNormalizationError;
+                document.EmbeddingError = previousEmbeddingError;
                 document.UpdatedAtUtc = DateTime.UtcNow;
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
@@ -440,6 +416,12 @@ public sealed class DocumentsController : ControllerBase
                 "Normalization cannot be rebuilt while the document is processing."));
         }
 
+        if (document.Status != DocumentStatus.Ready)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Normalization can be rebuilt only after processing is complete."));
+        }
+
         var hasSourceSections = await _dbContext.DocumentTextSections
             .AsNoTracking()
             .AnyAsync(section => section.DocumentId == documentId, cancellationToken);
@@ -449,40 +431,13 @@ public sealed class DocumentsController : ControllerBase
                 "Extracted text is required before normalization can be rebuilt."));
         }
 
-        if (_dbContext.Database.IsRelational())
+        if (!await TryClaimRebuildAsync(
+                document,
+                ownerId,
+                cancellationToken))
         {
-            var updated = await _dbContext.Documents
-                .Where(item =>
-                    item.Id == documentId &&
-                    item.ProjectId == projectId &&
-                    item.Project.OwnerId == ownerId &&
-                    item.Status != DocumentStatus.Processing)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(item => item.Status, DocumentStatus.Processing)
-                    .SetProperty(item => item.ProcessingStartedAtUtc, DateTime.UtcNow)
-                    .SetProperty(item => item.ProcessingError, (string?)null)
-                    .SetProperty(item => item.NormalizationError, (string?)null)
-                    .SetProperty(item => item.ChunkingError, (string?)null)
-                    .SetProperty(item => item.UpdatedAtUtc, DateTime.UtcNow),
-                    cancellationToken);
-
-            if (updated == 0)
-            {
-                return Conflict(new ApiErrorResponse(
-                    "Normalization is already being rebuilt."));
-            }
-
-            _dbContext.ChangeTracker.Clear();
-        }
-        else
-        {
-            document.Status = DocumentStatus.Processing;
-            document.ProcessingStartedAtUtc = DateTime.UtcNow;
-            document.ProcessingError = null;
-            document.NormalizationError = null;
-            document.ChunkingError = null;
-            document.UpdatedAtUtc = DateTime.UtcNow;
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            return Conflict(new ApiErrorResponse(
+                "The document is already being processed or rebuilt."));
         }
 
         try
@@ -502,7 +457,13 @@ public sealed class DocumentsController : ControllerBase
                 result.RemovedCharacterCount,
                 result.ChunkCount);
 
-            return Ok(ToDetails(refreshedDocument));
+            return Ok(ToDetails(refreshedDocument, embeddingsAreCurrent: true));
+        }
+        catch (DocumentEmbeddingException exception)
+        {
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                new ApiErrorResponse(exception.SafeMessage));
         }
         catch (DocumentNormalizationException exception)
         {
@@ -595,6 +556,12 @@ public sealed class DocumentsController : ControllerBase
                 "Chunks cannot be rebuilt while the document is processing."));
         }
 
+        if (document.Status != DocumentStatus.Ready)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Chunks can be rebuilt only after processing is complete."));
+        }
+
         var hasSourceSections = await _dbContext.DocumentTextSections
             .AsNoTracking()
             .AnyAsync(
@@ -605,6 +572,15 @@ public sealed class DocumentsController : ControllerBase
         {
             return Conflict(new ApiErrorResponse(
                 "Extracted text is required before chunks can be rebuilt."));
+        }
+
+        if (!await TryClaimRebuildAsync(
+                document,
+                ownerId,
+                cancellationToken))
+        {
+            return Conflict(new ApiErrorResponse(
+                "The document is already being processed or rebuilt."));
         }
 
         try
@@ -619,9 +595,106 @@ public sealed class DocumentsController : ControllerBase
                 projectId,
                 result.ChunkCount);
 
-            return Ok(ToDetails(document));
+            var refreshedDocument = await _dbContext.Documents
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == documentId, cancellationToken);
+
+            return Ok(ToDetails(refreshedDocument, embeddingsAreCurrent: true));
+        }
+        catch (DocumentEmbeddingException exception)
+        {
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                new ApiErrorResponse(exception.SafeMessage));
         }
         catch (DocumentChunkingException exception)
+        {
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                new ApiErrorResponse(exception.SafeMessage));
+        }
+    }
+
+    [HttpPost("{documentId:guid}/embeddings/rebuild")]
+    public async Task<ActionResult<DocumentDetails>> RebuildEmbeddings(
+        Guid projectId,
+        Guid documentId,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetOwnerId(out var ownerId))
+        {
+            return AuthenticationError();
+        }
+
+        var document = await _dbContext.Documents
+            .SingleOrDefaultAsync(
+                item =>
+                    item.Id == documentId &&
+                    item.ProjectId == projectId &&
+                    item.Project.OwnerId == ownerId,
+                cancellationToken);
+
+        if (document is null)
+        {
+            return ResourceNotFound();
+        }
+
+        if (document.Status == DocumentStatus.Processing)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Embeddings cannot be rebuilt while the document is processing."));
+        }
+
+        if (document.Status != DocumentStatus.Ready)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Document chunks must be ready before embeddings can be generated."));
+        }
+
+        var chunkCount = await _dbContext.DocumentChunks
+            .AsNoTracking()
+            .CountAsync(
+                chunk =>
+                    chunk.DocumentId == documentId &&
+                    chunk.Document.ProjectId == projectId &&
+                    chunk.Document.Project.OwnerId == ownerId,
+                cancellationToken);
+
+        if (chunkCount == 0)
+        {
+            return Conflict(new ApiErrorResponse(
+                "Document chunks are required before embeddings can be generated."));
+        }
+
+        if (!await TryClaimRebuildAsync(
+                document,
+                ownerId,
+                cancellationToken))
+        {
+            return Conflict(new ApiErrorResponse(
+                "The document is already being processed or rebuilt."));
+        }
+
+        try
+        {
+            var result = await _embeddingService.RebuildAsync(
+                documentId,
+                cancellationToken);
+            var refreshedDocument = await _dbContext.Documents
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == documentId, cancellationToken);
+
+            _logger.LogInformation(
+                "User-requested embedding rebuild completed for document {DocumentId} in project {ProjectId} with {ChunkCount} chunks using model {EmbeddingModel} with {EmbeddingDimensions} dimensions.",
+                documentId,
+                projectId,
+                result.EmbeddedChunkCount,
+                result.EmbeddingModel,
+                result.EmbeddingDimensions);
+
+            return Ok(ToDetails(refreshedDocument, embeddingsAreCurrent: true));
+        }
+        catch (DocumentEmbeddingException exception)
         {
             return StatusCode(
                 StatusCodes.Status500InternalServerError,
@@ -653,6 +726,58 @@ public sealed class DocumentsController : ControllerBase
             return ResourceNotFound();
         }
 
+        if (document.Status == DocumentStatus.Processing)
+        {
+            return Conflict(new ApiErrorResponse(
+                "The document cannot be deleted while it is processing or being rebuilt."));
+        }
+
+        if (_dbContext.Database.IsRelational())
+        {
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync(
+                cancellationToken);
+            var claimed = await _dbContext.Documents
+                .Where(item =>
+                    item.Id == documentId &&
+                    item.ProjectId == projectId &&
+                    item.Project.OwnerId == ownerId &&
+                    item.Status == document.Status)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Status, DocumentStatus.Processing)
+                    .SetProperty(item => item.UpdatedAtUtc, DateTime.UtcNow),
+                    cancellationToken);
+
+            if (claimed != 1)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Conflict(new ApiErrorResponse(
+                    "The document cannot be deleted while it is processing or being rebuilt."));
+            }
+
+            if (await _fileStorage.ExistsAsync(document.StoredFileName, cancellationToken))
+            {
+                await _fileStorage.DeleteAsync(document.StoredFileName, cancellationToken);
+            }
+
+            var deleted = await _dbContext.Documents
+                .Where(item =>
+                    item.Id == documentId &&
+                    item.ProjectId == projectId &&
+                    item.Project.OwnerId == ownerId &&
+                    item.Status == DocumentStatus.Processing)
+                .ExecuteDeleteAsync(cancellationToken);
+
+            if (deleted != 1)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Conflict(new ApiErrorResponse(
+                    "The document could not be deleted because its state changed."));
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return NoContent();
+        }
+
         if (await _fileStorage.ExistsAsync(document.StoredFileName, cancellationToken))
         {
             await _fileStorage.DeleteAsync(document.StoredFileName, cancellationToken);
@@ -662,6 +787,52 @@ public sealed class DocumentsController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         return NoContent();
+    }
+
+    private async Task<bool> TryClaimRebuildAsync(
+        Document document,
+        Guid ownerId,
+        CancellationToken cancellationToken)
+    {
+        var expectedStatus = document.Status;
+        var now = DateTime.UtcNow;
+
+        if (_dbContext.Database.IsRelational())
+        {
+            var updated = await _dbContext.Documents
+                .Where(item =>
+                    item.Id == document.Id &&
+                    item.ProjectId == document.ProjectId &&
+                    item.Project.OwnerId == ownerId &&
+                    item.Status == expectedStatus)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Status, DocumentStatus.Processing)
+                    .SetProperty(item => item.ProcessingStartedAtUtc, now)
+                    .SetProperty(item => item.ProcessingError, (string?)null)
+                    .SetProperty(item => item.NormalizationError, (string?)null)
+                    .SetProperty(item => item.ChunkingError, (string?)null)
+                    .SetProperty(item => item.EmbeddingError, (string?)null)
+                    .SetProperty(item => item.UpdatedAtUtc, now),
+                    cancellationToken);
+
+            _dbContext.ChangeTracker.Clear();
+            return updated == 1;
+        }
+
+        if (document.Status != expectedStatus)
+        {
+            return false;
+        }
+
+        document.Status = DocumentStatus.Processing;
+        document.ProcessingStartedAtUtc = now;
+        document.ProcessingError = null;
+        document.NormalizationError = null;
+        document.ChunkingError = null;
+        document.EmbeddingError = null;
+        document.UpdatedAtUtc = now;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     private async Task<FileValidationResult> ValidateFileAsync(
@@ -798,7 +969,106 @@ public sealed class DocumentsController : ControllerBase
             "File validation failed.",
             new Dictionary<string, string[]> { ["file"] = [error] }));
 
-    private static DocumentDetails ToDetails(Document document) =>
+    private async Task<IReadOnlyDictionary<Guid, bool>> LoadEmbeddingCurrencyAsync(
+        IReadOnlyList<Document> documents,
+        Guid ownerId,
+        CancellationToken cancellationToken)
+    {
+        var candidates = documents
+            .Where(HasCurrentEmbeddingAggregate)
+            .ToDictionary(document => document.Id);
+        if (candidates.Count == 0)
+        {
+            return new Dictionary<Guid, bool>();
+        }
+
+        var candidateIds = candidates.Keys.ToArray();
+        var chunkStates = await _dbContext.DocumentChunks
+            .AsNoTracking()
+            .Where(chunk =>
+                candidateIds.Contains(chunk.DocumentId) &&
+                chunk.Document.Project.OwnerId == ownerId)
+            .Select(chunk => new ChunkEmbeddingCurrency(
+                chunk.DocumentId,
+                chunk.Content,
+                chunk.Embedding != null,
+                chunk.EmbeddingModel,
+                chunk.EmbeddingDimensions,
+                chunk.EmbeddingContentHash,
+                chunk.EmbeddedAtUtc))
+            .ToListAsync(cancellationToken);
+
+        var chunksByDocument = chunkStates
+            .GroupBy(chunk => chunk.DocumentId)
+            .ToDictionary(group => group.Key, group => group.ToArray());
+        var result = new Dictionary<Guid, bool>(candidates.Count);
+
+        foreach (var (documentId, document) in candidates)
+        {
+            result[documentId] = chunksByDocument.TryGetValue(documentId, out var chunks) &&
+                chunks.Length == document.ChunkCount &&
+                chunks.All(chunk =>
+                    chunk.HasEmbedding &&
+                    string.Equals(
+                        chunk.EmbeddingModel,
+                        _embeddingOptions.EmbeddingModel,
+                        StringComparison.Ordinal) &&
+                    chunk.EmbeddingDimensions == _embeddingOptions.EmbeddingDimensions &&
+                    chunk.EmbeddedAtUtc == document.EmbeddedAtUtc &&
+                    string.Equals(
+                        chunk.EmbeddingContentHash,
+                        EmbeddingContentHasher.Compute(chunk.Content),
+                        StringComparison.Ordinal));
+        }
+
+        return result;
+    }
+
+    private bool HasCurrentEmbeddingAggregate(Document document) =>
+        document.Status == DocumentStatus.Ready &&
+        document.ChunkCount > 0 &&
+        document.EmbeddedChunkCount == document.ChunkCount &&
+        string.Equals(
+            document.EmbeddingModel,
+            _embeddingOptions.EmbeddingModel,
+            StringComparison.Ordinal) &&
+        document.EmbeddingDimensions == _embeddingOptions.EmbeddingDimensions &&
+        document.EmbeddedAtUtc is not null;
+
+    private static DocumentSummary ToSummary(
+        Document document,
+        bool embeddingsAreCurrent) =>
+        new(
+            document.Id,
+            document.OriginalFileName,
+            document.ContentType,
+            document.FileSizeBytes,
+            document.Status,
+            document.CreatedAtUtc,
+            document.UpdatedAtUtc,
+            document.ProcessingStartedAtUtc,
+            document.ProcessedAtUtc,
+            document.ExtractedSectionCount,
+            document.ExtractedCharacterCount,
+            document.ProcessingError,
+            document.ChunkCount,
+            document.ChunkedAtUtc,
+            document.ChunkingError,
+            document.NormalizedCharacterCount,
+            document.NormalizationRemovedCharacterCount,
+            document.NormalizationChangedSectionCount,
+            document.NormalizedAtUtc,
+            document.NormalizationError,
+            document.EmbeddedChunkCount,
+            document.EmbeddingModel,
+            document.EmbeddingDimensions,
+            document.EmbeddedAtUtc,
+            document.EmbeddingError,
+            embeddingsAreCurrent);
+
+    private DocumentDetails ToDetails(
+        Document document,
+        bool embeddingsAreCurrent = false) =>
         new(
             document.Id,
             document.ProjectId,
@@ -812,21 +1082,21 @@ public sealed class DocumentsController : ControllerBase
             document.ProcessedAtUtc,
             document.ExtractedSectionCount,
             document.ExtractedCharacterCount,
-            document.Status == DocumentStatus.Failed
-                ? document.ProcessingError
-                : null,
+            document.ProcessingError,
             document.ChunkCount,
             document.ChunkedAtUtc,
-            document.Status == DocumentStatus.Failed
-                ? document.ChunkingError
-                : null,
+            document.ChunkingError,
             document.NormalizedCharacterCount,
             document.NormalizationRemovedCharacterCount,
             document.NormalizationChangedSectionCount,
             document.NormalizedAtUtc,
-            document.Status == DocumentStatus.Failed
-                ? document.NormalizationError
-                : null);
+            document.NormalizationError,
+            document.EmbeddedChunkCount,
+            document.EmbeddingModel,
+            document.EmbeddingDimensions,
+            document.EmbeddedAtUtc,
+            document.EmbeddingError,
+            embeddingsAreCurrent);
 
     private sealed record ValidatedFile(
         string OriginalFileName,
@@ -839,4 +1109,13 @@ public sealed class DocumentsController : ControllerBase
 
         public static FileValidationResult Invalid(string error) => new(null, error);
     }
+
+    private sealed record ChunkEmbeddingCurrency(
+        Guid DocumentId,
+        string Content,
+        bool HasEmbedding,
+        string? EmbeddingModel,
+        int? EmbeddingDimensions,
+        string? EmbeddingContentHash,
+        DateTime? EmbeddedAtUtc);
 }

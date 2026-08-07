@@ -2,16 +2,16 @@
 
 ## Overview
 
-AI Document Assistant is a modular monolith with an ASP.NET Core 10 backend, a React and TypeScript frontend, PostgreSQL persistence through Entity Framework Core, and local document storage. The application currently supports authenticated, user-owned projects, PDF and DOCX upload, background text extraction, conservative extraction normalization, deterministic retrieval chunk generation, and inspection or rebuilding of normalized content and stored chunks.
+AI Document Assistant is a modular monolith with an ASP.NET Core 10 backend, a React and TypeScript frontend, PostgreSQL persistence through Entity Framework Core and pgvector, OpenAI embedding generation, and local document storage. The application supports authenticated, user-owned projects, PDF and DOCX upload, background text extraction, conservative extraction normalization, deterministic retrieval chunk generation, embedding persistence, and explicit rebuild or inspection operations.
 
-Milestone 5.2 deliberately stops before embeddings or retrieval. There are no OpenAI API calls, embedding columns, vector extensions, vector searches, semantic search, classification, chat features, OCR, cloud storage, external message queues, or microservices.
+Milestone 6 ends at embedding generation and storage. There is no vector retrieval, nearest-neighbor query, query embedding, vector index, semantic search, hybrid search, reranking, chat, RAG answering, classification, OCR, cloud storage, external message queue, or generic AI orchestration framework.
 
 ## Components
 
-- `AI.DocumentAssistant.Server` hosts the JSON API, cookie authentication, static frontend output, EF Core data access, file storage, extraction pipeline, in-memory background queue, and chunking services.
+- `AI.DocumentAssistant.Server` hosts the JSON API, cookie authentication, static frontend output, EF Core data access, file storage, extraction pipeline, in-memory background queue, chunking services, the application embedding abstraction, and the OpenAI adapter.
 - `ai.documentassistant.client` is a React 19 and TypeScript single-page application built with Vite.
 - `AI.DocumentAssistant.Server.Tests` contains xUnit tests using EF Core's in-memory provider plus generated PDF and DOCX fixtures.
-- PostgreSQL is the production relational database.
+- PostgreSQL is the production relational database. The pgvector extension stores embeddings through the provider's first-class `Vector` type; vectors are not manually serialized.
 - The local `Uploads` directory stores uploaded PDF and DOCX files under generated filenames. Stored paths and uploaded files are not exposed through the API.
 
 ## Entities and Relationships
@@ -32,13 +32,15 @@ A user-owned workspace with a name, optional description, and timestamps. Deleti
 
 ### Document
 
-Stores the project relationship, safe original filename, generated storage filename, MIME type, size, processing status, extraction metadata, chunking metadata, and safe public errors.
+Stores the project relationship, safe original filename, generated storage filename, MIME type, size, processing status, extraction, normalization, chunking, and aggregate embedding metadata, plus bounded safe public errors.
 
 Important chunking fields are:
 
 - `ChunkCount`
 - `ChunkedAtUtc`
 - `ChunkingError`
+
+Embedding aggregates are `EmbeddedChunkCount`, `EmbeddingModel`, `EmbeddingDimensions`, `EmbeddedAtUtc`, and `EmbeddingError`. They cheaply exclude legacy or configuration-mismatched documents without returning vectors. For aggregate candidates, list/detail reads verify every chunk's vector presence, model, dimensions, timestamp, and SHA-256 against its exact current content before returning `EmbeddingsAreCurrent`; the aggregate is not treated as a substitute for chunk-row validation.
 
 ### DocumentTextSection
 
@@ -48,7 +50,16 @@ The document row stores useful aggregates: normalized character count, removed c
 
 ### DocumentChunk
 
-The ordered retrieval unit derived from one or more source sections. It stores content, exact tokenizer count, character count, page range, heading, source-section range, and creation time. `(DocumentId, ChunkIndex)` is unique. Document deletion cascades to chunks.
+The ordered retrieval unit derived from one or more source sections. It stores content, exact tokenizer count, character count, page range, heading, source-section range, creation time, and nullable embedding data. `(DocumentId, ChunkIndex)` is unique. Document deletion cascades to chunks, so the vector disappears with its owning chunk and no external vector-store cleanup is needed.
+
+The embedding fields are:
+
+- `Embedding`: the provider `Vector` value mapped to PostgreSQL `vector(1536)`;
+- `EmbeddingModel` and `EmbeddingDimensions`: the exact configuration that produced it;
+- `EmbeddingContentHash`: uppercase hexadecimal SHA-256 of the exact UTF-8 `DocumentChunk.Content` sent for embedding; and
+- `EmbeddedAtUtc`: the successful generation time.
+
+The hash is deterministic integrity/staleness metadata, not a security mechanism. An embedding is current only when the vector exists, model and dimensions match current configuration, and the stored hash matches the exact current chunk content. Chunk replacement always creates and embeds new rows; embeddings are never copied by chunk index, page number, or section index.
 
 ## Authentication and Ownership
 
@@ -72,11 +83,17 @@ All project and document endpoints require authentication. Queries include the c
 3. PDF extraction reads pages in order and records page numbers.
 4. DOCX extraction reads paragraphs and tables in order, grouping Heading 1–3 content and retaining the heading as section metadata.
 5. Extracted sections remain in memory as raw source data while normalization runs.
-6. Chunks are generated from normalized sections.
-7. Existing sections and chunks are replaced together in one transaction, with raw and normalized values stored on each section.
-8. The document becomes `Ready` only after extraction, normalization, chunk generation, and persistence all succeed.
+6. Chunks are generated from normalized sections in memory.
+7. The exact generated chunk contents are embedded and the complete result is validated in memory.
+8. Only then does a database transaction replace sections and chunks, attach their vectors and metadata, update document aggregates, and set the document to `Ready`.
 
-An extraction, normalization, or chunk generation failure leaves no partial new sections or chunks, sets the document to `Failed`, stores the bounded safe error in the stage-specific metadata, keeps the uploaded file for retry, and logs the technical exception without logging document text or physical paths.
+The complete flow is:
+
+```text
+Upload -> Extract -> Normalize -> Chunk -> Embed -> Persist -> Ready
+```
+
+`Processing` covers extraction through embedding; no separate status is needed. An extraction, normalization, chunking, or embedding failure during initial/retry processing leaves no partial new authoritative sections, chunks, or embeddings, sets the document to `Failed`, stores a bounded stage-safe error, and keeps the uploaded file for retry. Retrying reopens the existing uploaded file and runs the complete current pipeline. Technical exceptions are logged without document text, physical paths, vectors, credentials, authorization headers, or provider response bodies.
 
 ## Normalization Flow
 
@@ -139,27 +156,59 @@ The transformation is deterministic and idempotent with respect to output conten
 5. Oversized sentences use tokenizer character indexes and backtrack to whitespace where possible, avoiding broken words and UTF-16 surrogate pairs.
 6. The short final chunk is merged or rebalanced where the maximum allows. A short document produces one chunk.
 7. Overlap copies useful whole trailing paragraphs or sentences when possible. If a unit is too large, a tokenizer-bounded suffix is used. The generator never copies an entire previous chunk as overlap.
-8. Generated chunks replace previous rows inside a transaction. Overlap is derived only from the same normalized source passed to the generator, so removed boilerplate cannot be reintroduced.
+8. Generated chunks are embedded before replacement; after all vectors pass validation, chunks and their embeddings replace previous rows inside one database transaction. Overlap is derived only from the same normalized source passed to the generator, so removed boilerplate cannot be reintroduced.
 
 Chunk generation uses Microsoft's `Microsoft.ML.Tokenizers` with the `cl100k_base` tiktoken BPE data. Counts are real tokenizer counts, not word-based estimates. Romanian, English, mixed-language, and other Unicode content remain .NET strings and PostgreSQL `text` without ASCII conversion.
 
-A chunking failure removes chunks, retains stored source sections, clears chunk metadata, sets the document to `Failed`, stores a bounded safe `ChunkingError`, keeps the uploaded file, and logs the technical exception.
+A chunking failure in initial processing produces `Failed` as described above. A failure during an explicit chunk rebuild preserves the previous authoritative chunks and embeddings and returns the document to `Ready` with a bounded safe stage error.
 
-## Normalization and Chunk Rebuild Flow
+## Embedding Flow
 
-`POST /api/projects/{projectId}/documents/{documentId}/normalization/rebuild` authenticates the user, filters ownership in SQL, requires stored raw sections, and atomically changes the document to `Processing` before work begins. This prevents concurrent duplicate rebuilds. It reruns normalization from `DocumentTextSection.Content`, regenerates chunks from normalized results, and transactionally replaces normalized fields and chunk rows without opening the uploaded file. A failure clears partial normalized/chunk data, preserves raw content, and marks the document `Failed` with a safe error.
+Application and processing code depend on the small batch-oriented `ITextEmbeddingService`, not OpenAI SDK response types. `OpenAITextEmbeddingService` validates non-empty inputs, divides them into sequential bounded batches, preserves input/output order across batches, and validates result count, dimensions, and finite vector values. `OpenAISdkEmbeddingClient` is the narrow adapter over the official OpenAI .NET SDK and requests the configured dimensions while propagating `CancellationToken`.
+
+The default configuration is:
+
+```json
+"OpenAI": {
+  "EmbeddingModel": "text-embedding-3-small",
+  "EmbeddingDimensions": 1536,
+  "BatchSize": 32
+}
+```
+
+Model and batch size are configurable. Batch size must be between 1 and 128 and defaults to 32; batches are deliberately sequential for predictable ordering, cost, and provider load. Dimensions are represented in configuration and sent explicitly to OpenAI, but the current persistence architecture requires exactly 1536. Startup validation rejects a different value because changing PostgreSQL `vector(1536)` requires an EF migration. Existing chunk sizes of at most 900 `cl100k_base` tokens are comfortably below the selected model's per-input limit, so embedding does not re-chunk or preprocess content. Romanian diacritics, English, mixed-language text, and other Unicode are passed unchanged.
+
+The adapter relies on the official SDK's bounded built-in retry behavior for transient provider and transport failures. There is no second application-level retry loop and no additional resilience package, avoiding stacked retry amplification. The SDK's network-timeout behavior is retained rather than adding a second application timeout layer. Cancellation and permanent configuration or validation failures are not retried indefinitely. A missing API key does not prevent restore, build, tests, migration generation, or EF model inspection; it fails safely only when an embedding request is invoked. The key is read only through backend ASP.NET Core configuration, is not stored in repository configuration or frontend code, and is never logged.
+
+For initial processing and normalization/chunk rebuilds, all OpenAI batches must finish and the full result must pass model, count, order, dimension, and finite-value checks before the database transaction begins. Therefore a failure after one or more successful batches persists none of those partial results. The transaction contains only database replacement and metadata/status updates; it is not held open across OpenAI network calls.
+
+PostgreSQL vector support is registered through Npgsql/EF Core pgvector integration. The EF model enables the `vector` database extension and maps `DocumentChunk.Embedding` to nullable `vector(1536)` for historical compatibility. The migration emits `CREATE EXTENSION IF NOT EXISTS vector`; its rollback removes Milestone 6 columns but deliberately does not drop the pre-existing database-level extension. There is intentionally no HNSW or IVFFlat index and no chosen distance metric in Milestone 6; index, metric, and query shape belong to Milestone 7.
+
+Structured embedding logs contain safe aggregates such as document/project IDs, chunk and batch counts, batch size, model, dimensions, operation, duration, and outcome. They never contain raw or normalized document text, chunk contents, vectors, credentials, secrets, authorization headers, connection strings, or provider response bodies.
+
+Embedding calls occur only for a newly processed upload, explicit processing retry, normalization rebuild, chunk rebuild, or explicit embedding generation/rebuild. GET endpoints, polling, startup, rendering, and recurring background work never create embeddings, and historical documents are not silently backfilled.
+
+## Normalization, Chunk, and Embedding Rebuild Flow
+
+`POST /api/projects/{projectId}/documents/{documentId}/normalization/rebuild` authenticates the user, filters ownership in SQL, requires a `Ready` document with stored raw sections, and atomically changes the document to `Processing` before work begins. It reruns normalization from `DocumentTextSection.Content`, regenerates chunks, generates fresh embeddings, and replaces normalized fields, chunks, vectors, and aggregate metadata in one transaction without opening the uploaded file. If normalization, chunking, or embedding fails before commit, the prior authoritative normalized content, chunks, and embeddings remain intact; the document returns to `Ready` with a bounded safe stage error.
 
 `GET /api/projects/{projectId}/documents/{documentId}/text?view=raw|normalized` returns ordered DTOs with section/page/title data and raw versus normalized character statistics. A normalized request returns conflict until normalization exists. It never returns EF entities, storage names, or physical paths.
 
-`POST /api/projects/{projectId}/documents/{documentId}/chunks/rebuild` authenticates the user, verifies ownership, requires stored text sections, and synchronously regenerates chunks from those rows. It does not open the uploaded file or rerun extraction. Replacement and metadata updates are transactional.
+`POST /api/projects/{projectId}/documents/{documentId}/chunks/rebuild` authenticates the user, verifies ownership, requires a `Ready` document with stored text sections, and synchronously regenerates chunks from those rows. It does not open the uploaded file or rerun extraction or normalization. It generates fresh embeddings for every replacement chunk and commits chunks, vectors, and metadata together. A failure preserves the previous authoritative chunk/embedding set.
 
-`GET /api/projects/{projectId}/documents/{documentId}/chunks` returns ordered chunk content and metadata for a Ready document.
+`POST /api/projects/{projectId}/documents/{documentId}/embeddings/rebuild` authenticates the user and enforces document ownership in SQL. It requires existing chunks and rejects conflicting active processing. It reads persisted `DocumentChunk.Content` in chunk-index order and does not open the uploaded file, extract, normalize, or re-chunk. It intentionally regenerates all embeddings even when the existing set is current. After complete external generation, it starts a transaction, reloads the document and chunks, verifies IDs, indexes, and contents are unchanged, and atomically replaces only vector values and embedding metadata. A failure preserves every previous vector and leaves the document readable, while returning a safe error.
+
+Historical `Ready` documents remain readable after migration with nullable vectors and zero/null embedding metadata. API metadata identifies them as not embedded, and the frontend offers explicit Generate Embeddings. They are never embedded automatically because doing so would create unexpected provider cost.
+
+`GET /api/projects/{projectId}/documents/{documentId}/chunks` returns ordered chunk content and source metadata for a Ready document. Vector values and provider storage types are never included in chunk, document, section, list, or detail DTOs; the frontend receives only safe aggregate embedding metadata.
 
 ## Background Queue
 
 The queue is a bounded in-memory `Channel<Guid>` with capacity 100 and duplicate scheduling protection. One hosted worker reads document IDs, creates a dependency-injection scope for each job, calls the processing service, logs the outcome, and releases the scheduling marker.
 
 The queue is intentionally not durable. An application restart can lose pending IDs, so Uploaded and Failed documents can be queued manually from the UI. A durable message broker is outside the current milestone.
+
+Queue duplicate markers, conditional database status claims, and document consistency rechecks coordinate work. Rebuild and deletion claims serialize conflicting operations through PostgreSQL row updates; document and project deletion refuse active work. The background queue and its duplicate markers remain process-local, however, and there is no durable distributed job lock. Multiple server instances can still race when scheduling full processing unless deployment adds cross-process coordination; Redis, message brokers, and distributed locking remain outside this milestone.
 
 ## Frontend State
 
@@ -168,9 +217,9 @@ The project detail page polls while a document is Uploaded or Processing. A succ
 - Uploaded: Process and Delete.
 - Processing: state only; no document action buttons.
 - Failed: Retry and Delete.
-- Ready: inspect raw/normalized text, view chunks, rebuild normalization, rebuild chunks, and delete. Process and Retry are never rendered.
+- Ready: inspect raw/normalized text, view chunks, rebuild normalization, rebuild chunks, explicitly generate/rebuild embeddings, and delete. Process and Retry are never rendered.
 
-Normalization and chunk rebuilds require browser confirmation. Document cards show concise raw/normalized/removed/changed statistics. Normalized text is fetched only while the text viewer is open and the normalized tab is selected. Successful normalization refreshes document metadata and an open chunk viewer.
+Normalization, chunk, and embedding rebuilds require browser confirmation; the embedding confirmation also makes API-credit usage explicit. Document cards show concise raw/normalized/chunk statistics plus Embedded, Not embedded, or Needs rebuild state, embedded chunk count, model, dimensions, and time. They never display vectors. Action loading state disables conflicting actions for that document, and successful requests refresh metadata. Normalized text is fetched only while the viewer is open and its normalized tab is selected. No React effect or polling path generates embeddings.
 
 ## Completed Milestones
 
@@ -181,7 +230,8 @@ Normalization and chunk rebuilds require browser confirmation. Document cards sh
 - Milestone 5: Deterministic multilingual chunking, exact token counts, overlap, chunk persistence, rebuild/list APIs, frontend viewer/rebuild controls, tests, and documentation.
 - Milestone 5.1: Raw-preserving extraction normalization, conservative PDF boilerplate/page-number cleanup, safe word-break repair, normalized chunk sources, inspection/rebuild APIs, frontend controls, migration, tests, and documentation.
 - Milestone 5.2: General-purpose long page-edge block detection, line-wrap-tolerant canonical comparison, dense local template support, stricter body/heading safeguards, stress tests, and aggregate-only real-PDF verification.
+- Milestone 6: OpenAI embedding abstraction and adapter, bounded batch generation, pgvector `vector(1536)` persistence, configuration and staleness metadata, atomic pipeline/rebuild integration, legacy-document generation, safe frontend reporting, tests, migration, and documentation.
 
 ## Remaining Roadmap
 
-The next planned milestone is embeddings and PostgreSQL vector support. Semantic retrieval, AI chat, and deployment remain later and separate; see `ROADMAP.md`.
+The next planned milestone is Milestone 7, semantic retrieval/search. It will choose the distance metric, ownership-filtered query shape, and vector index strategy. Query embeddings, retrieval, AI chat, and deployment remain later and separate; see `ROADMAP.md`.

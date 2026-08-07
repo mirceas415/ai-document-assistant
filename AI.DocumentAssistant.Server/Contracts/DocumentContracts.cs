@@ -23,7 +23,13 @@ public sealed record DocumentSummary(
     long NormalizationRemovedCharacterCount,
     int NormalizationChangedSectionCount,
     DateTime? NormalizedAtUtc,
-    string? NormalizationError);
+    string? NormalizationError,
+    int EmbeddedChunkCount,
+    string? EmbeddingModel,
+    int? EmbeddingDimensions,
+    DateTime? EmbeddedAtUtc,
+    string? EmbeddingError,
+    bool EmbeddingsAreCurrent);
 
 public sealed record DocumentDetails(
     Guid Id,
@@ -46,7 +52,13 @@ public sealed record DocumentDetails(
     long NormalizationRemovedCharacterCount,
     int NormalizationChangedSectionCount,
     DateTime? NormalizedAtUtc,
-    string? NormalizationError);
+    string? NormalizationError,
+    int EmbeddedChunkCount,
+    string? EmbeddingModel,
+    int? EmbeddingDimensions,
+    DateTime? EmbeddedAtUtc,
+    string? EmbeddingError,
+    bool EmbeddingsAreCurrent);
 
 public sealed record ExtractedTextSectionResponse(
     int SectionIndex,

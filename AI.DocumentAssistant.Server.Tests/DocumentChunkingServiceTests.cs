@@ -1,5 +1,6 @@
 using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
+using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -14,7 +15,8 @@ public sealed class DocumentChunkingServiceTests
     public async Task RebuildReplacesChunksFromStoredSectionsAndUpdatesMetadata()
     {
         await using var database = await ChunkingTestDatabase.CreateAsync();
-        var service = database.CreateService(CreateGenerator());
+        var embeddingService = new DeterministicTextEmbeddingService();
+        var service = database.CreateService(CreateGenerator(), embeddingService);
 
         var result = await service.RebuildAsync(
             database.DocumentId,
@@ -30,15 +32,23 @@ public sealed class DocumentChunkingServiceTests
         Assert.Equal(result.ChunkCount, document.ChunkCount);
         Assert.Equal(result.ChunkedAtUtc, document.ChunkedAtUtc);
         Assert.Null(document.ChunkingError);
+        Assert.Equal(chunks.Count, document.EmbeddedChunkCount);
+        Assert.Equal(EmbeddingArchitecture.DefaultModel, document.EmbeddingModel);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, document.EmbeddingDimensions);
+        Assert.NotNull(document.EmbeddedAtUtc);
+        Assert.Null(document.EmbeddingError);
         Assert.DoesNotContain(chunks, chunk => chunk.Content == "Old chunk");
         Assert.Contains(chunks, chunk => chunk.Content.Contains(
             "Secțiune stocată cu diacritice",
             StringComparison.Ordinal));
         Assert.Equal(Enumerable.Range(0, chunks.Count), chunks.Select(chunk => chunk.ChunkIndex));
+        Assert.All(chunks, AssertCompleteEmbedding);
+        Assert.Single(embeddingService.Calls);
+        Assert.Equal(chunks.Select(chunk => chunk.Content), embeddingService.Calls[0]);
     }
 
     [Fact]
-    public async Task RebuildFailureRemovesPreviousChunksAndKeepsSourceSections()
+    public async Task ChunkGenerationFailurePreservesPreviousChunksEmbeddingsAndSourceSections()
     {
         await using var database = await ChunkingTestDatabase.CreateAsync();
         var service = database.CreateService(new ThrowingGenerator());
@@ -48,14 +58,55 @@ public sealed class DocumentChunkingServiceTests
 
         database.Context.ChangeTracker.Clear();
         var document = await database.Context.Documents.SingleAsync();
+        var chunk = await database.Context.DocumentChunks.SingleAsync();
 
         Assert.Equal("Rebuild failed safely.", exception.SafeMessage);
-        Assert.Equal(DocumentStatus.Failed, document.Status);
+        Assert.Equal(DocumentStatus.Ready, document.Status);
         Assert.Equal("Rebuild failed safely.", document.ChunkingError);
-        Assert.Equal(0, document.ChunkCount);
-        Assert.Null(document.ChunkedAtUtc);
-        Assert.Empty(await database.Context.DocumentChunks.ToListAsync());
+        Assert.Equal(1, document.ChunkCount);
+        Assert.NotNull(document.ChunkedAtUtc);
+        Assert.Equal(database.OldChunkId, chunk.Id);
+        Assert.Equal("Old chunk", chunk.Content);
+        AssertCompleteEmbedding(chunk);
         Assert.Equal(2, await database.Context.DocumentTextSections.CountAsync());
+    }
+
+    [Fact]
+    public async Task EmbeddingFailurePreservesPreviousAuthoritativeChunksAndEmbeddings()
+    {
+        await using var database = await ChunkingTestDatabase.CreateAsync();
+        var embeddingService = new DeterministicTextEmbeddingService { RemainingFailures = 1 };
+        var service = database.CreateService(CreateGenerator(), embeddingService);
+
+        var exception = await Assert.ThrowsAsync<DocumentEmbeddingException>(
+            () => service.RebuildAsync(database.DocumentId, CancellationToken.None));
+
+        database.Context.ChangeTracker.Clear();
+        var document = await database.Context.Documents.SingleAsync();
+        var chunk = await database.Context.DocumentChunks.SingleAsync();
+
+        Assert.Equal("Document embeddings could not be generated. Please try again.", exception.SafeMessage);
+        Assert.Equal(DocumentStatus.Ready, document.Status);
+        Assert.Null(document.ChunkingError);
+        Assert.Equal(exception.SafeMessage, document.EmbeddingError);
+        Assert.Equal(database.OldChunkId, chunk.Id);
+        Assert.Equal("Old chunk", chunk.Content);
+        AssertCompleteEmbedding(chunk);
+        Assert.Equal(1, document.EmbeddedChunkCount);
+        Assert.Equal(EmbeddingArchitecture.DefaultModel, document.EmbeddingModel);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, document.EmbeddingDimensions);
+        Assert.NotNull(document.EmbeddedAtUtc);
+        Assert.Single(embeddingService.Calls);
+    }
+
+    private static void AssertCompleteEmbedding(DocumentChunk chunk)
+    {
+        Assert.NotNull(chunk.Embedding);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, chunk.Embedding!.ToArray().Length);
+        Assert.Equal(EmbeddingArchitecture.DefaultModel, chunk.EmbeddingModel);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, chunk.EmbeddingDimensions);
+        Assert.Equal(EmbeddingContentHasher.Compute(chunk.Content), chunk.EmbeddingContentHash);
+        Assert.NotNull(chunk.EmbeddedAtUtc);
     }
 
     private static IDocumentChunkGenerator CreateGenerator() =>
@@ -75,15 +126,19 @@ public sealed class DocumentChunkingServiceTests
     {
         private ChunkingTestDatabase(
             ApplicationDbContext context,
-            Guid documentId)
+            Guid documentId,
+            Guid oldChunkId)
         {
             Context = context;
             DocumentId = documentId;
+            OldChunkId = oldChunkId;
         }
 
         public ApplicationDbContext Context { get; }
 
         public Guid DocumentId { get; }
+
+        public Guid OldChunkId { get; }
 
         public static async Task<ChunkingTestDatabase> CreateAsync()
         {
@@ -95,6 +150,7 @@ public sealed class DocumentChunkingServiceTests
 
             var now = DateTime.UtcNow;
             var documentId = Guid.NewGuid();
+            var oldChunkId = Guid.NewGuid();
             var owner = new ApplicationUser
             {
                 Id = Guid.NewGuid(),
@@ -128,7 +184,11 @@ public sealed class DocumentChunkingServiceTests
                 ExtractedSectionCount = 2,
                 ExtractedCharacterCount = 83,
                 ChunkCount = 1,
-                ChunkedAtUtc = now
+                ChunkedAtUtc = now,
+                EmbeddedChunkCount = 1,
+                EmbeddingModel = EmbeddingArchitecture.DefaultModel,
+                EmbeddingDimensions = EmbeddingArchitecture.Dimensions,
+                EmbeddedAtUtc = now
             };
 
             context.Documents.Add(document);
@@ -154,7 +214,7 @@ public sealed class DocumentChunkingServiceTests
                 });
             context.DocumentChunks.Add(new DocumentChunk
             {
-                Id = Guid.NewGuid(),
+                Id = oldChunkId,
                 DocumentId = documentId,
                 ChunkIndex = 0,
                 Content = "Old chunk",
@@ -162,17 +222,26 @@ public sealed class DocumentChunkingServiceTests
                 TokenCount = 2,
                 SourceSectionStartIndex = 0,
                 SourceSectionEndIndex = 0,
+                Embedding = new Pgvector.Vector(new float[EmbeddingArchitecture.Dimensions]),
+                EmbeddingModel = EmbeddingArchitecture.DefaultModel,
+                EmbeddingDimensions = EmbeddingArchitecture.Dimensions,
+                EmbeddingContentHash = EmbeddingContentHasher.Compute("Old chunk"),
+                EmbeddedAtUtc = now,
                 CreatedAtUtc = now
             });
 
             await context.SaveChangesAsync();
-            return new ChunkingTestDatabase(context, documentId);
+            return new ChunkingTestDatabase(context, documentId, oldChunkId);
         }
 
-        public DocumentChunkingService CreateService(IDocumentChunkGenerator generator) =>
+        public DocumentChunkingService CreateService(
+            IDocumentChunkGenerator generator,
+            ITextEmbeddingService? embeddingService = null) =>
             new(
                 Context,
                 generator,
+                embeddingService ?? new DeterministicTextEmbeddingService(),
+                Options.Create(new OpenAIEmbeddingOptions()),
                 NullLogger<DocumentChunkingService>.Instance);
 
         public async ValueTask DisposeAsync() => await Context.DisposeAsync();

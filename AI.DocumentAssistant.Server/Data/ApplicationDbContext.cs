@@ -1,3 +1,4 @@
+using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
@@ -24,6 +25,8 @@ public sealed class ApplicationDbContext
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
+
+        builder.HasPostgresExtension("vector");
 
         builder.Entity<ApplicationUser>(user =>
         {
@@ -95,6 +98,12 @@ public sealed class ApplicationDbContext
             document.Property(value => value.ChunkingError)
                 .HasMaxLength(500);
 
+            document.Property(value => value.EmbeddingModel)
+                .HasMaxLength(EmbeddingArchitecture.MaximumModelNameLength);
+
+            document.Property(value => value.EmbeddingError)
+                .HasMaxLength(500);
+
             document.Property(value => value.NormalizationError)
                 .HasMaxLength(500);
 
@@ -153,6 +162,31 @@ public sealed class ApplicationDbContext
             chunk.Property(value => value.SectionTitle)
                 .HasMaxLength(500);
 
+            var embeddingProperty = chunk.Property(value => value.Embedding);
+            if (string.Equals(
+                    Database.ProviderName,
+                    "Microsoft.EntityFrameworkCore.InMemory",
+                    StringComparison.Ordinal))
+            {
+                // The test provider has no pgvector type mapping. This converter is only
+                // used by offline InMemory tests; PostgreSQL always uses Pgvector.Vector
+                // and a native vector(1536) column.
+                embeddingProperty.HasConversion(
+                    embedding => SerializeEmbeddingForInMemory(embedding),
+                    bytes => DeserializeEmbeddingForInMemory(bytes));
+            }
+            else
+            {
+                embeddingProperty.HasColumnType(
+                    $"vector({EmbeddingArchitecture.Dimensions})");
+            }
+
+            chunk.Property(value => value.EmbeddingModel)
+                .HasMaxLength(EmbeddingArchitecture.MaximumModelNameLength);
+
+            chunk.Property(value => value.EmbeddingContentHash)
+                .HasMaxLength(EmbeddingArchitecture.ContentHashLength);
+
             chunk.Property(value => value.CreatedAtUtc)
                 .IsRequired();
 
@@ -166,5 +200,30 @@ public sealed class ApplicationDbContext
             chunk.HasIndex(value => new { value.DocumentId, value.ChunkIndex })
                 .IsUnique();
         });
+    }
+
+    private static byte[]? SerializeEmbeddingForInMemory(Pgvector.Vector? embedding)
+    {
+        if (embedding is null)
+        {
+            return null;
+        }
+
+        var values = embedding.ToArray();
+        var bytes = new byte[values.Length * sizeof(float)];
+        Buffer.BlockCopy(values, 0, bytes, 0, bytes.Length);
+        return bytes;
+    }
+
+    private static Pgvector.Vector? DeserializeEmbeddingForInMemory(byte[]? bytes)
+    {
+        if (bytes is null)
+        {
+            return null;
+        }
+
+        var values = new float[bytes.Length / sizeof(float)];
+        Buffer.BlockCopy(bytes, 0, values, 0, bytes.Length);
+        return new Pgvector.Vector(values);
     }
 }

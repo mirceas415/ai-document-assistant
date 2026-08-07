@@ -1,5 +1,6 @@
 using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
+using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
 using Microsoft.EntityFrameworkCore;
@@ -15,7 +16,8 @@ public sealed class DocumentNormalizationServiceTests
     public async Task RebuildUsesStoredRawSectionsPersistsNormalizationAndReplacesChunks()
     {
         await using var database = await NormalizationTestDatabase.CreateAsync();
-        var service = database.CreateService();
+        var embeddingService = new DeterministicTextEmbeddingService();
+        var service = database.CreateService(embeddingService: embeddingService);
 
         var result = await service.RebuildAsync(database.DocumentId, CancellationToken.None);
 
@@ -35,10 +37,18 @@ public sealed class DocumentNormalizationServiceTests
         Assert.DoesNotContain(chunks, chunk => chunk.Content == "Old chunk");
         Assert.All(chunks, chunk =>
             Assert.DoesNotContain("LEGAL HEADER", chunk.Content, StringComparison.Ordinal));
+        Assert.All(chunks, AssertCompleteEmbedding);
+        Assert.Equal(chunks.Count, document.EmbeddedChunkCount);
+        Assert.Equal(EmbeddingArchitecture.DefaultModel, document.EmbeddingModel);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, document.EmbeddingDimensions);
+        Assert.NotNull(document.EmbeddedAtUtc);
+        Assert.Null(document.EmbeddingError);
+        Assert.Single(embeddingService.Calls);
+        Assert.Equal(chunks.Select(chunk => chunk.Content), embeddingService.Calls[0]);
     }
 
     [Fact]
-    public async Task RebuildFailureKeepsRawContentButRemovesPartialNormalizedDataAndChunks()
+    public async Task NormalizationFailurePreservesPreviousNormalizationChunksAndEmbeddings()
     {
         await using var database = await NormalizationTestDatabase.CreateAsync();
         var service = database.CreateService(new ThrowingNormalizer());
@@ -51,20 +61,25 @@ public sealed class DocumentNormalizationServiceTests
         var sections = await database.Context.DocumentTextSections
             .OrderBy(section => section.SectionIndex)
             .ToListAsync();
+        var chunk = await database.Context.DocumentChunks.SingleAsync();
 
         Assert.Equal("Document normalization failed. Please retry.", exception.SafeMessage);
-        Assert.Equal(DocumentStatus.Failed, document.Status);
+        Assert.Equal(DocumentStatus.Ready, document.Status);
         Assert.Equal(exception.SafeMessage, document.NormalizationError);
         Assert.Equal("LEGAL HEADER\nFirst meaningful body\nPage 1", sections[0].Content);
-        Assert.All(sections, section => Assert.Null(section.NormalizedContent));
-        Assert.Empty(await database.Context.DocumentChunks.ToListAsync());
+        Assert.Equal(
+            Enumerable.Range(0, 3).Select(index => $"Previously normalized {index}"),
+            sections.Select(section => section.NormalizedContent));
+        Assert.Equal(database.OldChunkId, chunk.Id);
+        AssertCompleteEmbedding(chunk);
     }
 
     [Fact]
     public async Task RebuildIsDeterministicAndReplacesPreviousNormalizationAndChunks()
     {
         await using var database = await NormalizationTestDatabase.CreateAsync();
-        var service = database.CreateService();
+        var embeddingService = new DeterministicTextEmbeddingService();
+        var service = database.CreateService(embeddingService: embeddingService);
 
         await service.RebuildAsync(database.DocumentId, CancellationToken.None);
         database.Context.ChangeTracker.Clear();
@@ -89,19 +104,73 @@ public sealed class DocumentNormalizationServiceTests
         Assert.Equal(firstContent, secondContent);
         Assert.NotEmpty(firstChunkIds);
         Assert.DoesNotContain(secondChunkIds, id => firstChunkIds.Contains(id));
+        Assert.Equal(2, embeddingService.Calls.Count);
+        Assert.Equal(
+            await database.Context.DocumentChunks.OrderBy(chunk => chunk.ChunkIndex).Select(chunk => chunk.Content).ToArrayAsync(),
+            embeddingService.Calls[1]);
+    }
+
+    [Fact]
+    public async Task EmbeddingFailurePreservesPreviousAuthoritativeNormalizationChunksAndEmbeddings()
+    {
+        await using var database = await NormalizationTestDatabase.CreateAsync();
+        var embeddingService = new DeterministicTextEmbeddingService { RemainingFailures = 1 };
+        var service = database.CreateService(embeddingService: embeddingService);
+
+        var exception = await Assert.ThrowsAsync<DocumentEmbeddingException>(
+            () => service.RebuildAsync(database.DocumentId, CancellationToken.None));
+
+        database.Context.ChangeTracker.Clear();
+        var document = await database.Context.Documents.SingleAsync();
+        var sections = await database.Context.DocumentTextSections
+            .OrderBy(section => section.SectionIndex)
+            .ToListAsync();
+        var chunk = await database.Context.DocumentChunks.SingleAsync();
+
+        Assert.Equal("Document embeddings could not be generated. Please try again.", exception.SafeMessage);
+        Assert.Equal(DocumentStatus.Ready, document.Status);
+        Assert.Null(document.NormalizationError);
+        Assert.Null(document.ChunkingError);
+        Assert.Equal(exception.SafeMessage, document.EmbeddingError);
+        Assert.Equal(
+            Enumerable.Range(0, 3).Select(index => $"Previously normalized {index}"),
+            sections.Select(section => section.NormalizedContent));
+        Assert.Equal(database.OldChunkId, chunk.Id);
+        AssertCompleteEmbedding(chunk);
+        Assert.Equal(1, document.EmbeddedChunkCount);
+        Assert.Equal(EmbeddingArchitecture.DefaultModel, document.EmbeddingModel);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, document.EmbeddingDimensions);
+        Assert.NotNull(document.EmbeddedAtUtc);
+        Assert.Single(embeddingService.Calls);
+    }
+
+    private static void AssertCompleteEmbedding(DocumentChunk chunk)
+    {
+        Assert.NotNull(chunk.Embedding);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, chunk.Embedding!.ToArray().Length);
+        Assert.Equal(EmbeddingArchitecture.DefaultModel, chunk.EmbeddingModel);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, chunk.EmbeddingDimensions);
+        Assert.Equal(EmbeddingContentHasher.Compute(chunk.Content), chunk.EmbeddingContentHash);
+        Assert.NotNull(chunk.EmbeddedAtUtc);
     }
 
     private sealed class NormalizationTestDatabase : IAsyncDisposable
     {
-        private NormalizationTestDatabase(ApplicationDbContext context, Guid documentId)
+        private NormalizationTestDatabase(
+            ApplicationDbContext context,
+            Guid documentId,
+            Guid oldChunkId)
         {
             Context = context;
             DocumentId = documentId;
+            OldChunkId = oldChunkId;
         }
 
         public ApplicationDbContext Context { get; }
 
         public Guid DocumentId { get; }
+
+        public Guid OldChunkId { get; }
 
         public static async Task<NormalizationTestDatabase> CreateAsync()
         {
@@ -112,6 +181,7 @@ public sealed class DocumentNormalizationServiceTests
             await context.Database.EnsureCreatedAsync();
 
             var now = DateTime.UtcNow;
+            var oldChunkId = Guid.NewGuid();
             var owner = new ApplicationUser
             {
                 Id = Guid.NewGuid(),
@@ -144,8 +214,14 @@ public sealed class DocumentNormalizationServiceTests
                 ProcessedAtUtc = now,
                 ExtractedSectionCount = 3,
                 ExtractedCharacterCount = 132,
+                NormalizedCharacterCount = 69,
+                NormalizedAtUtc = now,
                 ChunkCount = 1,
-                ChunkedAtUtc = now
+                ChunkedAtUtc = now,
+                EmbeddedChunkCount = 1,
+                EmbeddingModel = EmbeddingArchitecture.DefaultModel,
+                EmbeddingDimensions = EmbeddingArchitecture.Dimensions,
+                EmbeddedAtUtc = now
             };
 
             context.Documents.Add(document);
@@ -158,11 +234,13 @@ public sealed class DocumentNormalizationServiceTests
                     SectionIndex = index,
                     PageNumber = index + 1,
                     Content = $"LEGAL HEADER\n{body}\nPage {index + 1}",
+                    NormalizedContent = $"Previously normalized {index}",
+                    NormalizedAtUtc = now,
                     CreatedAtUtc = now
                 }));
             context.DocumentChunks.Add(new DocumentChunk
             {
-                Id = Guid.NewGuid(),
+                Id = oldChunkId,
                 DocumentId = document.Id,
                 ChunkIndex = 0,
                 Content = "Old chunk",
@@ -170,14 +248,21 @@ public sealed class DocumentNormalizationServiceTests
                 TokenCount = 2,
                 SourceSectionStartIndex = 0,
                 SourceSectionEndIndex = 0,
+                Embedding = new Pgvector.Vector(new float[EmbeddingArchitecture.Dimensions]),
+                EmbeddingModel = EmbeddingArchitecture.DefaultModel,
+                EmbeddingDimensions = EmbeddingArchitecture.Dimensions,
+                EmbeddingContentHash = EmbeddingContentHasher.Compute("Old chunk"),
+                EmbeddedAtUtc = now,
                 CreatedAtUtc = now
             });
 
             await context.SaveChangesAsync();
-            return new NormalizationTestDatabase(context, document.Id);
+            return new NormalizationTestDatabase(context, document.Id, oldChunkId);
         }
 
-        public DocumentNormalizationService CreateService(IDocumentTextNormalizer? normalizer = null)
+        public DocumentNormalizationService CreateService(
+            IDocumentTextNormalizer? normalizer = null,
+            ITextEmbeddingService? embeddingService = null)
         {
             var generator = new DocumentChunkGenerator(
                 new Cl100kDocumentTokenizer(),
@@ -187,6 +272,8 @@ public sealed class DocumentNormalizationServiceTests
                 normalizer ?? new DocumentTextNormalizer(
                     Options.Create(new DocumentNormalizationOptions())),
                 generator,
+                embeddingService ?? new DeterministicTextEmbeddingService(),
+                Options.Create(new OpenAIEmbeddingOptions()),
                 NullLogger<DocumentNormalizationService>.Instance);
         }
 

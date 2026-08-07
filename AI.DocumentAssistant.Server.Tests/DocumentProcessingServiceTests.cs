@@ -1,5 +1,6 @@
 using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
+using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Processing;
@@ -44,6 +45,11 @@ public sealed class DocumentProcessingServiceTests
         Assert.Equal(1, storedDocument.ChunkCount);
         Assert.NotNull(storedDocument.ChunkedAtUtc);
         Assert.Null(storedDocument.ChunkingError);
+        Assert.Equal(1, storedDocument.EmbeddedChunkCount);
+        Assert.Equal(EmbeddingArchitecture.DefaultModel, storedDocument.EmbeddingModel);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, storedDocument.EmbeddingDimensions);
+        Assert.NotNull(storedDocument.EmbeddedAtUtc);
+        Assert.Null(storedDocument.EmbeddingError);
         Assert.Collection(
             storedSections,
             first =>
@@ -59,6 +65,15 @@ public sealed class DocumentProcessingServiceTests
         Assert.Single(storedChunks);
         Assert.Contains("First section", storedChunks[0].Content);
         Assert.Contains("Second section", storedChunks[0].Content);
+        Assert.NotNull(storedChunks[0].Embedding);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, storedChunks[0].Embedding!.ToArray().Length);
+        Assert.Equal(EmbeddingArchitecture.DefaultModel, storedChunks[0].EmbeddingModel);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, storedChunks[0].EmbeddingDimensions);
+        Assert.Equal(
+            EmbeddingContentHasher.Compute(storedChunks[0].Content),
+            storedChunks[0].EmbeddingContentHash);
+        Assert.NotNull(storedChunks[0].EmbeddedAtUtc);
+        Assert.Equal(storedDocument.EmbeddedAtUtc, storedChunks[0].EmbeddedAtUtc);
     }
 
     [Fact]
@@ -274,6 +289,153 @@ public sealed class DocumentProcessingServiceTests
             storedDocument.ProcessingError);
     }
 
+    [Fact]
+    public async Task EmbeddingFailurePreventsReadyPersistsNoPartialStateKeepsFileAndRetrySucceeds()
+    {
+        await using var database = await ProcessingTestDatabase.CreateAsync();
+        var document = await database.AddDocumentAsync(DocumentStatus.Uploaded);
+        var embeddingService = new DeterministicTextEmbeddingService
+        {
+            RemainingFailures = 1,
+            BeforeGenerateAsync = async cancellationToken =>
+            {
+                var statusDuringEmbedding = await database.Context.Documents
+                    .Where(item => item.Id == document.Id)
+                    .Select(item => item.Status)
+                    .SingleAsync(cancellationToken);
+                Assert.Equal(DocumentStatus.Processing, statusDuringEmbedding);
+                Assert.Empty(await database.Context.DocumentChunks.ToListAsync(cancellationToken));
+            }
+        };
+        var extractor = new StubExtractor([
+            new ExtractedTextSection(0, "Text rom\u00e2nesc cu diacritice \u0219i English text.", PageNumber: 1)
+        ]);
+        var service = database.CreateService(embeddingService, extractor);
+
+        var exception = await Assert.ThrowsAsync<DocumentEmbeddingException>(
+            () => service.ProcessAsync(document.Id, CancellationToken.None));
+
+        database.Context.ChangeTracker.Clear();
+        var failedDocument = await database.Context.Documents.SingleAsync();
+        Assert.Equal("Document embeddings could not be generated. Please try again.", exception.SafeMessage);
+        Assert.Equal(DocumentStatus.Failed, failedDocument.Status);
+        Assert.Equal(exception.SafeMessage, failedDocument.EmbeddingError);
+        Assert.Equal(0, failedDocument.EmbeddedChunkCount);
+        Assert.Null(failedDocument.EmbeddingModel);
+        Assert.Null(failedDocument.EmbeddingDimensions);
+        Assert.Null(failedDocument.EmbeddedAtUtc);
+        Assert.Empty(await database.Context.DocumentTextSections.ToListAsync());
+        Assert.Empty(await database.Context.DocumentChunks.ToListAsync());
+        Assert.Equal(1, database.Storage.OpenCount);
+        Assert.Equal(0, database.Storage.DeleteCount);
+
+        await service.ProcessAsync(document.Id, CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var retriedDocument = await database.Context.Documents.SingleAsync();
+        var retriedChunks = await database.Context.DocumentChunks.ToListAsync();
+        Assert.Equal(DocumentStatus.Ready, retriedDocument.Status);
+        Assert.Null(retriedDocument.EmbeddingError);
+        Assert.Equal(retriedChunks.Count, retriedDocument.EmbeddedChunkCount);
+        Assert.NotEmpty(retriedChunks);
+        Assert.All(retriedChunks, AssertCompleteEmbedding);
+        Assert.Equal(2, database.Storage.OpenCount);
+        Assert.Equal(0, database.Storage.DeleteCount);
+        Assert.Equal(2, embeddingService.Calls.Count);
+        Assert.Equal(retriedChunks.Select(chunk => chunk.Content), embeddingService.Calls[1]);
+    }
+
+    [Fact]
+    public async Task ProcessingPreservesChunkToEmbeddingAssociationForMultipleChunks()
+    {
+        await using var database = await ProcessingTestDatabase.CreateAsync();
+        var document = await database.AddDocumentAsync(DocumentStatus.Uploaded);
+        var generatedChunks = Enumerable.Range(0, 8)
+            .Select(index => new GeneratedDocumentChunk(
+                index,
+                $"Deterministic chunk {index}",
+                $"Deterministic chunk {index}".Length,
+                3,
+                PageStart: index + 1,
+                PageEnd: index + 1,
+                SectionTitle: null,
+                SourceSectionStartIndex: 0,
+                SourceSectionEndIndex: 0))
+            .ToArray();
+        var embeddingService = new DeterministicTextEmbeddingService();
+        var service = database.CreateService(
+            new FixedChunkGenerator(generatedChunks),
+            embeddingService,
+            new StubExtractor([new ExtractedTextSection(0, "Source text", PageNumber: 1)]));
+
+        await service.ProcessAsync(document.Id, CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var storedDocument = await database.Context.Documents.SingleAsync();
+        var storedChunks = await database.Context.DocumentChunks
+            .OrderBy(chunk => chunk.ChunkIndex)
+            .ToArrayAsync();
+
+        Assert.Equal(DocumentStatus.Ready, storedDocument.Status);
+        Assert.Equal(8, storedDocument.EmbeddedChunkCount);
+        Assert.Single(embeddingService.Calls);
+        Assert.Equal(generatedChunks.Select(chunk => chunk.Content), embeddingService.Calls[0]);
+        Assert.Equal(generatedChunks.Select(chunk => chunk.Content), storedChunks.Select(chunk => chunk.Content));
+        for (var index = 0; index < storedChunks.Length; index++)
+        {
+            Assert.Equal(index + 1, storedChunks[index].Embedding!.ToArray()[0]);
+            AssertCompleteEmbedding(storedChunks[index]);
+        }
+    }
+
+    [Fact]
+    public async Task FailureAfterFirstEmbeddingBatchPersistsNoPartialAuthoritativeState()
+    {
+        await using var database = await ProcessingTestDatabase.CreateAsync();
+        var document = await database.AddDocumentAsync(DocumentStatus.Uploaded);
+        var generatedChunks = Enumerable.Range(0, 8)
+            .Select(index => new GeneratedDocumentChunk(
+                index,
+                $"Batch failure chunk {index}",
+                $"Batch failure chunk {index}".Length,
+                4,
+                PageStart: 1,
+                PageEnd: 1,
+                SectionTitle: null,
+                SourceSectionStartIndex: 0,
+                SourceSectionEndIndex: 0))
+            .ToArray();
+        var provider = new FailOnSecondBatchEmbeddingClient();
+        var embeddingService = new OpenAITextEmbeddingService(
+            provider,
+            Options.Create(new OpenAIEmbeddingOptions { BatchSize = 3 }),
+            NullLogger<OpenAITextEmbeddingService>.Instance);
+        var service = database.CreateService(
+            new FixedChunkGenerator(generatedChunks),
+            embeddingService,
+            new StubExtractor([new ExtractedTextSection(0, "Source text", PageNumber: 1)]));
+
+        await Assert.ThrowsAsync<DocumentEmbeddingException>(() =>
+            service.ProcessAsync(document.Id, CancellationToken.None));
+
+        Assert.Equal([3, 3], provider.BatchSizes);
+        database.Context.ChangeTracker.Clear();
+        Assert.Equal(DocumentStatus.Failed, (await database.Context.Documents.SingleAsync()).Status);
+        Assert.Empty(await database.Context.DocumentTextSections.ToListAsync());
+        Assert.Empty(await database.Context.DocumentChunks.ToListAsync());
+        Assert.Equal(0, database.Storage.DeleteCount);
+    }
+
+    private static void AssertCompleteEmbedding(DocumentChunk chunk)
+    {
+        Assert.NotNull(chunk.Embedding);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, chunk.Embedding!.ToArray().Length);
+        Assert.Equal(EmbeddingArchitecture.DefaultModel, chunk.EmbeddingModel);
+        Assert.Equal(EmbeddingArchitecture.Dimensions, chunk.EmbeddingDimensions);
+        Assert.Equal(EmbeddingContentHasher.Compute(chunk.Content), chunk.EmbeddingContentHash);
+        Assert.NotNull(chunk.EmbeddedAtUtc);
+    }
+
     private sealed class ProcessingTestDatabase : IAsyncDisposable
     {
         private ProcessingTestDatabase(ApplicationDbContext context)
@@ -282,6 +444,8 @@ public sealed class DocumentProcessingServiceTests
         }
 
         public ApplicationDbContext Context { get; }
+
+        public StubFileStorage Storage { get; } = new();
 
         public static async Task<ProcessingTestDatabase> CreateAsync()
         {
@@ -335,7 +499,12 @@ public sealed class DocumentProcessingServiceTests
 
         public DocumentProcessingService CreateService(
             params IDocumentTextExtractor[] extractors) =>
-            CreateService(CreateGenerator(), extractors);
+            CreateService(CreateGenerator(), new DeterministicTextEmbeddingService(), extractors);
+
+        public DocumentProcessingService CreateService(
+            ITextEmbeddingService embeddingService,
+            params IDocumentTextExtractor[] extractors) =>
+            CreateService(CreateGenerator(), embeddingService, extractors);
 
         public DocumentProcessingService CreateService(
             IDocumentChunkGenerator generator,
@@ -343,24 +512,42 @@ public sealed class DocumentProcessingServiceTests
             => CreateService(
                 new DocumentTextNormalizer(Options.Create(new DocumentNormalizationOptions())),
                 generator,
+                new DeterministicTextEmbeddingService(),
                 extractors);
 
         public DocumentProcessingService CreateService(
             IDocumentTextNormalizer normalizer,
             params IDocumentTextExtractor[] extractors)
-            => CreateService(normalizer, CreateGenerator(), extractors);
+            => CreateService(
+                normalizer,
+                CreateGenerator(),
+                new DeterministicTextEmbeddingService(),
+                extractors);
+
+        public DocumentProcessingService CreateService(
+            IDocumentChunkGenerator generator,
+            ITextEmbeddingService embeddingService,
+            params IDocumentTextExtractor[] extractors) =>
+            CreateService(
+                new DocumentTextNormalizer(Options.Create(new DocumentNormalizationOptions())),
+                generator,
+                embeddingService,
+                extractors);
 
         private DocumentProcessingService CreateService(
             IDocumentTextNormalizer normalizer,
             IDocumentChunkGenerator generator,
+            ITextEmbeddingService embeddingService,
             params IDocumentTextExtractor[] extractors)
         {
             return new DocumentProcessingService(
                 Context,
-                new StubFileStorage(),
+                Storage,
                 extractors,
                 normalizer,
                 generator,
+                embeddingService,
+                Options.Create(new OpenAIEmbeddingOptions()),
                 NullLogger<DocumentProcessingService>.Instance);
         }
 
@@ -417,23 +604,74 @@ public sealed class DocumentProcessingServiceTests
                 "The test chunks could not be generated.");
     }
 
+    private sealed class FailOnSecondBatchEmbeddingClient : IOpenAIEmbeddingClient
+    {
+        public List<int> BatchSizes { get; } = [];
+
+        public Task<IReadOnlyList<float[]>> GenerateEmbeddingsAsync(
+            IReadOnlyList<string> inputs,
+            string model,
+            int dimensions,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            BatchSizes.Add(inputs.Count);
+            if (BatchSizes.Count == 2)
+            {
+                throw new DocumentEmbeddingException(
+                    "Document embeddings could not be generated. Please try again.");
+            }
+
+            return Task.FromResult<IReadOnlyList<float[]>>(inputs
+                .Select((_, index) =>
+                {
+                    var vector = new float[dimensions];
+                    vector[0] = index + 1;
+                    return vector;
+                })
+                .ToArray());
+        }
+    }
+
+    private sealed class FixedChunkGenerator(
+        IReadOnlyList<GeneratedDocumentChunk> chunks) : IDocumentChunkGenerator
+    {
+        public IReadOnlyList<GeneratedDocumentChunk> Generate(
+            IReadOnlyList<ChunkSourceSection> sourceSections,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return chunks;
+        }
+    }
+
     private sealed class StubFileStorage : IFileStorageService
     {
+        public int DeleteCount { get; private set; }
+
+        public int OpenCount { get; private set; }
+
         public Task<string> SaveAsync(
             Stream source,
             string fileExtension,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public Task DeleteAsync(string storedFileName, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+        public Task DeleteAsync(string storedFileName, CancellationToken cancellationToken)
+        {
+            DeleteCount++;
+            return Task.CompletedTask;
+        }
 
         public Task<bool> ExistsAsync(string storedFileName, CancellationToken cancellationToken) =>
             Task.FromResult(true);
 
         public Task<Stream> OpenReadAsync(
             string storedFileName,
-            CancellationToken cancellationToken) =>
-            Task.FromResult<Stream>(new MemoryStream([1, 2, 3]));
+            CancellationToken cancellationToken)
+        {
+            OpenCount++;
+            return Task.FromResult<Stream>(new MemoryStream([1, 2, 3]));
+        }
     }
 }

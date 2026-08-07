@@ -1,11 +1,13 @@
 using System.Diagnostics;
 using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
+using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Options;
 
 namespace AI.DocumentAssistant.Server.Processing;
 
@@ -18,6 +20,8 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
     private readonly IReadOnlyList<IDocumentTextExtractor> _extractors;
     private readonly IDocumentTextNormalizer _normalizer;
     private readonly IDocumentChunkGenerator _chunkGenerator;
+    private readonly ITextEmbeddingService _embeddingService;
+    private readonly OpenAIEmbeddingOptions _embeddingOptions;
     private readonly ILogger<DocumentProcessingService> _logger;
 
     public DocumentProcessingService(
@@ -26,6 +30,8 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         IEnumerable<IDocumentTextExtractor> extractors,
         IDocumentTextNormalizer normalizer,
         IDocumentChunkGenerator chunkGenerator,
+        ITextEmbeddingService embeddingService,
+        IOptions<OpenAIEmbeddingOptions> embeddingOptions,
         ILogger<DocumentProcessingService> logger)
     {
         _dbContext = dbContext;
@@ -33,6 +39,8 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         _extractors = extractors.ToArray();
         _normalizer = normalizer;
         _chunkGenerator = chunkGenerator;
+        _embeddingService = embeddingService;
+        _embeddingOptions = embeddingOptions.Value;
         _logger = logger;
     }
 
@@ -72,6 +80,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         document.ChunkCount = 0;
         document.ChunkedAtUtc = null;
         document.ChunkingError = null;
+        EmbeddingPersistence.ClearDocumentMetadata(document);
         document.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -155,6 +164,25 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                     section.SectionTitle)).ToArray(),
                 cancellationToken);
 
+            var embeddingStopwatch = Stopwatch.StartNew();
+            var embeddingResult = await _embeddingService.GenerateEmbeddingsAsync(
+                generatedChunks.Select(chunk => chunk.Content).ToArray(),
+                cancellationToken);
+            EmbeddingResultValidator.Validate(
+                embeddingResult,
+                generatedChunks.Count,
+                _embeddingOptions.EmbeddingModel,
+                EmbeddingArchitecture.Dimensions);
+            embeddingStopwatch.Stop();
+
+            _logger.LogInformation(
+                "Generated and validated {ChunkCount} chunk embeddings for document {DocumentId} in {DurationMs} ms using model {EmbeddingModel} with {EmbeddingDimensions} dimensions.",
+                generatedChunks.Count,
+                document.Id,
+                embeddingStopwatch.ElapsedMilliseconds,
+                embeddingResult.Model,
+                embeddingResult.Dimensions);
+
             await using var transaction = await BeginTransactionIfSupportedAsync(
                 cancellationToken);
 
@@ -199,6 +227,16 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                 SourceSectionEndIndex = chunk.SourceSectionEndIndex,
                 CreatedAtUtc = completedAtUtc
             }).ToArray();
+
+            for (var index = 0; index < chunks.Length; index++)
+            {
+                EmbeddingPersistence.ApplyToChunk(
+                    chunks[index],
+                    embeddingResult.Embeddings[index],
+                    embeddingResult,
+                    completedAtUtc);
+            }
+
             _dbContext.DocumentChunks.AddRange(chunks);
 
             document.Status = DocumentStatus.Ready;
@@ -215,6 +253,11 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
             document.ChunkCount = chunks.Length;
             document.ChunkedAtUtc = completedAtUtc;
             document.ChunkingError = null;
+            EmbeddingPersistence.ApplyToDocument(
+                document,
+                chunks.Length,
+                embeddingResult,
+                completedAtUtc);
             document.UpdatedAtUtc = completedAtUtc;
 
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -225,14 +268,17 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
 
             stopwatch.Stop();
             _logger.LogInformation(
-                "Document {DocumentId} processing completed with status Ready using {ExtractorType} in {ElapsedMilliseconds} ms. Extracted {SectionCount} sections and {CharacterCount} characters, normalized to {NormalizedCharacterCount} characters, and generated {ChunkCount} chunks.",
+                "Document {DocumentId} processing completed with status Ready using {ExtractorType} in {ElapsedMilliseconds} ms. Extracted {SectionCount} sections and {CharacterCount} characters, normalized to {NormalizedCharacterCount} characters, generated {ChunkCount} chunks, and persisted {EmbeddedChunkCount} embeddings using model {EmbeddingModel} with {EmbeddingDimensions} dimensions.",
                 document.Id,
                 extractor.GetType().Name,
                 stopwatch.ElapsedMilliseconds,
                 document.ExtractedSectionCount,
                 document.ExtractedCharacterCount,
                 document.NormalizedCharacterCount,
-                document.ChunkCount);
+                document.ChunkCount,
+                document.EmbeddedChunkCount,
+                document.EmbeddingModel,
+                document.EmbeddingDimensions);
         }
         catch (Exception exception)
         {
@@ -242,6 +288,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
             {
                 DocumentChunkingException chunkingException => chunkingException.SafeMessage,
                 DocumentNormalizationException normalizationException => normalizationException.SafeMessage,
+                DocumentEmbeddingException embeddingException => embeddingException.SafeMessage,
                 DocumentExtractionException extractionException => extractionException.SafeMessage,
                 OperationCanceledException => "Processing was interrupted. Please retry.",
                 _ => "Document processing failed. Please retry."
@@ -249,11 +296,12 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
 
             try
             {
-                await MarkExtractionFailedAsync(
+                await MarkProcessingFailedAsync(
                     document.Id,
                     safeMessage,
                     exception is DocumentNormalizationException,
-                    exception is DocumentChunkingException);
+                    exception is DocumentChunkingException,
+                    exception is DocumentEmbeddingException);
             }
             catch (Exception failureUpdateException)
             {
@@ -275,11 +323,12 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         }
     }
 
-    private async Task MarkExtractionFailedAsync(
+    private async Task MarkProcessingFailedAsync(
         Guid documentId,
         string safeMessage,
         bool normalizationFailed,
-        bool chunkingFailed)
+        bool chunkingFailed,
+        bool embeddingFailed)
     {
         _dbContext.ChangeTracker.Clear();
 
@@ -304,7 +353,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
 
         document.Status = DocumentStatus.Failed;
         document.ProcessedAtUtc = null;
-        document.ProcessingError = normalizationFailed || chunkingFailed
+        document.ProcessingError = normalizationFailed || chunkingFailed || embeddingFailed
             ? null
             : Truncate(safeMessage, MaximumErrorLength);
         document.ExtractedCharacterCount = 0;
@@ -319,6 +368,10 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         document.ChunkCount = 0;
         document.ChunkedAtUtc = null;
         document.ChunkingError = chunkingFailed
+            ? Truncate(safeMessage, MaximumErrorLength)
+            : null;
+        EmbeddingPersistence.ClearDocumentMetadata(document);
+        document.EmbeddingError = embeddingFailed
             ? Truncate(safeMessage, MaximumErrorLength)
             : null;
         document.UpdatedAtUtc = DateTime.UtcNow;

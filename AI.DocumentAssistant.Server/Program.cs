@@ -1,6 +1,7 @@
 using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
+using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Processing;
@@ -10,6 +11,7 @@ using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Pgvector.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,7 +20,9 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
         "Connection string 'DefaultConnection' is not configured. Configure it with User Secrets for local development.");
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseNpgsql(connectionString));
+    options.UseNpgsql(
+        connectionString,
+        npgsqlOptions => npgsqlOptions.UseVector()));
 
 builder.Services.AddSingleton<IFileStorageService, LocalFileStorageService>();
 builder.Services.AddSingleton<IDocumentProcessingQueue, DocumentProcessingQueue>();
@@ -27,8 +31,11 @@ builder.Services.AddSingleton<IDocumentTextExtractor, DocxDocumentTextExtractor>
 builder.Services.AddSingleton<IDocumentTokenizer, Cl100kDocumentTokenizer>();
 builder.Services.AddSingleton<IDocumentChunkGenerator, DocumentChunkGenerator>();
 builder.Services.AddSingleton<IDocumentTextNormalizer, DocumentTextNormalizer>();
+builder.Services.AddSingleton<IOpenAIEmbeddingClient, OpenAISdkEmbeddingClient>();
+builder.Services.AddSingleton<ITextEmbeddingService, OpenAITextEmbeddingService>();
 builder.Services.AddScoped<IDocumentChunkingService, DocumentChunkingService>();
 builder.Services.AddScoped<IDocumentNormalizationService, DocumentNormalizationService>();
+builder.Services.AddScoped<IDocumentEmbeddingService, DocumentEmbeddingService>();
 builder.Services.AddScoped<IDocumentProcessingService, DocumentProcessingService>();
 builder.Services.AddHostedService<DocumentProcessingWorker>();
 
@@ -58,6 +65,17 @@ builder.Services.AddOptions<DocumentNormalizationOptions>()
     .Validate(
         options => options.MinimumLocalCandidateBlockLength <= options.MaximumCandidateLength,
         "DocumentNormalization MinimumLocalCandidateBlockLength must not exceed MaximumCandidateLength.")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<OpenAIEmbeddingOptions>()
+    .Bind(builder.Configuration.GetSection(OpenAIEmbeddingOptions.SectionName))
+    .ValidateDataAnnotations()
+    .Validate(
+        options => !string.IsNullOrWhiteSpace(options.EmbeddingModel),
+        "OpenAI EmbeddingModel must not be empty.")
+    .Validate(
+        options => options.EmbeddingDimensions == EmbeddingArchitecture.Dimensions,
+        $"OpenAI EmbeddingDimensions must be {EmbeddingArchitecture.Dimensions}; changing it requires an EF migration.")
     .ValidateOnStart();
 
 builder.Services

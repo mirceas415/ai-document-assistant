@@ -1,3 +1,5 @@
+using Pgvector;
+
 namespace AI.DocumentAssistant.Server.Models;
 
 public sealed class DocumentChunk
@@ -27,4 +29,14 @@ public sealed class DocumentChunk
     public int SourceSectionEndIndex { get; set; }
 
     public DateTime CreatedAtUtc { get; set; }
+
+    public Vector? Embedding { get; set; }
+
+    public string? EmbeddingModel { get; set; }
+
+    public int? EmbeddingDimensions { get; set; }
+
+    public string? EmbeddingContentHash { get; set; }
+
+    public DateTime? EmbeddedAtUtc { get; set; }
 }
