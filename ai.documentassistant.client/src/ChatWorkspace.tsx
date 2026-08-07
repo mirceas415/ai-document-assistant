@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent, ReactNode } from 'react';
 import {
     ApiRequestError,
@@ -15,6 +15,8 @@ import type {
     ProjectDetails,
     SemanticSearchResponse,
 } from './api';
+import { ConfirmDialog, Icon, Skeleton } from './Ui';
+import { useToast } from './toast-context';
 import './ChatWorkspace.css';
 
 type Navigate = (path: string, replace?: boolean) => void;
@@ -46,8 +48,16 @@ export function ProjectChatWorkspace({
     const [failedQuestion, setFailedQuestion] = useState('');
     const [failedMessageId, setFailedMessageId] = useState<string | null>(null);
     const [sourceToView, setSourceToView] = useState<ConversationMessageSource | null>(null);
+    const [confirmDelete, setConfirmDelete] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
     const composerRef = useRef<HTMLTextAreaElement>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const shouldFollowMessagesRef = useRef(true);
+    const showToast = useToast();
+    const readyDocumentCount = useMemo(
+        () => documents.filter((document) => document.status === 'Ready').length,
+        [documents],
+    );
 
     const loadConversations = useCallback(async () => {
         const response = await apiRequest<ConversationSummary[]>(
@@ -109,8 +119,17 @@ export function ProjectChatWorkspace({
     }, [conversation, isAsking]);
 
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (shouldFollowMessagesRef.current) {
+            messagesEndRef.current?.scrollIntoView({ behavior: isAsking ? 'smooth' : 'auto' });
+        }
     }, [conversation?.messages.length, isAsking]);
+
+    useEffect(() => {
+        const textarea = composerRef.current;
+        if (!textarea) return;
+        textarea.style.height = 'auto';
+        textarea.style.height = `${Math.min(textarea.scrollHeight, 144)}px`;
+    }, [question]);
 
     const createConversation = async () => {
         setError('');
@@ -154,6 +173,7 @@ export function ProjectChatWorkspace({
             : null;
         setFailedMessageId(null);
         setIsAsking(true);
+        shouldFollowMessagesRef.current = true;
         const optimisticMessage: ConversationMessage = {
             id: `pending-${Date.now()}`,
             role: 'User',
@@ -206,7 +226,7 @@ export function ProjectChatWorkspace({
     };
 
     const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+        if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
             void askQuestion();
         }
@@ -220,13 +240,13 @@ export function ProjectChatWorkspace({
         );
         setConversation(renamed);
         await loadConversations();
+        showToast({ message: 'Conversation renamed.' });
     };
 
     const deleteConversation = async () => {
-        if (!conversation || !window.confirm(
-            `Delete “${conversation.title}”? Documents and embeddings will not be deleted.`,
-        )) return;
+        if (!conversation) return;
 
+        setIsDeleting(true);
         try {
             await apiRequest<void>(
                 `/api/projects/${projectId}/conversations/${conversation.id}`,
@@ -234,16 +254,21 @@ export function ProjectChatWorkspace({
             );
             const remaining = await loadConversations();
             setConversation(null);
+            setConfirmDelete(false);
+            showToast({ message: 'Conversation deleted.' });
             onNavigate(remaining.length > 0
                 ? `/projects/${projectId}/chats/${remaining[0].id}`
                 : `/projects/${projectId}`);
         } catch (requestError) {
             setError(getErrorMessage(requestError));
+            setConfirmDelete(false);
+        } finally {
+            setIsDeleting(false);
         }
     };
 
     if (isLoading) {
-        return <div className="chat-loading"><span className="spinner" /> Loading workspace…</div>;
+        return <WorkspaceSkeleton />;
     }
 
     if (!project) {
@@ -280,7 +305,7 @@ export function ProjectChatWorkspace({
                     conversation={conversation}
                     projectName={project.name}
                     onRename={renameConversation}
-                    onDelete={() => void deleteConversation()}
+                    onDelete={() => setConfirmDelete(true)}
                 />
 
                 {error && <div className="chat-error" role="alert">{error}</div>}
@@ -299,18 +324,28 @@ export function ProjectChatWorkspace({
                     </section>
                 ) : (
                     <>
-                        <section className="message-scroll" aria-live="polite">
+                        <section
+                            className="message-scroll"
+                            aria-live="polite"
+                            onScroll={(event) => {
+                                const element = event.currentTarget;
+                                shouldFollowMessagesRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
+                            }}
+                        >
                             {conversation.messages.length === 0 ? (
-                                <div className="conversation-empty">
-                                    <div className="chat-empty-mark" aria-hidden="true">AI</div>
-                                    <h2>What would you like to know?</h2>
-                                    <p>Ask about any ready document in {project.name}.</p>
-                                </div>
+                                <ConversationEmptyState
+                                    projectName={project.name}
+                                    onSelectPrompt={(prompt) => {
+                                        setQuestion(prompt);
+                                        window.requestAnimationFrame(() => composerRef.current?.focus());
+                                    }}
+                                />
                             ) : conversation.messages.map((message) => (
                                 <ChatMessage
                                     key={message.id}
                                     message={message}
                                     onViewSource={setSourceToView}
+                                    onCopied={() => showToast({ message: 'Answer copied.' })}
                                 />
                             ))}
                             {isAsking && (
@@ -318,7 +353,7 @@ export function ProjectChatWorkspace({
                                     <span className="thinking-dot" />
                                     <span className="thinking-dot" />
                                     <span className="thinking-dot" />
-                                    <span>Searching project documents and preparing an answer…</span>
+                                    <span>Generating answer…</span>
                                 </div>
                             )}
                             <div ref={messagesEndRef} />
@@ -339,10 +374,12 @@ export function ProjectChatWorkspace({
                                 <textarea
                                     ref={composerRef}
                                     value={question}
-                                    rows={2}
+                                    rows={1}
                                     maxLength={2_000}
-                                    placeholder="Ask a question about documents in this project"
+                                    placeholder="Ask about documents in this project…"
                                     disabled={isAsking}
+                                    aria-label="Question"
+                                    aria-describedby="composer-scope composer-shortcut"
                                     onKeyDown={handleComposerKeyDown}
                                     onChange={(event) => {
                                         setQuestion(event.target.value);
@@ -353,12 +390,12 @@ export function ProjectChatWorkspace({
                                     }}
                                 />
                                 <button type="submit" aria-label="Send question" disabled={isAsking || !question.trim()}>
-                                    {isAsking ? '…' : '↑'}
+                                    {isAsking ? <span className="send-spinner" aria-hidden="true" /> : <Icon name="send" size={17} />}
                                 </button>
                             </form>
                             <div className="composer-caption">
-                                <span>{documents.length} project document{documents.length === 1 ? '' : 's'} in scope</span>
-                                <span>Ctrl/⌘ + Enter to send</span>
+                                <span id="composer-scope">Answers use {readyDocumentCount} ready document{readyDocumentCount === 1 ? '' : 's'} from {project.name}</span>
+                                <span id="composer-shortcut">Enter to send · Shift+Enter for a new line</span>
                             </div>
                             <details className="retrieval-details">
                                 <summary>Advanced: retrieval details</summary>
@@ -372,6 +409,66 @@ export function ProjectChatWorkspace({
             {sourceToView && (
                 <SourceModal source={sourceToView} onClose={() => setSourceToView(null)} />
             )}
+            <ConfirmDialog
+                open={confirmDelete}
+                title="Delete conversation?"
+                description={<>This permanently deletes <strong>{conversation?.title}</strong> and its messages. Project documents remain unchanged.</>}
+                confirmLabel="Delete conversation"
+                busy={isDeleting}
+                onCancel={() => setConfirmDelete(false)}
+                onConfirm={() => void deleteConversation()}
+            />
+        </div>
+    );
+}
+
+const examplePrompts = [
+    'Summarize the key points',
+    'What are the main requirements?',
+    'Find information about…',
+    'Explain this in simple terms',
+];
+
+function ConversationEmptyState({ projectName, onSelectPrompt }: { projectName: string; onSelectPrompt: (prompt: string) => void }) {
+    return (
+        <div className="conversation-empty">
+            <div className="chat-empty-mark" aria-hidden="true">AI</div>
+            <p className="empty-project-name">Current project · {projectName}</p>
+            <h2>Ask your documents</h2>
+            <p>Ask questions and get answers grounded in the documents inside this project.</p>
+            <div className="prompt-suggestions" aria-label="Example prompts">
+                {examplePrompts.map((prompt) => (
+                    <button type="button" key={prompt} onClick={() => onSelectPrompt(prompt)}>{prompt}</button>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+function WorkspaceSkeleton() {
+    return (
+        <div className="chat-workspace workspace-skeleton" aria-label="Loading workspace" aria-busy="true">
+            <aside className="workspace-sidebar">
+                <Skeleton className="skeleton-brand" />
+                <Skeleton className="skeleton-new-chat" />
+                <Skeleton className="skeleton-nav" />
+                <Skeleton className="skeleton-nav" />
+                <Skeleton className="skeleton-nav" />
+            </aside>
+            <aside className="conversation-history">
+                <div className="history-heading"><strong>Chats</strong></div>
+                <div className="history-skeleton-list">
+                    {[0, 1, 2, 3, 4].map((item) => <Skeleton className="skeleton-history-row" key={item} />)}
+                </div>
+            </aside>
+            <main className="chat-main">
+                <div className="chat-header"><Skeleton className="skeleton-chat-title" /></div>
+                <div className="conversation-loading-skeleton">
+                    <Skeleton className="skeleton-answer-wide" />
+                    <Skeleton className="skeleton-answer" />
+                    <Skeleton className="skeleton-answer-short" />
+                </div>
+            </main>
         </div>
     );
 }
@@ -418,12 +515,12 @@ function WorkspaceSidebar({
                 <strong>Document Assistant</strong>
             </button>
             <button className="new-chat-button" type="button" onClick={onNewChat} disabled={isCreating}>
-                <span aria-hidden="true">＋</span> {isCreating ? 'Creating…' : 'New Chat'}
+                <Icon name="plus" size={17} /> {isCreating ? 'Creating…' : 'New chat'}
             </button>
             <nav className="workspace-nav" aria-label="Project navigation">
-                <button type="button" onClick={() => onNavigate('/projects')}><span>⌂</span> Projects</button>
-                <button type="button" onClick={() => onNavigate(`/projects/${project.id}/documents`)}><span>▤</span> Documents</button>
-                <button className="active" type="button" onClick={() => onNavigate(`/projects/${project.id}`)}><span>◇</span> Chats</button>
+                <button type="button" onClick={() => onNavigate('/projects')}><Icon name="folder" /> Projects</button>
+                <button type="button" onClick={() => onNavigate(`/projects/${project.id}/documents`)}><Icon name="document" /> Documents</button>
+                <button className="active" type="button" aria-current="page" onClick={() => onNavigate(`/projects/${project.id}`)}><Icon name="chat" /> Chats</button>
             </nav>
             <div className="current-project-block">
                 <span>Current project</span>
@@ -433,8 +530,8 @@ function WorkspaceSidebar({
             <div className="workspace-account">
                 <div className="account-avatar">{initials(user.displayName)}</div>
                 <div><strong>{user.displayName}</strong><span>Signed in</span></div>
-                <button type="button" onClick={() => void logout()} disabled={isLoggingOut} title="Sign out">
-                    {isLoggingOut ? '…' : '↪'}
+                <button type="button" onClick={() => void logout()} disabled={isLoggingOut} aria-label="Sign out" title="Sign out">
+                    {isLoggingOut ? '…' : <Icon name="logout" size={17} />}
                 </button>
             </div>
             {error && <p className="sidebar-error" role="alert">{error}</p>}
@@ -454,16 +551,20 @@ function ConversationHistory({
     onNavigate: Navigate;
 }) {
     const [filter, setFilter] = useState('');
-    const filtered = conversations.filter((item) =>
-        item.title.toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase()));
-    const groups = groupConversations(filtered);
+    const filtered = useMemo(() => {
+        const normalizedFilter = filter.trim().toLocaleLowerCase();
+        return normalizedFilter
+            ? conversations.filter((item) => item.title.toLocaleLowerCase().includes(normalizedFilter))
+            : conversations;
+    }, [conversations, filter]);
+    const groups = useMemo(() => groupConversations(filtered), [filtered]);
 
     return (
         <aside className="conversation-history">
             <div className="history-heading"><strong>Chats</strong><span>{conversations.length}</span></div>
             <label className="history-search">
-                <span aria-hidden="true">⌕</span>
-                <input value={filter} placeholder="Search chats" onChange={(event) => setFilter(event.target.value)} />
+                <Icon name="search" size={15} />
+                <input value={filter} aria-label="Search conversations" placeholder="Search chats" onChange={(event) => setFilter(event.target.value)} />
             </label>
             <div className="history-groups">
                 {groups.map((group) => (
@@ -485,7 +586,13 @@ function ConversationHistory({
                         ))}
                     </section>
                 ))}
-                {filtered.length === 0 && <p className="history-empty">No chats found.</p>}
+                {filtered.length === 0 && (
+                    <div className="history-empty">
+                        <Icon name={filter ? 'search' : 'chat'} size={18} />
+                        <strong>{filter ? 'No matching chats' : 'No conversations yet'}</strong>
+                        <span>{filter ? 'Try a different title.' : 'Start a new chat to ask your documents.'}</span>
+                    </div>
+                )}
             </div>
         </aside>
     );
@@ -526,7 +633,17 @@ function ChatHeader({
             <div>
                 {conversation && editing ? (
                     <div className="rename-row">
-                        <input value={title} maxLength={80} autoFocus onChange={(event) => setTitle(event.target.value)} />
+                        <input
+                            value={title}
+                            maxLength={80}
+                            autoFocus
+                            aria-label="Conversation title"
+                            onChange={(event) => setTitle(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Enter') void save();
+                                if (event.key === 'Escape') { setEditing(false); setTitle(conversation.title); }
+                            }}
+                        />
                         <button type="button" onClick={() => void save()}>Save</button>
                         <button type="button" onClick={() => { setEditing(false); setTitle(conversation.title); }}>Cancel</button>
                     </div>
@@ -536,8 +653,8 @@ function ChatHeader({
             </div>
             {conversation && (
                 <div className="chat-header-actions">
-                    <button type="button" onClick={() => { setTitle(conversation.title); setEditing(true); }}>Rename</button>
-                    <button className="delete-chat" type="button" onClick={onDelete}>Delete</button>
+                    <button type="button" onClick={() => { setTitle(conversation.title); setEditing(true); }}><Icon name="edit" size={14} /> Rename</button>
+                    <button className="delete-chat" type="button" onClick={onDelete}><Icon name="delete" size={14} /> Delete</button>
                 </div>
             )}
         </header>
@@ -547,19 +664,39 @@ function ChatHeader({
 function ChatMessage({
     message,
     onViewSource,
+    onCopied,
 }: {
     message: ConversationMessage;
     onViewSource: (source: ConversationMessageSource) => void;
+    onCopied: () => void;
 }) {
     if (message.role === 'User') {
         return <article className="chat-message user-message"><div>{message.content}</div></article>;
     }
 
+    const copyAnswer = async () => {
+        try {
+            await navigator.clipboard.writeText(message.content);
+            onCopied();
+        } catch {
+            // Clipboard access can be unavailable in an insecure browser context.
+        }
+    };
+
     return (
         <article className="chat-message assistant-message">
             <div className="assistant-avatar" aria-hidden="true">AI</div>
             <div className="assistant-body">
-                <SafeMessageContent content={message.content} />
+                <SafeMessageContent content={message.content} sources={message.sources} onViewSource={onViewSource} />
+                <div className="message-actions">
+                    <button
+                        type="button"
+                        onClick={() => void copyAnswer()}
+                        aria-label="Copy answer"
+                    >
+                        <Icon name="copy" size={14} /> Copy answer
+                    </button>
+                </div>
                 {message.sources.length > 0 && (
                     <div className="message-sources">
                         <h3>Sources</h3>
@@ -570,7 +707,8 @@ function ChatMessage({
                                     <strong>{source.documentName}</strong>
                                     <span>{formatPageRange(source.pageStart, source.pageEnd)} · Chunk {source.chunkIndex + 1}</span>
                                     {source.heading && <small>{source.heading}</small>}
-                                    <em>View source</em>
+                                    <small className="source-excerpt">{source.excerpt}</small>
+                                    <em><Icon name="source" size={12} /> View source</em>
                                 </button>
                             ))}
                         </div>
@@ -581,7 +719,15 @@ function ChatMessage({
     );
 }
 
-function SafeMessageContent({ content }: { content: string }) {
+function SafeMessageContent({
+    content,
+    sources,
+    onViewSource,
+}: {
+    content: string;
+    sources: ConversationMessageSource[];
+    onViewSource: (source: ConversationMessageSource) => void;
+}) {
     const blocks = content.split(/\n{2,}/).filter(Boolean);
     return (
         <div className="safe-message-content">
@@ -594,36 +740,69 @@ function SafeMessageContent({ content }: { content: string }) {
                     return (
                         <List key={blockIndex}>
                             {lines.map((line, lineIndex) => (
-                                <li key={lineIndex}>{renderInline(line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, ''))}</li>
+                                <li key={lineIndex}>{renderInline(line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, ''), sources, onViewSource)}</li>
                             ))}
                         </List>
                     );
                 }
-                return <p key={blockIndex}>{lines.map((line, index) => <span key={index}>{renderInline(line)}{index < lines.length - 1 && <br />}</span>)}</p>;
+                return <p key={blockIndex}>{lines.map((line, index) => <span key={index}>{renderInline(line, sources, onViewSource)}{index < lines.length - 1 && <br />}</span>)}</p>;
             })}
         </div>
     );
 }
 
-function renderInline(value: string): ReactNode[] {
+function renderInline(
+    value: string,
+    sources: ConversationMessageSource[],
+    onViewSource: (source: ConversationMessageSource) => void,
+): ReactNode[] {
     const parts = value.split(/(\*\*[^*]+\*\*|\[S\d+\])/g);
     return parts.filter(Boolean).map((part, index) => {
         if (part.startsWith('**') && part.endsWith('**')) return <strong key={index}>{part.slice(2, -2)}</strong>;
-        if (/^\[S\d+\]$/.test(part)) return <span className="inline-citation" key={index}>{part}</span>;
+        if (/^\[S\d+\]$/.test(part)) {
+            const source = sources.find((item) => `[${item.sourceId}]` === part);
+            return source ? (
+                <button
+                    className="inline-citation"
+                    type="button"
+                    key={index}
+                    title={`View ${source.sourceId}: ${source.documentName}`}
+                    aria-label={`View source ${source.sourceId}, ${source.documentName}`}
+                    onClick={() => onViewSource(source)}
+                >
+                    {source.sourceId}
+                </button>
+            ) : <span className="inline-citation inline-citation-static" key={index}>{part.slice(1, -1)}</span>;
+        }
         return part;
     });
 }
 
 function SourceModal({ source, onClose }: { source: ConversationMessageSource; onClose: () => void }) {
+    const closeRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        const previous = document.activeElement as HTMLElement | null;
+        closeRef.current?.focus();
+        const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+            if (event.key === 'Escape') onClose();
+        };
+        document.addEventListener('keydown', closeOnEscape);
+        return () => {
+            document.removeEventListener('keydown', closeOnEscape);
+            previous?.focus();
+        };
+    }, [onClose]);
+
     return (
         <div className="source-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
             <section className="source-modal" role="dialog" aria-modal="true" aria-labelledby="source-modal-title">
-                <button className="source-modal-close" type="button" onClick={onClose} aria-label="Close source">×</button>
+                <button ref={closeRef} className="source-modal-close" type="button" onClick={onClose} aria-label="Close source"><Icon name="close" size={17} /></button>
                 <span className="source-label">{source.sourceId}</span>
                 <h2 id="source-modal-title">{source.documentName}</h2>
                 <p className="source-modal-meta">{formatPageRange(source.pageStart, source.pageEnd)} · Chunk {source.chunkIndex + 1}</p>
                 {source.heading && <h3>{source.heading}</h3>}
-                <div className="source-snapshot-note">Authoritative excerpt saved when this answer was generated</div>
+                <div className="source-snapshot-note"><Icon name="source" size={14} /> Authoritative excerpt saved with this answer</div>
                 <p className="source-modal-excerpt">{source.excerpt}</p>
                 {!source.documentId && <p className="source-unavailable">The original document is no longer available; this bounded citation snapshot remains.</p>}
             </section>

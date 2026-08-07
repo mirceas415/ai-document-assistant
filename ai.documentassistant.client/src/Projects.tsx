@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from 'react';
 import {
     ApiRequestError,
     apiRequest,
     getErrorMessage,
 } from './api';
+import { ConfirmDialog, Icon, Skeleton } from './Ui';
+import { useToast } from './toast-context';
 import type {
     AskProjectResponse,
     CurrentUser,
@@ -31,6 +33,8 @@ export function ProjectsDashboard({ user, onNavigate, onSignedOut }: Authenticat
     const [error, setError] = useState('');
     const [editor, setEditor] = useState<ProjectSummary | 'create' | null>(null);
     const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [projectToDelete, setProjectToDelete] = useState<ProjectSummary | null>(null);
+    const showToast = useToast();
 
     useEffect(() => {
         let isActive = true;
@@ -51,21 +55,17 @@ export function ProjectsDashboard({ user, onNavigate, onSignedOut }: Authenticat
     }, []);
 
     const savedProject = (project: ProjectDetails) => {
+        const wasCreated = editor === 'create';
         setProjects((currentProjects) => {
             const remainingProjects = currentProjects.filter((item) => item.id !== project.id);
             return [project, ...remainingProjects]
                 .sort((left, right) => Date.parse(right.updatedAtUtc) - Date.parse(left.updatedAtUtc));
         });
         setEditor(null);
+        showToast({ message: wasCreated ? 'Project created.' : 'Project updated.' });
     };
 
     const deleteProject = async (project: ProjectSummary) => {
-        const confirmed = window.confirm(
-            `Delete “${project.name}”? This action cannot be undone.`,
-        );
-
-        if (!confirmed) return;
-
         setError('');
         setDeletingId(project.id);
 
@@ -73,8 +73,11 @@ export function ProjectsDashboard({ user, onNavigate, onSignedOut }: Authenticat
             await apiRequest<void>(`/api/projects/${project.id}`, { method: 'DELETE' });
             setProjects((currentProjects) =>
                 currentProjects.filter((item) => item.id !== project.id));
+            setProjectToDelete(null);
+            showToast({ message: 'Project deleted.' });
         } catch (requestError) {
             setError(getErrorMessage(requestError));
+            setProjectToDelete(null);
         } finally {
             setDeletingId(null);
         }
@@ -90,17 +93,14 @@ export function ProjectsDashboard({ user, onNavigate, onSignedOut }: Authenticat
                         <p className="page-description">Create and organize your document workspaces.</p>
                     </div>
                     <button className="primary-button" type="button" onClick={() => setEditor('create')}>
-                        <span aria-hidden="true">＋</span> New project
+                        <Icon name="plus" size={17} /> New project
                     </button>
                 </div>
 
                 {error && <div className="alert page-alert" role="alert">{error}</div>}
 
                 {isLoading ? (
-                    <section className="content-state" aria-live="polite">
-                        <div className="spinner" aria-hidden="true" />
-                        <p>Loading projects…</p>
-                    </section>
+                    <ProjectListSkeleton />
                 ) : projects.length === 0 ? (
                     <section className="content-state empty-state">
                         <div className="empty-icon" aria-hidden="true">▦</div>
@@ -137,18 +137,18 @@ export function ProjectsDashboard({ user, onNavigate, onSignedOut }: Authenticat
 
                                 <div className="project-actions">
                                     <button className="primary-button compact-button" type="button" onClick={() => onNavigate(`/projects/${project.id}`)}>
-                                        Open
+                                        <Icon name="chat" size={14} /> Open
                                     </button>
                                     <button className="secondary-button compact-button" type="button" onClick={() => setEditor(project)}>
-                                        Edit
+                                        <Icon name="edit" size={14} /> Edit
                                     </button>
                                     <button
                                         className="danger-button compact-button"
                                         type="button"
                                         disabled={deletingId === project.id}
-                                        onClick={() => void deleteProject(project)}
+                                        onClick={() => setProjectToDelete(project)}
                                     >
-                                        {deletingId === project.id ? 'Deleting…' : 'Delete'}
+                                        <Icon name="delete" size={14} /> {deletingId === project.id ? 'Deleting…' : 'Delete'}
                                     </button>
                                 </div>
                             </article>
@@ -165,6 +165,15 @@ export function ProjectsDashboard({ user, onNavigate, onSignedOut }: Authenticat
                     onSaved={savedProject}
                 />
             )}
+            <ConfirmDialog
+                open={Boolean(projectToDelete)}
+                title="Delete project?"
+                description={<>This permanently deletes <strong>{projectToDelete?.name}</strong>, including its documents and conversations. This cannot be undone.</>}
+                confirmLabel="Delete project"
+                busy={Boolean(deletingId)}
+                onCancel={() => setProjectToDelete(null)}
+                onConfirm={() => projectToDelete && void deleteProject(projectToDelete)}
+            />
         </AuthenticatedLayout>
     );
 }
@@ -226,14 +235,11 @@ export function ProjectDetailsPage({
         <AuthenticatedLayout user={user} onNavigate={onNavigate} onSignedOut={onSignedOut}>
             <main className="page-content details-content">
                 <button className="back-button" type="button" onClick={() => onNavigate('/projects')}>
-                    ← Back to projects
+                    <Icon name="arrow-left" size={16} /> Back to projects
                 </button>
 
                 {isLoading ? (
-                    <section className="content-state" aria-live="polite">
-                        <div className="spinner" aria-hidden="true" />
-                        <p>Loading project…</p>
-                    </section>
+                    <ProjectDetailsSkeleton />
                 ) : notFound ? (
                     <section className="content-state empty-state">
                         <div className="empty-icon" aria-hidden="true">?</div>
@@ -539,6 +545,13 @@ function DocumentsSection({
     const [chunkViewerRefreshKey, setChunkViewerRefreshKey] = useState(0);
     const [textViewerDocument, setTextViewerDocument] = useState<DocumentSummary | null>(null);
     const [chunkViewerDocument, setChunkViewerDocument] = useState<DocumentSummary | null>(null);
+    const [confirmation, setConfirmation] = useState<{
+        action: 'delete' | 'chunks' | 'normalization' | 'embeddings';
+        document: DocumentSummary;
+    } | null>(null);
+    const [isDragging, setIsDragging] = useState(false);
+    const uploadInputRef = useRef<HTMLInputElement>(null);
+    const showToast = useToast();
 
     const shouldPoll = documents.some(
         (document) => document.status === 'Uploaded' || document.status === 'Processing',
@@ -609,6 +622,7 @@ function DocumentsSection({
                 ...currentDocuments.filter((document) => document.id !== uploadedDocument.id),
             ]);
             setError('');
+            showToast({ message: `${uploadedDocument.originalFileName} uploaded.` });
         } catch (requestError) {
             setError(getErrorMessage(requestError));
         } finally {
@@ -617,12 +631,6 @@ function DocumentsSection({
     };
 
     const deleteDocument = async (document: DocumentSummary) => {
-        const confirmed = window.confirm(
-            `Delete “${document.originalFileName}”? This removes the uploaded file permanently.`,
-        );
-
-        if (!confirmed) return;
-
         setError('');
         setDeletingId(document.id);
 
@@ -634,6 +642,7 @@ function DocumentsSection({
             onDocumentsChanged((currentDocuments) =>
                 currentDocuments.filter((item) => item.id !== document.id));
             setError('');
+            showToast({ message: 'Document deleted.' });
         } catch (requestError) {
             setError(getErrorMessage(requestError));
         } finally {
@@ -663,12 +672,6 @@ function DocumentsSection({
     };
 
     const rebuildChunks = async (document: DocumentSummary) => {
-        const confirmed = window.confirm(
-            `Rebuild chunks for “${document.originalFileName}” from its stored extracted text?`,
-        );
-
-        if (!confirmed) return;
-
         setError('');
         setRebuildingId(document.id);
 
@@ -681,6 +684,7 @@ function DocumentsSection({
                 item.id === document.id ? rebuiltDocument : item));
             setChunkViewerRefreshKey((value) => value + 1);
             setError('');
+            showToast({ message: 'Document chunks rebuilt.' });
         } catch (requestError) {
             try {
                 await refreshDocuments();
@@ -693,12 +697,6 @@ function DocumentsSection({
     };
 
     const rebuildNormalization = async (document: DocumentSummary) => {
-        const confirmed = window.confirm(
-            `Rebuild normalized text and chunks for “${document.originalFileName}” from its stored raw extraction?`,
-        );
-
-        if (!confirmed) return;
-
         setError('');
         setNormalizingId(document.id);
         onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
@@ -717,6 +715,7 @@ function DocumentsSection({
                 current?.id === document.id ? rebuiltDocument : current);
             setChunkViewerRefreshKey((value) => value + 1);
             setError('');
+            showToast({ message: 'Document normalization rebuilt.' });
         } catch (requestError) {
             const actionError = getErrorMessage(requestError);
             try {
@@ -731,15 +730,6 @@ function DocumentsSection({
     };
 
     const rebuildEmbeddings = async (document: DocumentSummary) => {
-        const hasExistingEmbeddings = document.embeddedChunkCount > 0;
-        const confirmed = window.confirm(
-            hasExistingEmbeddings
-                ? `Rebuild all embeddings for “${document.originalFileName}” from its existing chunks? This replaces the current embedding set and uses OpenAI API credits.`
-                : `Generate embeddings for “${document.originalFileName}” from its existing chunks? This uses OpenAI API credits.`,
-        );
-
-        if (!confirmed) return;
-
         setError('');
         setEmbeddingId(document.id);
 
@@ -751,6 +741,7 @@ function DocumentsSection({
             onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
                 item.id === document.id ? rebuiltDocument : item));
             setError('');
+            showToast({ message: document.embeddedChunkCount > 0 ? 'Embeddings rebuilt.' : 'Embeddings generated.' });
         } catch (requestError) {
             const actionError = getErrorMessage(requestError);
             try {
@@ -771,6 +762,19 @@ function DocumentsSection({
         normalizingId === documentId ||
         embeddingId === documentId;
 
+    const runConfirmedAction = async () => {
+        if (!confirmation) return;
+        const { action, document } = confirmation;
+        try {
+            if (action === 'delete') await deleteDocument(document);
+            if (action === 'chunks') await rebuildChunks(document);
+            if (action === 'normalization') await rebuildNormalization(document);
+            if (action === 'embeddings') await rebuildEmbeddings(document);
+        } finally {
+            setConfirmation(null);
+        }
+    };
+
     return (
         <section className="documents-card" aria-labelledby="documents-heading">
             <div className="documents-heading">
@@ -781,6 +785,7 @@ function DocumentsSection({
                 </div>
 
                 <label className={`primary-button upload-button${isUploading ? ' disabled-upload' : ''}`} htmlFor="document-upload">
+                    <Icon name="upload" size={16} />
                     {isUploading
                         ? 'Uploading…'
                         : documents.length > 0
@@ -789,6 +794,7 @@ function DocumentsSection({
                 </label>
                 <input
                     id="document-upload"
+                    ref={uploadInputRef}
                     className="visually-hidden"
                     type="file"
                     accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -811,11 +817,39 @@ function DocumentsSection({
                 </div>
             )}
 
+            <div
+                className={`document-dropzone${isDragging ? ' is-dragging' : ''}${documents.length === 0 ? ' document-dropzone-empty' : ''}`}
+                role="button"
+                tabIndex={isUploading ? -1 : 0}
+                aria-label="Upload a PDF or DOCX document"
+                onClick={() => !isUploading && uploadInputRef.current?.click()}
+                onKeyDown={(event) => {
+                    if (!isUploading && (event.key === 'Enter' || event.key === ' ')) {
+                        event.preventDefault();
+                        uploadInputRef.current?.click();
+                    }
+                }}
+                onDragEnter={(event) => { event.preventDefault(); if (!isUploading) setIsDragging(true); }}
+                onDragOver={(event) => event.preventDefault()}
+                onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDragging(false); }}
+                onDrop={(event) => {
+                    event.preventDefault();
+                    setIsDragging(false);
+                    const file = event.dataTransfer.files[0];
+                    if (file && !isUploading) void uploadDocument(file);
+                }}
+            >
+                <span className="dropzone-icon"><Icon name="upload" size={19} /></span>
+                <div>
+                    <strong>{documents.length === 0 ? 'Drop your first document here' : 'Drop another document here'}</strong>
+                    <span>or choose a PDF or DOCX file · up to 20 MB</span>
+                </div>
+            </div>
+
             {documents.length === 0 && !isUploading ? (
                 <div className="document-empty-state">
-                    <div className="document-file-icon" aria-hidden="true">DOC</div>
-                    <h3>No documents uploaded yet.</h3>
-                    <p>Upload a PDF or DOCX file to this project.</p>
+                    <h3>No documents yet</h3>
+                    <p>Uploaded files will appear here with their processing status.</p>
                 </div>
             ) : (
                 <div className="document-list">
@@ -877,12 +911,15 @@ function DocumentsSection({
                                 )}
                             </div>
                             <span className={`status-pill status-${document.status.toLowerCase()}`}>
+                                <span className="status-dot" aria-hidden="true" />
                                 {document.status}
                             </span>
                             {document.status !== 'Processing' && (
                                 <div className="document-actions">
                                     {document.status === 'Ready' && (
-                                        <>
+                                        <details className="document-advanced">
+                                            <summary><Icon name="more" size={16} /> Advanced</summary>
+                                            <div className="document-advanced-actions">
                                             <button
                                                 className="secondary-button compact-button"
                                                 type="button"
@@ -903,7 +940,7 @@ function DocumentsSection({
                                                 className="secondary-button compact-button"
                                                 type="button"
                                                 disabled={isDocumentActionBusy(document.id)}
-                                                onClick={() => void rebuildNormalization(document)}
+                                                onClick={() => setConfirmation({ action: 'normalization', document })}
                                             >
                                                 {normalizingId === document.id ? 'Normalizing…' : 'Rebuild normalization'}
                                             </button>
@@ -911,7 +948,7 @@ function DocumentsSection({
                                                 className="secondary-button compact-button"
                                                 type="button"
                                                 disabled={isDocumentActionBusy(document.id)}
-                                                onClick={() => void rebuildChunks(document)}
+                                                onClick={() => setConfirmation({ action: 'chunks', document })}
                                             >
                                                 {rebuildingId === document.id ? 'Rebuilding…' : 'Rebuild chunks'}
                                             </button>
@@ -919,7 +956,7 @@ function DocumentsSection({
                                                 className="secondary-button compact-button"
                                                 type="button"
                                                 disabled={isDocumentActionBusy(document.id)}
-                                                onClick={() => void rebuildEmbeddings(document)}
+                                                onClick={() => setConfirmation({ action: 'embeddings', document })}
                                             >
                                                 {embeddingId === document.id
                                                     ? document.embeddedChunkCount > 0
@@ -929,7 +966,8 @@ function DocumentsSection({
                                                         ? 'Rebuild embeddings'
                                                         : 'Generate embeddings'}
                                             </button>
-                                        </>
+                                            </div>
+                                        </details>
                                     )}
                                     {(document.status === 'Failed' || document.status === 'Uploaded') && (
                                         <button
@@ -949,9 +987,10 @@ function DocumentsSection({
                                         className="danger-button compact-button document-delete-button"
                                         type="button"
                                         disabled={isDocumentActionBusy(document.id)}
-                                        onClick={() => void deleteDocument(document)}
+                                        aria-label={`Delete ${document.originalFileName}`}
+                                        onClick={() => setConfirmation({ action: 'delete', document })}
                                     >
-                                        {deletingId === document.id ? 'Deleting…' : 'Delete'}
+                                        <Icon name="delete" size={14} /> {deletingId === document.id ? 'Deleting…' : 'Delete'}
                                     </button>
                                 </div>
                             )}
@@ -976,6 +1015,16 @@ function DocumentsSection({
                     onClose={() => setChunkViewerDocument(null)}
                 />
             )}
+            <ConfirmDialog
+                open={Boolean(confirmation)}
+                title={getDocumentConfirmationTitle(confirmation?.action)}
+                description={getDocumentConfirmationDescription(confirmation)}
+                confirmLabel={getDocumentConfirmationLabel(confirmation?.action)}
+                destructive={confirmation?.action === 'delete'}
+                busy={confirmation ? isDocumentActionBusy(confirmation.document.id) : false}
+                onCancel={() => setConfirmation(null)}
+                onConfirm={() => void runConfirmedAction()}
+            />
         </section>
     );
 }
@@ -995,6 +1044,15 @@ function ExtractedTextViewer({
     const [sectionsByView, setSectionsByView] = useState<Partial<Record<'raw' | 'normalized', ExtractedTextSection[]>>>({});
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState('');
+    const closeRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        const previous = globalThis.document.activeElement as HTMLElement | null;
+        closeRef.current?.focus();
+        const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+        globalThis.document.addEventListener('keydown', closeOnEscape);
+        return () => { globalThis.document.removeEventListener('keydown', closeOnEscape); previous?.focus(); };
+    }, [onClose]);
 
     useEffect(() => {
         const cachedSections = sectionsByView[view];
@@ -1045,7 +1103,7 @@ function ExtractedTextViewer({
                         <p className="eyebrow">Extracted content</p>
                         <h2 id="extracted-text-title">{document.originalFileName}</h2>
                     </div>
-                    <button className="icon-button" type="button" aria-label="Close extracted text" onClick={onClose}>×</button>
+                    <button ref={closeRef} className="icon-button" type="button" aria-label="Close extracted text" onClick={onClose}><Icon name="close" size={18} /></button>
                 </div>
 
                 <div className="text-view-tabs" role="tablist" aria-label="Text representation">
@@ -1123,6 +1181,15 @@ function DocumentChunkViewer({
     const [chunks, setChunks] = useState<DocumentChunk[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState('');
+    const closeRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        const previous = globalThis.document.activeElement as HTMLElement | null;
+        closeRef.current?.focus();
+        const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+        globalThis.document.addEventListener('keydown', closeOnEscape);
+        return () => { globalThis.document.removeEventListener('keydown', closeOnEscape); previous?.focus(); };
+    }, [onClose]);
 
     useEffect(() => {
         let isActive = true;
@@ -1162,7 +1229,7 @@ function DocumentChunkViewer({
                         <p className="eyebrow">Retrieval chunks</p>
                         <h2 id="chunk-viewer-title">{document.originalFileName}</h2>
                     </div>
-                    <button className="icon-button" type="button" aria-label="Close chunks" onClick={onClose}>×</button>
+                    <button ref={closeRef} className="icon-button" type="button" aria-label="Close chunks" onClick={onClose}><Icon name="close" size={18} /></button>
                 </div>
 
                 {isLoading ? (
@@ -1210,6 +1277,15 @@ function ProjectEditor({ project, onCancel, onSaved }: ProjectEditorProps) {
     const [description, setDescription] = useState(project?.description ?? '');
     const [error, setError] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
+
+    useEffect(() => {
+        const previous = document.activeElement as HTMLElement | null;
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key === 'Escape' && !isSubmitting) onCancel();
+        };
+        document.addEventListener('keydown', closeOnEscape);
+        return () => { document.removeEventListener('keydown', closeOnEscape); previous?.focus(); };
+    }, [isSubmitting, onCancel]);
 
     const submit = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -1264,7 +1340,7 @@ function ProjectEditor({ project, onCancel, onSaved }: ProjectEditorProps) {
                         <p className="eyebrow">{project ? 'Edit workspace' : 'New workspace'}</p>
                         <h2 id="project-editor-title">{project ? 'Edit project' : 'Create project'}</h2>
                     </div>
-                    <button className="icon-button" type="button" aria-label="Close" onClick={onCancel} disabled={isSubmitting}>×</button>
+                    <button className="icon-button" type="button" aria-label="Close" onClick={onCancel} disabled={isSubmitting}><Icon name="close" size={18} /></button>
                 </div>
 
                 {error && <div className="alert" role="alert">{error}</div>}
@@ -1344,7 +1420,7 @@ function AuthenticatedLayout({
                         <span>{user.email}</span>
                     </div>
                     <button className="secondary-button logout-button" type="button" onClick={() => void logout()} disabled={isLoggingOut}>
-                        {isLoggingOut ? 'Signing out…' : 'Sign out'}
+                        {isLoggingOut ? 'Signing out…' : <><Icon name="logout" size={15} /> Sign out</>}
                     </button>
                 </div>
             </header>
@@ -1360,6 +1436,72 @@ function formatDate(value: string) {
         dateStyle: 'medium',
         timeStyle: 'short',
     }).format(new Date(value));
+}
+
+function ProjectListSkeleton() {
+    return (
+        <section className="project-grid project-skeleton-grid" aria-label="Loading projects" aria-busy="true">
+            {[0, 1, 2].map((item) => (
+                <div className="project-card" key={item}>
+                    <Skeleton className="project-skeleton-icon" />
+                    <Skeleton className="project-skeleton-title" />
+                    <Skeleton className="project-skeleton-copy" />
+                    <Skeleton className="project-skeleton-copy short" />
+                </div>
+            ))}
+        </section>
+    );
+}
+
+function ProjectDetailsSkeleton() {
+    return (
+        <section className="details-card details-skeleton" aria-label="Loading project and documents" aria-busy="true">
+            <Skeleton className="project-skeleton-icon" />
+            <Skeleton className="project-skeleton-title" />
+            <Skeleton className="project-skeleton-copy" />
+            <div className="document-skeleton-list">
+                {[0, 1, 2].map((item) => <Skeleton className="document-skeleton-row" key={item} />)}
+            </div>
+        </section>
+    );
+}
+
+type DocumentConfirmation = {
+    action: 'delete' | 'chunks' | 'normalization' | 'embeddings';
+    document: DocumentSummary;
+};
+
+function getDocumentConfirmationTitle(action?: DocumentConfirmation['action']) {
+    if (action === 'delete') return 'Delete document?';
+    if (action === 'chunks') return 'Rebuild chunks?';
+    if (action === 'normalization') return 'Rebuild normalized text?';
+    if (action === 'embeddings') return 'Rebuild embeddings?';
+    return 'Confirm action';
+}
+
+function getDocumentConfirmationLabel(action?: DocumentConfirmation['action']) {
+    if (action === 'delete') return 'Delete document';
+    if (action === 'chunks') return 'Rebuild chunks';
+    if (action === 'normalization') return 'Rebuild normalization';
+    if (action === 'embeddings') return 'Continue';
+    return 'Continue';
+}
+
+function getDocumentConfirmationDescription(confirmation: DocumentConfirmation | null) {
+    if (!confirmation) return '';
+    const name = <strong>{confirmation.document.originalFileName}</strong>;
+    if (confirmation.action === 'delete') {
+        return <>This permanently removes {name}, its extracted content, chunks, and embeddings.</>;
+    }
+    if (confirmation.action === 'chunks') {
+        return <>Rebuild chunks for {name} from its stored extracted text?</>;
+    }
+    if (confirmation.action === 'normalization') {
+        return <>Rebuild normalized text and chunks for {name} from the stored raw extraction?</>;
+    }
+    return confirmation.document.embeddedChunkCount > 0
+        ? <>Replace the current embedding set for {name}? This uses OpenAI API credits.</>
+        : <>Generate embeddings for {name}? This uses OpenAI API credits.</>;
 }
 
 function formatFileSize(bytes: number) {

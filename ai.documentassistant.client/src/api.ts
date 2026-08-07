@@ -199,7 +199,14 @@ export const apiRequest = async <T,>(url: string, options?: RequestInit): Promis
         : await response.json() as T;
 };
 
-export const getErrorMessage = (error: unknown) =>
-    error instanceof Error
-        ? error.message
-        : 'The request could not be completed.';
+export const getErrorMessage = (error: unknown) => {
+    if (!(error instanceof Error)) return 'The request could not be completed.';
+
+    const message = error.message.trim();
+    const looksTechnical = message.length > 400 ||
+        /(?:System\.|Npgsql|stack trace|\bat [A-Z][\w.]+\()/i.test(message);
+
+    return message && !looksTechnical
+        ? message
+        : 'The request could not be completed. Please try again.';
+};

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { LoginPage, LoadingPage, RegistrationPage } from './AuthPages';
 import { ProjectDetailsPage, ProjectsDashboard } from './Projects';
 import { ProjectChatWorkspace } from './ChatWorkspace';
+import { ToastProvider } from './Ui';
 import type { CurrentUser } from './api';
 import './App.css';
 
@@ -40,7 +41,7 @@ function readRoute(): Route {
         : { page: 'unknown' };
 }
 
-function App() {
+function AppContent() {
     const [route, setRoute] = useState<Route>(readRoute);
     const [user, setUser] = useState<CurrentUser | null>(null);
     const [isCheckingSession, setIsCheckingSession] = useState(true);
@@ -169,6 +170,10 @@ function App() {
             onSignedOut={signedOut}
         />
     );
+}
+
+function App() {
+    return <ToastProvider><AppContent /></ToastProvider>;
 }
 
 export default App;
