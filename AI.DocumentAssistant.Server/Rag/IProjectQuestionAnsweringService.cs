@@ -7,6 +7,14 @@ public interface IProjectQuestionAnsweringService
         Guid projectId,
         string question,
         CancellationToken cancellationToken);
+
+    Task<ProjectAnswerResult?> AnswerAsync(
+        Guid ownerId,
+        Guid projectId,
+        string question,
+        IReadOnlyList<ConversationHistoryMessage> history,
+        CancellationToken cancellationToken) =>
+        AnswerAsync(ownerId, projectId, question, cancellationToken);
 }
 
 public sealed record ProjectAnswerResult(

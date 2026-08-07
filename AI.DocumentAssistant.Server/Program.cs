@@ -1,5 +1,6 @@
 using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Chunking;
+using AI.DocumentAssistant.Server.Conversations;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
@@ -38,6 +39,8 @@ builder.Services.AddSingleton<ITextEmbeddingService, OpenAITextEmbeddingService>
 builder.Services.AddSingleton<IOpenAIAnswerClient, OpenAIResponsesAnswerClient>();
 builder.Services.AddSingleton<IGroundedAnswerService, OpenAIGroundedAnswerService>();
 builder.Services.AddSingleton<IRagContextBuilder, RagContextBuilder>();
+builder.Services.AddSingleton<IConversationHistoryContextBuilder, ConversationHistoryContextBuilder>();
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IDocumentChunkingService, DocumentChunkingService>();
 builder.Services.AddScoped<IDocumentNormalizationService, DocumentNormalizationService>();
 builder.Services.AddScoped<IDocumentEmbeddingService, DocumentEmbeddingService>();
@@ -45,6 +48,7 @@ builder.Services.AddScoped<IDocumentProcessingService, DocumentProcessingService
 builder.Services.AddScoped<ISemanticChunkSearch, PgvectorSemanticChunkSearch>();
 builder.Services.AddScoped<ISemanticRetrievalService, SemanticRetrievalService>();
 builder.Services.AddScoped<IProjectQuestionAnsweringService, ProjectQuestionAnsweringService>();
+builder.Services.AddScoped<IConversationService, ConversationService>();
 builder.Services.AddHostedService<DocumentProcessingWorker>();
 
 builder.Services.AddOptions<DocumentChunkingOptions>()

@@ -17,4 +17,7 @@ public sealed class Project
     public DateTime UpdatedAtUtc { get; set; }
 
     public ICollection<Document> Documents { get; } = new List<Document>();
+
+    public ICollection<Conversation> Conversations { get; } =
+        new List<Conversation>();
 }

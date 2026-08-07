@@ -23,4 +23,12 @@ public sealed class OpenAIAnswerOptions
     [Range(1, RagArchitecture.MaximumSourceExcerptCharacters)]
     public int SourceExcerptCharacters { get; init; } =
         RagArchitecture.DefaultSourceExcerptCharacters;
+
+    [Range(0, RagArchitecture.MaximumRecentConversationMessageCount)]
+    public int RecentConversationMessageCount { get; init; } =
+        RagArchitecture.DefaultRecentConversationMessageCount;
+
+    [Range(0, RagArchitecture.MaximumConversationContextTokens)]
+    public int MaxConversationContextTokens { get; init; } =
+        RagArchitecture.DefaultConversationContextTokens;
 }

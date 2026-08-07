@@ -38,6 +38,19 @@ public sealed partial class ProjectQuestionAnsweringService
         Guid projectId,
         string question,
         CancellationToken cancellationToken)
+        => await AnswerAsync(
+            ownerId,
+            projectId,
+            question,
+            [],
+            cancellationToken);
+
+    public async Task<ProjectAnswerResult?> AnswerAsync(
+        Guid ownerId,
+        Guid projectId,
+        string question,
+        IReadOnlyList<ConversationHistoryMessage> history,
+        CancellationToken cancellationToken)
     {
         var normalizedQuestion = question.Trim();
         var retrieval = await _retrievalService.SearchAsync(
@@ -75,6 +88,7 @@ public sealed partial class ProjectQuestionAnsweringService
         var modelAnswer = await _answerService.GenerateAnswerAsync(
             normalizedQuestion,
             context,
+            history,
             cancellationToken);
         var sourcesById = context.Sources.ToDictionary(
             source => source.SourceId,

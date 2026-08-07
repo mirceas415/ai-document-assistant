@@ -247,6 +247,11 @@ export function ProjectDetailsPage({
                     <div className="alert page-alert" role="alert">{error}</div>
                 ) : project ? (
                     <>
+                        <div className="project-view-switcher">
+                            <button className="secondary-button" type="button" onClick={() => onNavigate(`/projects/${project.id}`)}>
+                                Open chats
+                            </button>
+                        </div>
                         <section className="details-card">
                             <div className="project-icon large-project-icon" aria-hidden="true">P</div>
                             <p className="eyebrow">Project</p>
@@ -267,10 +272,6 @@ export function ProjectDetailsPage({
                             </dl>
                         </section>
 
-                        <AskDocumentsSection projectId={project.id} />
-
-                        <SemanticSearchSection projectId={project.id} />
-
                         <DocumentsSection
                             projectId={project.id}
                             documents={documents}
@@ -287,7 +288,7 @@ interface AskDocumentsSectionProps {
     projectId: string;
 }
 
-function AskDocumentsSection({ projectId }: AskDocumentsSectionProps) {
+export function AskDocumentsSection({ projectId }: AskDocumentsSectionProps) {
     const [question, setQuestion] = useState('');
     const [response, setResponse] = useState<AskProjectResponse | null>(null);
     const [isAsking, setIsAsking] = useState(false);
@@ -400,7 +401,7 @@ interface SemanticSearchSectionProps {
     projectId: string;
 }
 
-function SemanticSearchSection({ projectId }: SemanticSearchSectionProps) {
+export function SemanticSearchSection({ projectId }: SemanticSearchSectionProps) {
     const [query, setQuery] = useState('');
     const [response, setResponse] = useState<SemanticSearchResponse | null>(null);
     const [isSearching, setIsSearching] = useState(false);

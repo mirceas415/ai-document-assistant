@@ -4,7 +4,7 @@
 
 Status: Complete
 
-Milestones 1 through 8 now provide the complete ingestion and Ask Your Documents flow. Milestone 9 remains a separate deployment/operations milestone; the Post-MVP section lists possible improvements and is not an implementation commitment.
+Milestones 1 through 9 provide the complete ingestion, grounded Ask Your Documents, and persistent conversation experience. Deployment remains a separate operations milestone; the Post-MVP section lists possible improvements and is not an implementation commitment.
 
 ## Milestone 1 — Authentication
 
@@ -134,16 +134,32 @@ Status: Complete
 - Deterministic context construction bounded to a 6,000-token `cl100k_base` estimate
 - Stable `[S1]`, `[S2]`, ... source identifiers and untrusted-document delimiters
 - Explicit prompt-injection defense and documents-as-data instruction hierarchy
-- Grounded Romanian/English answers using configurable `gpt-5.6-terra`
+- Grounded Romanian/English answers using the existing configurable `gpt-5.6-luna`
 - Official OpenAI .NET Responses API with low reasoning, 700 output-token cap, and provider storage disabled
 - Backend-validated citations mapped only to retrieved authoritative chunks
 - Bounded authoritative source excerpts with document/page/chunk/heading metadata
 - Safe localized no-evidence behavior without an unnecessary answer-model call
-- Single-turn, non-persistent, non-streaming question flow with one embedding plus at most one answer request
+- Non-streaming question flow with one embedding plus at most one answer request
 - Ask Your Documents UI with answer, safe error, and inspectable source states
 - Fake-based RAG, citation, Unicode, prompt-injection, ownership, and provider-failure tests
 
-## Milestone 9 — Deployment
+## Milestone 9 — Conversation UX and Persistent Chat History
+
+Status: Complete
+
+- ChatGPT-style project workspace with project navigation, conversation history, focused messages, bottom composer, and clear document scope
+- Persisted project conversations, ordered user/assistant messages, and authoritative bounded source snapshots
+- Ownership enforced in database queries through conversation → project → owner
+- Create, list, load, rename, delete, and conversation-scoped message APIs
+- Deterministic first-question titles without an extra model request
+- Bounded recent-message context kept separate from authoritative retrieved document evidence
+- User-message-first failure semantics, retry UX, and no fabricated assistant persistence
+- Today, Yesterday, Previous 7 days, and Older local-time history groups
+- Compact source cards and authoritative source-snapshot inspection
+- Document management on a dedicated project route and Retrieval Debug in a collapsed advanced panel
+- `AddConversations` EF Core migration and fake-based persistence, ownership, history, source, Unicode, and failure tests
+
+## Milestone 10 — Deployment
 
 Status: Planned
 
@@ -165,7 +181,6 @@ Status: Not started
 - OCR for scanned documents
 - Durable background queue and cross-process job coordination
 - Cloud/object storage
-- Persistent conversations
 - Streaming responses
 - Formal retrieval and answer evaluation framework
 - Production observability, tracing, and cost dashboards

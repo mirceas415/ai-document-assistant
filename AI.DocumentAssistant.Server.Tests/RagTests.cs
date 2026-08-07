@@ -433,6 +433,9 @@ public sealed class RagTests
         IOpenAIAnswerClient client) =>
         new(
             client,
+            new ConversationHistoryContextBuilder(
+                new Cl100kDocumentTokenizer(),
+                Options.Create(CreateOptions())),
             Options.Create(CreateOptions()),
             NullLogger<OpenAIGroundedAnswerService>.Instance);
 

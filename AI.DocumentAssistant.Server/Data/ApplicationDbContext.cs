@@ -22,6 +22,14 @@ public sealed class ApplicationDbContext
 
     public DbSet<DocumentChunk> DocumentChunks => Set<DocumentChunk>();
 
+    public DbSet<Conversation> Conversations => Set<Conversation>();
+
+    public DbSet<ConversationMessage> ConversationMessages =>
+        Set<ConversationMessage>();
+
+    public DbSet<ConversationMessageSource> ConversationMessageSources =>
+        Set<ConversationMessageSource>();
+
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
@@ -198,6 +206,66 @@ public sealed class ApplicationDbContext
             chunk.HasIndex(value => value.DocumentId);
 
             chunk.HasIndex(value => new { value.DocumentId, value.ChunkIndex })
+                .IsUnique();
+        });
+
+        builder.Entity<Conversation>(conversation =>
+        {
+            conversation.ToTable("Conversations");
+            conversation.HasKey(value => value.Id);
+            conversation.Property(value => value.Title)
+                .HasMaxLength(ConversationLimits.MaximumTitleLength)
+                .IsRequired();
+            conversation.Property(value => value.CreatedAtUtc).IsRequired();
+            conversation.Property(value => value.UpdatedAtUtc).IsRequired();
+            conversation.HasOne(value => value.Project)
+                .WithMany(project => project.Conversations)
+                .HasForeignKey(value => value.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+            conversation.HasIndex(value => new { value.ProjectId, value.UpdatedAtUtc });
+        });
+
+        builder.Entity<ConversationMessage>(message =>
+        {
+            message.ToTable("ConversationMessages");
+            message.HasKey(value => value.Id);
+            message.Property(value => value.Role)
+                .HasConversion<string>()
+                .HasMaxLength(16)
+                .IsRequired();
+            message.Property(value => value.Content)
+                .HasColumnType("text")
+                .IsRequired();
+            message.Property(value => value.CreatedAtUtc).IsRequired();
+            message.HasOne(value => value.Conversation)
+                .WithMany(conversation => conversation.Messages)
+                .HasForeignKey(value => value.ConversationId)
+                .OnDelete(DeleteBehavior.Cascade);
+            message.HasIndex(value => new { value.ConversationId, value.Sequence })
+                .IsUnique();
+        });
+
+        builder.Entity<ConversationMessageSource>(source =>
+        {
+            source.ToTable("ConversationMessageSources");
+            source.HasKey(value => value.Id);
+            source.Property(value => value.SourceId)
+                .HasMaxLength(ConversationLimits.MaximumSourceIdLength)
+                .IsRequired();
+            source.Property(value => value.DocumentName)
+                .HasMaxLength(ConversationLimits.MaximumDocumentNameLength)
+                .IsRequired();
+            source.Property(value => value.Heading)
+                .HasMaxLength(ConversationLimits.MaximumHeadingLength);
+            source.Property(value => value.Excerpt)
+                .HasMaxLength(ConversationLimits.MaximumSourceExcerptLength)
+                .IsRequired();
+            source.HasOne(value => value.ConversationMessage)
+                .WithMany(message => message.Sources)
+                .HasForeignKey(value => value.ConversationMessageId)
+                .OnDelete(DeleteBehavior.Cascade);
+            source.HasIndex(value => new
+                { value.ConversationMessageId, value.SourceIndex })
                 .IsUnique();
         });
     }

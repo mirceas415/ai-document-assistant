@@ -2,7 +2,7 @@
 
 ## Overview
 
-AI Document Assistant is a modular monolith with an ASP.NET Core 10 backend, a React and TypeScript frontend, PostgreSQL persistence through Entity Framework Core and pgvector, OpenAI embedding and answer generation, and local document storage. The completed core MVP supports authenticated, user-owned projects, PDF and DOCX ingestion, semantic search across a project, and single-turn grounded answers with authoritative document citations.
+AI Document Assistant is a modular monolith with an ASP.NET Core 10 backend, a React and TypeScript frontend, PostgreSQL persistence through Entity Framework Core and pgvector, OpenAI embedding and answer generation, and local document storage. The completed core MVP supports authenticated, user-owned projects, PDF and DOCX ingestion, semantic search across a project, grounded answers with authoritative document citations, and persistent project conversations.
 
 The two main flows are:
 
@@ -13,9 +13,14 @@ PDF/DOCX -> Extract -> Normalize -> Chunk -> Embed -> PostgreSQL + pgvector
 QUERY
 Question -> Query embedding -> ownership-filtered semantic retrieval
          -> Top-K chunks -> bounded untrusted context -> OpenAI answer -> citations
+
+CONVERSATION
+Persisted conversation -> current question -> semantic retrieval
+  -> bounded non-authoritative recent history + authoritative document context
+  -> grounded answer -> persisted assistant message + source snapshots
 ```
 
-The MVP deliberately does not include OCR, classification, general document understanding, metadata extraction, hybrid/BM25 search, reranking, persistent conversations, agents, Semantic Kernel, cloud storage, or a durable message broker.
+The MVP deliberately does not include OCR, classification, general document understanding, metadata extraction, hybrid/BM25 search, reranking, agents, Semantic Kernel, cloud storage, streaming, or a durable message broker.
 
 ## Components
 
@@ -31,6 +36,8 @@ The MVP deliberately does not include OCR, classification, general document unde
 ApplicationUser 1 ── * Project 1 ── * Document
                                       ├── * DocumentTextSection
                                       └── * DocumentChunk
+                         └── * Conversation 1 ── * ConversationMessage
+                                                   └── * ConversationMessageSource
 ```
 
 ### ApplicationUser
@@ -39,7 +46,7 @@ ASP.NET Core Identity user with a GUID key, display name, email, authentication 
 
 ### Project
 
-A user-owned workspace with a name, optional description, and timestamps. Deleting a user deletes owned projects; deleting a project deletes its document database rows.
+A user-owned workspace with a name, optional description, and timestamps. Deleting a user deletes owned projects; deleting a project deletes its document and conversation database rows.
 
 ### Document
 
@@ -72,11 +79,17 @@ The embedding fields are:
 
 The hash is deterministic integrity/staleness metadata, not a security mechanism. An embedding is current only when the vector exists, model and dimensions match current configuration, and the stored hash matches the exact current chunk content. Chunk replacement always creates and embeds new rows; embeddings are never copied by chunk index, page number, or section index.
 
+### Conversation, ConversationMessage, and ConversationMessageSource
+
+`Conversation` belongs to one project and stores a GUID, a title, and UTC creation/update timestamps. `(ProjectId, UpdatedAtUtc)` supports the newest-first project history. `ConversationMessage` belongs to one conversation, stores only the constrained `User` or `Assistant` role, text, UTC creation time, and sequence; `(ConversationId, Sequence)` is unique. System/developer prompts, vectors, and provider configuration are never stored.
+
+`ConversationMessageSource` belongs to an assistant message and snapshots the validated source ID, nullable document/chunk identifiers, safe document name, chunk index, pages, heading, and at most 500 excerpt characters. `(ConversationMessageId, SourceIndex)` is unique. Its document and chunk identifiers are intentionally scalar snapshots rather than foreign keys. Therefore deleting a document deletes its text, chunks, and vectors but does not erase old answers or their bounded citation displays. Deleting a conversation cascades to its messages and source snapshots; it never deletes documents.
+
 ## Authentication and Ownership
 
 ASP.NET Core Identity uses GUID user keys and an HTTP-only application cookie. API authentication failures return JSON `401` or `403` responses instead of redirects.
 
-All project, document, Search, and Ask endpoints require authentication. Queries include the current user's ID through `Project.OwnerId`. A resource belonging to another user is returned as not found so its existence is not disclosed. Search and Ask verify project ownership before creating a query embedding, then repeat owner and project filters inside the vector SQL query. Consequently, another user's document text cannot be retrieved or sent to the answer model. Read-only EF queries use `AsNoTracking` where change tracking is unnecessary.
+All project, document, Search, Ask, and conversation endpoints require authentication. Queries include the current user's ID through `Project.OwnerId`. Conversation queries enforce `Conversation -> Project -> OwnerId` in SQL and also require the route project ID, so both cross-user IDs and conversation/project mismatches return not found. Search and Ask verify project ownership before creating a query embedding, then repeat owner and project filters inside the vector SQL query. Consequently, another user's conversation or document text cannot be retrieved or sent to the answer model. Read-only EF queries use `AsNoTracking` where change tracking is unnecessary.
 
 ## Upload Flow
 
@@ -242,7 +255,7 @@ Milestone 7 intentionally uses an exact filtered scan and adds no HNSW or IVFFla
 
 ## RAG / Ask Your Documents Flow
 
-`POST /api/projects/{projectId}/ask` accepts one required, trimmed question of at most 2,000 characters. There is no client-selectable model and no persisted conversation. `IProjectQuestionAnsweringService` performs this single-turn sequence:
+`POST /api/projects/{projectId}/ask` remains a stateless compatibility endpoint accepting one required, trimmed question of at most 2,000 characters. There is no client-selectable model. `IProjectQuestionAnsweringService` performs the shared grounded-answer sequence:
 
 ```text
 authenticate and validate
@@ -254,7 +267,7 @@ authenticate and validate
   -> return answer and authoritative sources
 ```
 
-The configured answer model is `gpt-5.6-terra`, selected as an economical multilingual model suitable for grounded Romanian and English question answering. `OpenAIResponsesAnswerClient` uses the already-installed official OpenAI .NET SDK's Responses API. Requests use low reasoning effort, cap answer output at 700 tokens, and set `StoredOutputEnabled = false`. The adapter is lazy, uses the API key only through backend configuration, and reduces provider failures to a safe application error. No unofficial SDK, Semantic Kernel, tool loop, hidden self-critique, reranker, or second answer call is used.
+The existing configured answer model is `gpt-5.6-luna`, preserved for its economical multilingual grounded-answer use. `OpenAIResponsesAnswerClient` uses the already-installed official OpenAI .NET SDK's Responses API. Requests use low reasoning effort, cap answer output at 700 tokens, and set `StoredOutputEnabled = false`. The adapter is lazy, uses the API key only through backend configuration, and reduces provider failures to a safe application error. No unofficial SDK, Semantic Kernel, tool loop, hidden self-critique, reranker, or second answer call is used.
 
 ### Bounded context
 
@@ -287,9 +300,52 @@ The model may cite only local IDs such as `[S1]`. The backend retains the author
 
 ### Cost, failure, and privacy behavior
 
-A normal Ask request costs one query-embedding request plus one Responses API request. Search costs only the one query-embedding request. Zero-result Ask skips answer generation. Context, output, Top-K, and source-excerpt sizes are bounded; previous questions and answers are not sent with later questions.
+A normal Ask request costs one query-embedding request plus one Responses API request. Search costs only the one query-embedding request. Zero-result Ask skips answer generation. Context, output, Top-K, source-excerpt size, and recent conversation context are bounded. No title or history-summary model call is made.
 
 Structured logs contain project ID, Top-K, result/source counts, model names, dimensions, approximate context tokens, duration, outcome, and safe provider status/type when applicable. They omit the API key, vectors, full question, document/chunk text, prompt/context, generated answer, provider response body, authorization headers, storage paths, and connection strings. Provider or database failures return safe retryable API errors and do not mutate retrieval data or persist a fake answer.
+
+## Conversation UX and Message Flow
+
+The project-scoped conversation API is:
+
+- `GET /api/projects/{projectId}/conversations`: newest-first summaries;
+- `POST /api/projects/{projectId}/conversations`: empty `New chat` creation;
+- `GET /api/projects/{projectId}/conversations/{conversationId}`: ordered messages and persisted sources;
+- `PATCH /api/projects/{projectId}/conversations/{conversationId}`: trimmed title rename, maximum 80 characters;
+- `DELETE /api/projects/{projectId}/conversations/{conversationId}`: cascaded chat deletion only; and
+- `POST /api/projects/{projectId}/conversations/{conversationId}/messages`: conversation-scoped Ask.
+
+The message flow is:
+
+```text
+authenticate -> SQL-filter owned project/conversation -> validate current question
+  -> persist User message and deterministic first-question title
+  -> current question drives existing ISemanticRetrievalService
+  -> build bounded document context + separately bounded recent conversation context
+  -> existing IGroundedAnswerService generates one grounded answer
+  -> persist Assistant message + backend-authoritative source snapshots
+  -> update Conversation.UpdatedAtUtc
+```
+
+Titles begin as `New chat` and, on the first question, become a whitespace-normalized Unicode-safe prefix of that question capped at 72 characters. Rename is manual; neither path calls OpenAI.
+
+### Conversation history versus document evidence
+
+At most six recent messages and at most 1,200 approximate `cl100k_base` tokens are supplied by default. Both limits are backend configuration (`RecentConversationMessageCount` maximum 12 and `MaxConversationContextTokens` maximum 4,000). The current question alone remains the retrieval query. Recent messages are wrapped in `<BEGIN_NON_AUTHORITATIVE_CONVERSATION_CONTEXT>` delimiters and may help resolve conversational wording, but the fixed grounding instruction says they are not document evidence, previous assistant answers cannot support factual claims, and history cannot be cited. Retrieved chunks remain the only authoritative evidence in the separate untrusted-document context.
+
+No entire/unbounded conversation, history summary, prior source excerpt, or previous answer is used for retrieval or promoted into the instruction hierarchy. A normal conversation message therefore keeps the existing cost of one query embedding plus at most one answer request.
+
+### Persistence, failure, and privacy
+
+The user message and title/update timestamp commit before retrieval and provider I/O; no database transaction is held across OpenAI calls. The assistant message and all authoritative source snapshots commit together only after successful grounded generation. If retrieval or answer generation fails, the user message remains visible and retryable, while no fake assistant message or partial source rows are created. The UI retains the failed question and exposes one user-triggered retry. Its optional retry ID is accepted only when it identifies the conversation's last user message with the same text, preventing a duplicate user entry; there is no automatic expensive retry loop.
+
+Conversation DTOs omit owner IDs, embeddings, vectors, storage names/paths, prompts, model selection, and secrets. Logs record only safe IDs/counts/timing/model metadata, never full conversation text. Persisted sources come exclusively from the backend-validated RAG mapping, not from frontend input or model-invented metadata.
+
+### Chat workspace
+
+The lightweight History API router supports `/projects/{projectId}`, `/projects/{projectId}/chats/{conversationId}`, and `/projects/{projectId}/documents`. The chat workspace uses a compact application sidebar, current-project/document count, local-time grouped and filterable history, focused user/assistant messages, anchored composer, loading/error/retry states, inline rename, confirmed delete, and compact source cards with a snapshot modal. Basic paragraphs, lists, bold text, and citation markers are rendered as React nodes without `dangerouslySetInnerHTML` or a Markdown dependency.
+
+Document upload, status, raw/normalized text, chunks, embedding generation/rebuild, and deletion remain on the Documents route. Semantic Search remains available under a collapsed `Advanced: retrieval details` control instead of dominating the normal chat experience. Desktop uses the available three-column width; the history/sidebar progressively collapse on smaller screens.
 
 ## Normalization, Chunk, and Embedding Rebuild Flow
 
@@ -324,7 +380,7 @@ The project detail page polls while a document is Uploaded or Processing. A succ
 
 Normalization, chunk, and embedding rebuilds require browser confirmation; the embedding confirmation also makes API-credit usage explicit. Document cards show concise raw/normalized/chunk statistics plus Embedded, Not embedded, or Needs rebuild state, embedded chunk count, model, dimensions, and time. They never display vectors. Action loading state disables conflicting actions for that document, and successful requests refresh metadata. Normalized text is fetched only while the viewer is open and its normalized tab is selected. No React effect or polling path generates embeddings.
 
-The same page includes two intentionally small MVP tools. Semantic Search accepts a query and optional bounded Top-K, shows loading and safe error states, and renders ranked document/chunk/page/heading/content results with cosine distance. Ask Your Documents accepts a single question, shows the grounded answer, and renders only validated authoritative sources with bounded excerpts. Repeated UI questions remain independent single turns; there is no conversation persistence or implicit history. Neither UI receives vectors, provider configuration, prompts, storage paths, or secrets.
+Document management is intentionally separate from the focused chat workspace. The chat UI persists project conversations and renders only backend-authoritative source snapshots. Semantic Search is retained as a collapsed advanced retrieval inspector with ranked document/chunk/page/heading/content results and cosine distance. Neither view receives vectors, provider configuration, prompts, storage paths, or secrets.
 
 ## Completed Milestones
 
@@ -338,9 +394,10 @@ The same page includes two intentionally small MVP tools. Semantic Search accept
 - Milestone 6: OpenAI embedding abstraction and adapter, bounded batch generation, pgvector `vector(1536)` persistence, configuration and staleness metadata, atomic pipeline/rebuild integration, legacy-document generation, safe frontend reporting, tests, migration, and documentation.
 - Milestone 7: Project-scoped semantic retrieval, one transient query embedding, parameterized ownership- and freshness-filtered pgvector cosine search, bounded Top-K, safe results, retrieval debug UI, tests, and exact-search index decision.
 - Milestone 8: Single-turn Ask Your Documents, bounded untrusted context, official OpenAI Responses answer generation, grounded multilingual answers, validated authoritative citations, no-evidence behavior, frontend UI, tests, and documentation.
+- Milestone 9: Persistent project conversations, bounded non-authoritative recent history, source snapshots, ownership-safe CRUD/message APIs, deterministic titles, failure/retry semantics, focused chat workspace, separate document management, tests, migration, and documentation.
 
 ## Core MVP Status and Limitations
 
-The core bachelor's-project MVP is complete through Milestone 8. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, no OCR for scanned documents, exact vector search sized for MVP data, approximate tokenizer accounting for answer context, single-turn non-streaming answers, no persisted conversations, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guide in `RETRIEVAL_EVALUATION.md`.
+The core bachelor's-project MVP is complete through Milestone 9. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, no OCR for scanned documents, exact vector search sized for MVP data, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guide in `RETRIEVAL_EVALUATION.md`.
 
-Classification, broad document understanding, metadata extraction or metadata-aware retrieval, hybrid lexical/vector search, reranking, OCR, durable queues, cloud/object storage, persistent conversations, streaming, a larger evaluation framework, observability, and deployment hardening are post-MVP possibilities only. They are not part of the completed implementation; see `ROADMAP.md`.
+Classification, broad document understanding, metadata extraction or metadata-aware retrieval, hybrid lexical/vector search, reranking, OCR, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening are post-MVP possibilities only. They are not part of the completed implementation; see `ROADMAP.md`.

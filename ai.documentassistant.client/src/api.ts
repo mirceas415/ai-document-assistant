@@ -108,6 +108,47 @@ export interface AskProjectResponse {
     sources: AskSource[];
 }
 
+export interface ConversationSummary {
+    id: string;
+    title: string;
+    createdAtUtc: string;
+    updatedAtUtc: string;
+    messageCount: number;
+    sourceCount: number;
+}
+
+export interface Conversation {
+    id: string;
+    projectId: string;
+    title: string;
+    createdAtUtc: string;
+    updatedAtUtc: string;
+    messages: ConversationMessage[];
+}
+
+export type ConversationMessageRole = 'User' | 'Assistant';
+
+export interface ConversationMessage {
+    id: string;
+    role: ConversationMessageRole;
+    content: string;
+    createdAtUtc: string;
+    sequence: number;
+    sources: ConversationMessageSource[];
+}
+
+export interface ConversationMessageSource {
+    sourceId: string;
+    documentId: string | null;
+    documentName: string;
+    documentChunkId: string | null;
+    chunkIndex: number;
+    pageStart: number | null;
+    pageEnd: number | null;
+    heading: string | null;
+    excerpt: string;
+}
+
 interface ApiError {
     message?: string;
     errors?: Record<string, string[]>;

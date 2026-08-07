@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { LoginPage, LoadingPage, RegistrationPage } from './AuthPages';
 import { ProjectDetailsPage, ProjectsDashboard } from './Projects';
+import { ProjectChatWorkspace } from './ChatWorkspace';
 import type { CurrentUser } from './api';
 import './App.css';
 
@@ -8,7 +9,8 @@ type Route =
     | { page: 'login' }
     | { page: 'register' }
     | { page: 'projects' }
-    | { page: 'project-details'; projectId: string }
+    | { page: 'project-chat'; projectId: string; conversationId?: string }
+    | { page: 'project-documents'; projectId: string }
     | { page: 'unknown' };
 
 function readRoute(): Route {
@@ -18,9 +20,23 @@ function readRoute(): Route {
     if (path === '/register') return { page: 'register' };
     if (path === '/projects') return { page: 'projects' };
 
+    const conversationMatch = path.match(/^\/projects\/([^/]+)\/chats\/([^/]+)$/);
+    if (conversationMatch) {
+        return {
+            page: 'project-chat',
+            projectId: decodeURIComponent(conversationMatch[1]),
+            conversationId: decodeURIComponent(conversationMatch[2]),
+        };
+    }
+
+    const documentsMatch = path.match(/^\/projects\/([^/]+)\/documents$/);
+    if (documentsMatch) {
+        return { page: 'project-documents', projectId: decodeURIComponent(documentsMatch[1]) };
+    }
+
     const projectMatch = path.match(/^\/projects\/([^/]+)$/);
     return projectMatch
-        ? { page: 'project-details', projectId: decodeURIComponent(projectMatch[1]) }
+        ? { page: 'project-chat', projectId: decodeURIComponent(projectMatch[1]) }
         : { page: 'unknown' };
 }
 
@@ -122,11 +138,24 @@ function App() {
             : <LoginPage sessionError={sessionError} onAuthenticated={authenticated} onNavigate={navigate} />;
     }
 
-    if (route.page === 'project-details') {
+    if (route.page === 'project-documents') {
         return (
             <ProjectDetailsPage
                 user={user}
                 projectId={route.projectId}
+                onNavigate={navigate}
+                onSignedOut={signedOut}
+            />
+        );
+    }
+
+    if (route.page === 'project-chat') {
+        return (
+            <ProjectChatWorkspace
+                key={`${route.projectId}-${route.conversationId ?? 'root'}`}
+                user={user}
+                projectId={route.projectId}
+                conversationId={route.conversationId}
                 onNavigate={navigate}
                 onSignedOut={signedOut}
             />
