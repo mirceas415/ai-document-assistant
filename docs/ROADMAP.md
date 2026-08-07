@@ -1,5 +1,11 @@
 # AI Document Assistant Roadmap
 
+## Core MVP
+
+Status: Complete
+
+Milestones 1 through 8 now provide the complete ingestion and Ask Your Documents flow. Milestone 9 remains a separate deployment/operations milestone; the Post-MVP section lists possible improvements and is not an implementation commitment.
+
 ## Milestone 1 — Authentication
 
 Status: Complete
@@ -102,26 +108,40 @@ Status: Complete
 - SDK-level transient retries, cancellation, structured safe logging, and cost controls
 - Frontend embedding status and confirmed Generate/Rebuild actions without vector exposure
 - EF Core migration, fake-based automated tests, and architecture documentation
-- No vector index, vector retrieval, query embeddings, semantic search, chat, or RAG
+- Milestone 6 intentionally stopped before vector retrieval, query embeddings, semantic search, and RAG; those capabilities are completed by Milestones 7 and 8 below
 
 ## Milestone 7 — Semantic Retrieval/Search
 
-Status: Planned (Next)
+Status: Complete
 
-- Choose and validate the similarity metric
-- Generate query embeddings only for explicit authorized searches
-- Implement ownership-filtered similarity retrieval
-- Select and test the appropriate pgvector index strategy
-- Evaluate retrieval quality and latency
+- Authenticated `POST /api/projects/{projectId}/search`
+- Required trimmed query up to 2,000 characters and Top-K default 8, maximum 20
+- Exactly one transient query embedding through the existing `ITextEmbeddingService`
+- PostgreSQL/pgvector cosine-distance ordering with smaller distance meaning closer match
+- Database-side owner, project, Ready status, model, dimensions, timestamp, vector, aggregate, and SHA-256 content-freshness filters
+- Safe ranked document/page/chunk/heading/content DTOs without vectors or storage paths
+- Shared `ISemanticRetrievalService` and small PostgreSQL vector-query abstraction
+- Exact filtered search for MVP correctness; HNSW and IVFFlat deferred pending representative measurement
+- Semantic retrieval/debug UI with loading, error, and ranked result states
+- Fake-based automated tests plus deterministic/manual retrieval evaluation guidance
 
-## Milestone 8 — AI Chat
+## Milestone 8 — RAG / Ask Your Documents
 
-Status: Planned
+Status: Complete
 
-- Add conversations and messages
-- Ground responses in authorized retrieved chunks
-- Return document/page citations
-- Add prompt-injection and content-safety controls
+- Authenticated `POST /api/projects/{projectId}/ask` with ownership verified before any AI request
+- Reuse of Milestone 7 retrieval with server-configured Top-K 8
+- Deterministic context construction bounded to a 6,000-token `cl100k_base` estimate
+- Stable `[S1]`, `[S2]`, ... source identifiers and untrusted-document delimiters
+- Explicit prompt-injection defense and documents-as-data instruction hierarchy
+- Grounded Romanian/English answers using configurable `gpt-5.6-terra`
+- Official OpenAI .NET Responses API with low reasoning, 700 output-token cap, and provider storage disabled
+- Backend-validated citations mapped only to retrieved authoritative chunks
+- Bounded authoritative source excerpts with document/page/chunk/heading metadata
+- Safe localized no-evidence behavior without an unnecessary answer-model call
+- Single-turn, non-persistent, non-streaming question flow with one embedding plus at most one answer request
+- Ask Your Documents UI with answer, safe error, and inspectable source states
+- Fake-based RAG, citation, Unicode, prompt-injection, ownership, and provider-failure tests
 
 ## Milestone 9 — Deployment
 
@@ -131,3 +151,22 @@ Status: Planned
 - Managed PostgreSQL and durable file-storage strategy
 - HTTPS, monitoring, backups, and recovery
 - CI/CD, migrations, health checks, and operational documentation
+
+## Post-MVP — Possible Improvements
+
+Status: Not started
+
+- Document classification
+- Broader document understanding
+- Structured metadata extraction
+- Metadata-aware retrieval and filtering
+- Hybrid lexical/vector search
+- Evidence-based reranking
+- OCR for scanned documents
+- Durable background queue and cross-process job coordination
+- Cloud/object storage
+- Persistent conversations
+- Streaming responses
+- Formal retrieval and answer evaluation framework
+- Production observability, tracing, and cost dashboards
+- Deployment hardening, scaling, backup, and recovery automation

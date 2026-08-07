@@ -74,6 +74,40 @@ export interface DocumentChunk {
     sourceSectionEndIndex: number;
 }
 
+export interface SemanticSearchResult {
+    documentId: string;
+    documentName: string;
+    chunkId: string;
+    chunkIndex: number;
+    content: string;
+    pageStart: number | null;
+    pageEnd: number | null;
+    heading: string | null;
+    cosineDistance: number;
+}
+
+export interface SemanticSearchResponse {
+    topK: number;
+    results: SemanticSearchResult[];
+}
+
+export interface AskSource {
+    sourceId: string;
+    documentId: string;
+    documentName: string;
+    chunkId: string;
+    chunkIndex: number;
+    pageStart: number | null;
+    pageEnd: number | null;
+    heading: string | null;
+    excerpt: string;
+}
+
+export interface AskProjectResponse {
+    answer: string;
+    sources: AskSource[];
+}
+
 interface ApiError {
     message?: string;
     errors?: Record<string, string[]>;

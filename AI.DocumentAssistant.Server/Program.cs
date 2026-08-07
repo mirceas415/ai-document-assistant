@@ -5,6 +5,8 @@ using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Processing;
+using AI.DocumentAssistant.Server.Retrieval;
+using AI.DocumentAssistant.Server.Rag;
 using AI.DocumentAssistant.Server.Storage;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Diagnostics;
@@ -33,10 +35,16 @@ builder.Services.AddSingleton<IDocumentChunkGenerator, DocumentChunkGenerator>()
 builder.Services.AddSingleton<IDocumentTextNormalizer, DocumentTextNormalizer>();
 builder.Services.AddSingleton<IOpenAIEmbeddingClient, OpenAISdkEmbeddingClient>();
 builder.Services.AddSingleton<ITextEmbeddingService, OpenAITextEmbeddingService>();
+builder.Services.AddSingleton<IOpenAIAnswerClient, OpenAIResponsesAnswerClient>();
+builder.Services.AddSingleton<IGroundedAnswerService, OpenAIGroundedAnswerService>();
+builder.Services.AddSingleton<IRagContextBuilder, RagContextBuilder>();
 builder.Services.AddScoped<IDocumentChunkingService, DocumentChunkingService>();
 builder.Services.AddScoped<IDocumentNormalizationService, DocumentNormalizationService>();
 builder.Services.AddScoped<IDocumentEmbeddingService, DocumentEmbeddingService>();
 builder.Services.AddScoped<IDocumentProcessingService, DocumentProcessingService>();
+builder.Services.AddScoped<ISemanticChunkSearch, PgvectorSemanticChunkSearch>();
+builder.Services.AddScoped<ISemanticRetrievalService, SemanticRetrievalService>();
+builder.Services.AddScoped<IProjectQuestionAnsweringService, ProjectQuestionAnsweringService>();
 builder.Services.AddHostedService<DocumentProcessingWorker>();
 
 builder.Services.AddOptions<DocumentChunkingOptions>()
@@ -76,6 +84,14 @@ builder.Services.AddOptions<OpenAIEmbeddingOptions>()
     .Validate(
         options => options.EmbeddingDimensions == EmbeddingArchitecture.Dimensions,
         $"OpenAI EmbeddingDimensions must be {EmbeddingArchitecture.Dimensions}; changing it requires an EF migration.")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<OpenAIAnswerOptions>()
+    .Bind(builder.Configuration.GetSection(OpenAIAnswerOptions.SectionName))
+    .ValidateDataAnnotations()
+    .Validate(
+        options => !string.IsNullOrWhiteSpace(options.AnswerModel),
+        "OpenAI AnswerModel must not be empty.")
     .ValidateOnStart();
 
 builder.Services

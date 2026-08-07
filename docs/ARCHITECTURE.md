@@ -2,15 +2,26 @@
 
 ## Overview
 
-AI Document Assistant is a modular monolith with an ASP.NET Core 10 backend, a React and TypeScript frontend, PostgreSQL persistence through Entity Framework Core and pgvector, OpenAI embedding generation, and local document storage. The application supports authenticated, user-owned projects, PDF and DOCX upload, background text extraction, conservative extraction normalization, deterministic retrieval chunk generation, embedding persistence, and explicit rebuild or inspection operations.
+AI Document Assistant is a modular monolith with an ASP.NET Core 10 backend, a React and TypeScript frontend, PostgreSQL persistence through Entity Framework Core and pgvector, OpenAI embedding and answer generation, and local document storage. The completed core MVP supports authenticated, user-owned projects, PDF and DOCX ingestion, semantic search across a project, and single-turn grounded answers with authoritative document citations.
 
-Milestone 6 ends at embedding generation and storage. There is no vector retrieval, nearest-neighbor query, query embedding, vector index, semantic search, hybrid search, reranking, chat, RAG answering, classification, OCR, cloud storage, external message queue, or generic AI orchestration framework.
+The two main flows are:
+
+```text
+INGESTION
+PDF/DOCX -> Extract -> Normalize -> Chunk -> Embed -> PostgreSQL + pgvector
+
+QUERY
+Question -> Query embedding -> ownership-filtered semantic retrieval
+         -> Top-K chunks -> bounded untrusted context -> OpenAI answer -> citations
+```
+
+The MVP deliberately does not include OCR, classification, general document understanding, metadata extraction, hybrid/BM25 search, reranking, persistent conversations, agents, Semantic Kernel, cloud storage, or a durable message broker.
 
 ## Components
 
-- `AI.DocumentAssistant.Server` hosts the JSON API, cookie authentication, static frontend output, EF Core data access, file storage, extraction pipeline, in-memory background queue, chunking services, the application embedding abstraction, and the OpenAI adapter.
+- `AI.DocumentAssistant.Server` hosts the JSON API, cookie authentication, static frontend output, EF Core data access, file storage, ingestion pipeline, in-memory background queue, semantic retrieval, bounded RAG context construction, and narrow OpenAI embedding and answer adapters.
 - `ai.documentassistant.client` is a React 19 and TypeScript single-page application built with Vite.
-- `AI.DocumentAssistant.Server.Tests` contains xUnit tests using EF Core's in-memory provider plus generated PDF and DOCX fixtures.
+- `AI.DocumentAssistant.Server.Tests` contains xUnit tests using EF Core's in-memory provider, fakes for every OpenAI boundary, generated PDF and DOCX fixtures, and SQL-shape checks for the PostgreSQL-only vector query.
 - PostgreSQL is the production relational database. The pgvector extension stores embeddings through the provider's first-class `Vector` type; vectors are not manually serialized.
 - The local `Uploads` directory stores uploaded PDF and DOCX files under generated filenames. Stored paths and uploaded files are not exposed through the API.
 
@@ -65,7 +76,7 @@ The hash is deterministic integrity/staleness metadata, not a security mechanism
 
 ASP.NET Core Identity uses GUID user keys and an HTTP-only application cookie. API authentication failures return JSON `401` or `403` responses instead of redirects.
 
-All project and document endpoints require authentication. Queries include the current user's ID through `Project.OwnerId`. A resource belonging to another user is returned as not found so its existence is not disclosed. Read-only queries use `AsNoTracking` where change tracking is unnecessary.
+All project, document, Search, and Ask endpoints require authentication. Queries include the current user's ID through `Project.OwnerId`. A resource belonging to another user is returned as not found so its existence is not disclosed. Search and Ask verify project ownership before creating a query embedding, then repeat owner and project filters inside the vector SQL query. Consequently, another user's document text cannot be retrieved or sent to the answer model. Read-only EF queries use `AsNoTracking` where change tracking is unnecessary.
 
 ## Upload Flow
 
@@ -188,6 +199,98 @@ Structured embedding logs contain safe aggregates such as document/project IDs, 
 
 Embedding calls occur only for a newly processed upload, explicit processing retry, normalization rebuild, chunk rebuild, or explicit embedding generation/rebuild. GET endpoints, polling, startup, rendering, and recurring background work never create embeddings, and historical documents are not silently backfilled.
 
+## Semantic Retrieval Flow
+
+`POST /api/projects/{projectId}/search` accepts a trimmed query and optional `TopK`. The query is required, whitespace-only input is rejected, and the maximum length is 2,000 characters. `TopK` defaults to 8 and is bounded from 1 through 20. The endpoint returns ranked safe chunk metadata and cosine distance; it never returns an embedding, storage filename, physical path, or owner ID.
+
+`ISemanticRetrievalService` is the shared orchestration boundary used by both Search and Ask. It first verifies `(Project.Id, Project.OwnerId)` in the database. Only after that succeeds does it call the existing `ITextEmbeddingService` exactly once with a one-item batch containing the normalized query. The returned model, count, 1,536 dimensions, and finite values are validated against current embedding configuration. Query embeddings are transient and are never saved, serialized, returned, or logged.
+
+`ISemanticChunkSearch` is the small PostgreSQL-specific vector-query boundary. `PgvectorSemanticChunkSearch` issues one parameterized command whose essential shape is:
+
+```sql
+SELECT safe_chunk_and_document_columns,
+       c."Embedding" <=> @query_embedding AS "CosineDistance"
+FROM "DocumentChunks" AS c
+JOIN "Documents" AS d ON d."Id" = c."DocumentId"
+JOIN "Projects" AS p ON p."Id" = d."ProjectId"
+WHERE p."Id" = @project_id
+  AND p."OwnerId" = @owner_id
+  AND d."ProjectId" = @project_id
+  AND d."Status" = 'Ready'
+  AND d."ChunkCount" > 0
+  AND d."EmbeddedChunkCount" = d."ChunkCount"
+  AND d."EmbeddingModel" = @embedding_model
+  AND d."EmbeddingDimensions" = @embedding_dimensions
+  AND d."EmbeddedAtUtc" IS NOT NULL
+  AND c."Embedding" IS NOT NULL
+  AND c."EmbeddingModel" = @embedding_model
+  AND c."EmbeddingDimensions" = @embedding_dimensions
+  AND c."EmbeddedAtUtc" = d."EmbeddedAtUtc"
+  AND c."EmbeddingContentHash" = upper(
+      encode(sha256(convert_to(c."Content", 'UTF8')), 'hex'))
+ORDER BY c."Embedding" <=> @query_embedding
+LIMIT @top_k;
+```
+
+The displayed literal `'Ready'` is also supplied as a parameter in the implementation. Project, owner, status, model, dimensions, query vector, and limit are parameters; document text and vector values are not interpolated into SQL. Ownership, project scope, document state, aggregate currency, per-chunk vector metadata, timestamp agreement, and exact SHA-256 hash freshness are therefore enforced before/as part of nearest-neighbor retrieval. PostgreSQL performs cosine ordering; the application never loads vectors to calculate similarity in memory and never globally retrieves chunks before filtering.
+
+Cosine distance was chosen because it compares embedding direction and is the conventional pgvector metric for semantic OpenAI embeddings. The `<=>` operator returns cosine distance: a smaller value means a closer semantic match. It is displayed as a distance, not as a percentage or confidence score. Search returns ranked Top-K results without an arbitrary relevance threshold. Romanian, English, mixed-language, and Unicode queries pass unchanged to the multilingual embedding model; there is no translation or document-specific tuning.
+
+### Vector index decision
+
+Milestone 7 intentionally uses an exact filtered scan and adds no HNSW or IVFFlat index. The expected MVP data volume is modest, while owner/project/current-embedding predicates are selective and correctness is more important than approximate recall. With an approximate index, PostgreSQL can apply filters after the index scan and return fewer eligible neighbors unless deployment-specific tuning and iterative-scan behavior are evaluated. Deferring HNSW therefore avoids silently losing project-scoped results. If measured post-MVP volume justifies it, evaluate one `vector_cosine_ops` HNSW index against representative multi-project data and the deployed pgvector version before adding a migration. IVFFlat and HNSW must not be introduced together without evidence.
+
+## RAG / Ask Your Documents Flow
+
+`POST /api/projects/{projectId}/ask` accepts one required, trimmed question of at most 2,000 characters. There is no client-selectable model and no persisted conversation. `IProjectQuestionAnsweringService` performs this single-turn sequence:
+
+```text
+authenticate and validate
+  -> verify owned project and create one query embedding
+  -> reuse ISemanticRetrievalService with TopK 8
+  -> build bounded context from retrieved chunks
+  -> call IGroundedAnswerService once
+  -> validate cited source IDs
+  -> return answer and authoritative sources
+```
+
+The configured answer model is `gpt-5.6-terra`, selected as an economical multilingual model suitable for grounded Romanian and English question answering. `OpenAIResponsesAnswerClient` uses the already-installed official OpenAI .NET SDK's Responses API. Requests use low reasoning effort, cap answer output at 700 tokens, and set `StoredOutputEnabled = false`. The adapter is lazy, uses the API key only through backend configuration, and reduces provider failures to a safe application error. No unofficial SDK, Semantic Kernel, tool loop, hidden self-critique, reranker, or second answer call is used.
+
+### Bounded context
+
+`IRagContextBuilder`/`RagContextBuilder` deterministically converts ranked `RetrievedDocumentChunk` values into source blocks identified as `[S1]`, `[S2]`, and so on. Each block carries the safe document name, page range when known, one-based displayed chunk number, heading when known, and authoritative chunk content. Duplicate chunk IDs and exact duplicate contents are omitted. Only retrieved chunks are eligible; whole documents are never added. If the final source would exceed the budget, its content is truncated at a tokenizer boundary and context construction stops.
+
+The default context budget is 6,000 approximate tokens. Counting uses the existing `cl100k_base` tokenizer as a conservative deterministic estimate; the selected answer model may not use that exact tokenizer, so this is explicitly a budget estimate rather than exact provider accounting. Delimiters and source framing count toward the budget:
+
+```text
+<BEGIN_UNTRUSTED_DOCUMENT_CONTEXT>
+[S1]
+Document: ...
+Page: ...
+Chunk: ...
+Heading: ...
+Content:
+...
+---
+<END_UNTRUSTED_DOCUMENT_CONTEXT>
+```
+
+### Prompt-injection boundary and grounding
+
+Retrieved document content is placed in the user input inside explicit untrusted-data delimiters, never promoted into system/developer instructions. The higher-priority grounding instructions state that document content is data, not instructions; instructions, commands, role changes, or requests found in it must be ignored; commands must not be executed; and system instructions, hidden prompts, secrets, API keys, credentials, authorization data, and internal configuration must never be revealed.
+
+The model is told to answer only from factual evidence in the supplied context, not to fill gaps with world knowledge, and to decline clearly when evidence is insufficient. It answers naturally in the question's language, including Romanian and English. No brittle distance threshold is applied: retrieval supplies ranked evidence and the grounded-answer policy handles relevance. If retrieval returns zero eligible chunks, or no source fits the context budget, the application returns a localized no-information response without calling the answer model.
+
+### Citations and authoritative sources
+
+The model may cite only local IDs such as `[S1]`. The backend retains the authoritative mapping from every supplied source ID to its retrieved database chunk. After generation it extracts citation IDs, normalizes them, discards unknown/hallucinated IDs, and removes unknown citation markers from the answer. Only validated IDs become structured source DTOs. Document IDs, chunk IDs, indexes, pages, headings, and excerpts come from the retrieved database record, never from model-generated metadata. Excerpts preserve Unicode, are bounded to 500 characters by default, and avoid splitting UTF-16 surrogate pairs. Vectors and internal filenames are absent from both answer and source contracts.
+
+### Cost, failure, and privacy behavior
+
+A normal Ask request costs one query-embedding request plus one Responses API request. Search costs only the one query-embedding request. Zero-result Ask skips answer generation. Context, output, Top-K, and source-excerpt sizes are bounded; previous questions and answers are not sent with later questions.
+
+Structured logs contain project ID, Top-K, result/source counts, model names, dimensions, approximate context tokens, duration, outcome, and safe provider status/type when applicable. They omit the API key, vectors, full question, document/chunk text, prompt/context, generated answer, provider response body, authorization headers, storage paths, and connection strings. Provider or database failures return safe retryable API errors and do not mutate retrieval data or persist a fake answer.
+
 ## Normalization, Chunk, and Embedding Rebuild Flow
 
 `POST /api/projects/{projectId}/documents/{documentId}/normalization/rebuild` authenticates the user, filters ownership in SQL, requires a `Ready` document with stored raw sections, and atomically changes the document to `Processing` before work begins. It reruns normalization from `DocumentTextSection.Content`, regenerates chunks, generates fresh embeddings, and replaces normalized fields, chunks, vectors, and aggregate metadata in one transaction without opening the uploaded file. If normalization, chunking, or embedding fails before commit, the prior authoritative normalized content, chunks, and embeddings remain intact; the document returns to `Ready` with a bounded safe stage error.
@@ -212,7 +315,7 @@ Queue duplicate markers, conditional database status claims, and document consis
 
 ## Frontend State
 
-The project detail page polls while a document is Uploaded or Processing. A successful refresh replaces local document metadata and clears stale action errors. Available actions are status-specific:
+The project detail page polls while a document is Uploaded or Processing. A successful refresh replaces local document metadata and clears stale action errors. Available document actions are status-specific:
 
 - Uploaded: Process and Delete.
 - Processing: state only; no document action buttons.
@@ -220,6 +323,8 @@ The project detail page polls while a document is Uploaded or Processing. A succ
 - Ready: inspect raw/normalized text, view chunks, rebuild normalization, rebuild chunks, explicitly generate/rebuild embeddings, and delete. Process and Retry are never rendered.
 
 Normalization, chunk, and embedding rebuilds require browser confirmation; the embedding confirmation also makes API-credit usage explicit. Document cards show concise raw/normalized/chunk statistics plus Embedded, Not embedded, or Needs rebuild state, embedded chunk count, model, dimensions, and time. They never display vectors. Action loading state disables conflicting actions for that document, and successful requests refresh metadata. Normalized text is fetched only while the viewer is open and its normalized tab is selected. No React effect or polling path generates embeddings.
+
+The same page includes two intentionally small MVP tools. Semantic Search accepts a query and optional bounded Top-K, shows loading and safe error states, and renders ranked document/chunk/page/heading/content results with cosine distance. Ask Your Documents accepts a single question, shows the grounded answer, and renders only validated authoritative sources with bounded excerpts. Repeated UI questions remain independent single turns; there is no conversation persistence or implicit history. Neither UI receives vectors, provider configuration, prompts, storage paths, or secrets.
 
 ## Completed Milestones
 
@@ -231,7 +336,11 @@ Normalization, chunk, and embedding rebuilds require browser confirmation; the e
 - Milestone 5.1: Raw-preserving extraction normalization, conservative PDF boilerplate/page-number cleanup, safe word-break repair, normalized chunk sources, inspection/rebuild APIs, frontend controls, migration, tests, and documentation.
 - Milestone 5.2: General-purpose long page-edge block detection, line-wrap-tolerant canonical comparison, dense local template support, stricter body/heading safeguards, stress tests, and aggregate-only real-PDF verification.
 - Milestone 6: OpenAI embedding abstraction and adapter, bounded batch generation, pgvector `vector(1536)` persistence, configuration and staleness metadata, atomic pipeline/rebuild integration, legacy-document generation, safe frontend reporting, tests, migration, and documentation.
+- Milestone 7: Project-scoped semantic retrieval, one transient query embedding, parameterized ownership- and freshness-filtered pgvector cosine search, bounded Top-K, safe results, retrieval debug UI, tests, and exact-search index decision.
+- Milestone 8: Single-turn Ask Your Documents, bounded untrusted context, official OpenAI Responses answer generation, grounded multilingual answers, validated authoritative citations, no-evidence behavior, frontend UI, tests, and documentation.
 
-## Remaining Roadmap
+## Core MVP Status and Limitations
 
-The next planned milestone is Milestone 7, semantic retrieval/search. It will choose the distance metric, ownership-filtered query shape, and vector index strategy. Query embeddings, retrieval, AI chat, and deployment remain later and separate; see `ROADMAP.md`.
+The core bachelor's-project MVP is complete through Milestone 8. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, no OCR for scanned documents, exact vector search sized for MVP data, approximate tokenizer accounting for answer context, single-turn non-streaming answers, no persisted conversations, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guide in `RETRIEVAL_EVALUATION.md`.
+
+Classification, broad document understanding, metadata extraction or metadata-aware retrieval, hybrid lexical/vector search, reranking, OCR, durable queues, cloud/object storage, persistent conversations, streaming, a larger evaluation framework, observability, and deployment hardening are post-MVP possibilities only. They are not part of the completed implementation; see `ROADMAP.md`.

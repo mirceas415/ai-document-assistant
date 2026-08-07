@@ -6,6 +6,7 @@ import {
     getErrorMessage,
 } from './api';
 import type {
+    AskProjectResponse,
     CurrentUser,
     DocumentChunk,
     DocumentDetails,
@@ -13,6 +14,7 @@ import type {
     ExtractedTextSection,
     ProjectDetails,
     ProjectSummary,
+    SemanticSearchResponse,
 } from './api';
 
 type Navigate = (path: string, replace?: boolean) => void;
@@ -265,6 +267,10 @@ export function ProjectDetailsPage({
                             </dl>
                         </section>
 
+                        <AskDocumentsSection projectId={project.id} />
+
+                        <SemanticSearchSection projectId={project.id} />
+
                         <DocumentsSection
                             projectId={project.id}
                             documents={documents}
@@ -274,6 +280,240 @@ export function ProjectDetailsPage({
                 ) : null}
             </main>
         </AuthenticatedLayout>
+    );
+}
+
+interface AskDocumentsSectionProps {
+    projectId: string;
+}
+
+function AskDocumentsSection({ projectId }: AskDocumentsSectionProps) {
+    const [question, setQuestion] = useState('');
+    const [response, setResponse] = useState<AskProjectResponse | null>(null);
+    const [isAsking, setIsAsking] = useState(false);
+    const [error, setError] = useState('');
+
+    const ask = async (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        setError('');
+
+        const normalizedQuestion = question.trim();
+        if (!normalizedQuestion) {
+            setError('Enter a question about the documents in this project.');
+            return;
+        }
+
+        if (normalizedQuestion.length > 2_000) {
+            setError('The question cannot exceed 2,000 characters.');
+            return;
+        }
+
+        setIsAsking(true);
+        setResponse(null);
+
+        try {
+            const askResponse = await apiRequest<AskProjectResponse>(
+                `/api/projects/${projectId}/ask`,
+                {
+                    method: 'POST',
+                    body: JSON.stringify({ question: normalizedQuestion }),
+                },
+            );
+            setResponse(askResponse);
+        } catch (requestError) {
+            setError(getErrorMessage(requestError));
+        } finally {
+            setIsAsking(false);
+        }
+    };
+
+    return (
+        <section className="ask-card" aria-labelledby="ask-documents-heading">
+            <div className="ask-heading">
+                <div>
+                    <p className="eyebrow">Grounded Q&amp;A</p>
+                    <h2 id="ask-documents-heading">Ask Your Documents</h2>
+                    <p>Ask one question at a time and receive an answer grounded in project sources.</p>
+                </div>
+            </div>
+
+            {error && <div className="alert ask-alert" role="alert">{error}</div>}
+
+            <form className="ask-form" onSubmit={ask}>
+                <label htmlFor="ask-documents-question">Question</label>
+                <textarea
+                    id="ask-documents-question"
+                    value={question}
+                    maxLength={2_000}
+                    rows={3}
+                    placeholder="What are the main conditions described in these documents?"
+                    onChange={(event) => setQuestion(event.target.value)}
+                />
+                <div className="ask-form-footer">
+                    <p className="character-count">{question.length.toLocaleString()} / 2,000</p>
+                    <button className="primary-button" type="submit" disabled={isAsking}>
+                        {isAsking ? 'Generating answer…' : 'Ask'}
+                    </button>
+                </div>
+            </form>
+
+            {isAsking ? (
+                <div className="ask-progress" aria-live="polite">
+                    <div className="spinner small-spinner" aria-hidden="true" />
+                    <span>Searching sources and generating a grounded answer…</span>
+                </div>
+            ) : response ? (
+                <div className="ask-response" aria-live="polite">
+                    <div className="ask-answer-panel">
+                        <p className="eyebrow">Answer</p>
+                        <div className="ask-answer">{response.answer}</div>
+                    </div>
+
+                    {response.sources.length > 0 && (
+                        <div className="ask-sources">
+                            <h3>Sources ({response.sources.length})</h3>
+                            <ol className="ask-source-list">
+                                {response.sources.map((source) => (
+                                    <li className="ask-source-card" key={`${source.sourceId}-${source.chunkId}`}>
+                                        <div className="ask-source-heading">
+                                            <span className="ask-source-id">[{source.sourceId}]</span>
+                                            <h4>{source.documentName}</h4>
+                                        </div>
+                                        <div className="ask-source-meta">
+                                            <span>Chunk {source.chunkIndex + 1}</span>
+                                            <span>{formatPageRange(source.pageStart, source.pageEnd)}</span>
+                                        </div>
+                                        {source.heading && <h5>{source.heading}</h5>}
+                                        <p className="ask-source-excerpt">{source.excerpt}</p>
+                                    </li>
+                                ))}
+                            </ol>
+                        </div>
+                    )}
+                </div>
+            ) : null}
+        </section>
+    );
+}
+
+interface SemanticSearchSectionProps {
+    projectId: string;
+}
+
+function SemanticSearchSection({ projectId }: SemanticSearchSectionProps) {
+    const [query, setQuery] = useState('');
+    const [response, setResponse] = useState<SemanticSearchResponse | null>(null);
+    const [isSearching, setIsSearching] = useState(false);
+    const [error, setError] = useState('');
+
+    const search = async (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        setError('');
+
+        const normalizedQuery = query.trim();
+        if (!normalizedQuery) {
+            setError('Enter a question or phrase to search for.');
+            return;
+        }
+
+        if (normalizedQuery.length > 2_000) {
+            setError('The search query cannot exceed 2,000 characters.');
+            return;
+        }
+
+        setIsSearching(true);
+        setResponse(null);
+
+        try {
+            const searchResponse = await apiRequest<SemanticSearchResponse>(
+                `/api/projects/${projectId}/search`,
+                {
+                    method: 'POST',
+                    body: JSON.stringify({ query: normalizedQuery, topK: 8 }),
+                },
+            );
+            setResponse(searchResponse);
+        } catch (requestError) {
+            setError(getErrorMessage(requestError));
+        } finally {
+            setIsSearching(false);
+        }
+    };
+
+    return (
+        <section className="retrieval-card" aria-labelledby="semantic-search-heading">
+            <div className="retrieval-heading">
+                <div>
+                    <p className="eyebrow">Retrieval debug</p>
+                    <h2 id="semantic-search-heading">Semantic Search</h2>
+                    <p>Find the closest embedded chunks across ready documents in this project.</p>
+                </div>
+            </div>
+
+            {error && <div className="alert retrieval-alert" role="alert">{error}</div>}
+
+            <form className="retrieval-form" onSubmit={search}>
+                <label htmlFor="semantic-search-query">Question or search phrase</label>
+                <textarea
+                    id="semantic-search-query"
+                    value={query}
+                    maxLength={2_000}
+                    rows={3}
+                    placeholder="What do the documents say about…?"
+                    onChange={(event) => setQuery(event.target.value)}
+                />
+                <div className="retrieval-form-footer">
+                    <p className="character-count">{query.length.toLocaleString()} / 2,000</p>
+                    <button className="primary-button" type="submit" disabled={isSearching}>
+                        {isSearching ? 'Searching…' : 'Search'}
+                    </button>
+                </div>
+            </form>
+
+            {isSearching ? (
+                <div className="retrieval-progress" aria-live="polite">
+                    <div className="spinner small-spinner" aria-hidden="true" />
+                    <span>Searching project documents…</span>
+                </div>
+            ) : response ? (
+                <div className="retrieval-results" aria-live="polite">
+                    <div className="retrieval-results-heading">
+                        <h3>Ranked results</h3>
+                        <span>
+                            {response.results.length} of up to {response.topK} chunks · smaller cosine distance is closer
+                        </span>
+                    </div>
+
+                    {response.results.length === 0 ? (
+                        <div className="retrieval-empty-state">
+                            No eligible matching chunks were found in this project.
+                        </div>
+                    ) : (
+                        <ol className="retrieval-result-list">
+                            {response.results.map((result, index) => (
+                                <li className="retrieval-result-card" key={result.chunkId}>
+                                    <div className="retrieval-result-heading">
+                                        <div>
+                                            <span className="retrieval-rank">#{index + 1}</span>
+                                            <h3>{result.documentName}</h3>
+                                        </div>
+                                        <span className="retrieval-distance">
+                                            Cosine distance {result.cosineDistance.toFixed(4)}
+                                        </span>
+                                    </div>
+                                    <div className="retrieval-result-meta">
+                                        <span>Chunk {result.chunkIndex + 1}</span>
+                                        <span>{formatPageRange(result.pageStart, result.pageEnd)}</span>
+                                    </div>
+                                    {result.heading && <h4>{result.heading}</h4>}
+                                    <p className="retrieval-result-content">{result.content}</p>
+                                </li>
+                            ))}
+                        </ol>
+                    )}
+                </div>
+            ) : null}
+        </section>
     );
 }
 
@@ -1128,10 +1368,14 @@ function formatFileSize(bytes: number) {
 }
 
 function formatChunkPages(chunk: DocumentChunk) {
-    if (chunk.pageStart === null && chunk.pageEnd === null) return 'Pages unavailable';
-    if (chunk.pageStart === chunk.pageEnd || chunk.pageEnd === null) return `Page ${chunk.pageStart}`;
-    if (chunk.pageStart === null) return `Page ${chunk.pageEnd}`;
-    return `Pages ${chunk.pageStart}–${chunk.pageEnd}`;
+    return formatPageRange(chunk.pageStart, chunk.pageEnd);
+}
+
+function formatPageRange(pageStart: number | null, pageEnd: number | null) {
+    if (pageStart === null && pageEnd === null) return 'Pages unavailable';
+    if (pageStart === pageEnd || pageEnd === null) return `Page ${pageStart}`;
+    if (pageStart === null) return `Page ${pageEnd}`;
+    return `Pages ${pageStart}–${pageEnd}`;
 }
 
 function getFileExtensionLabel(fileName: string) {
