@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent, KeyboardEvent, ReactNode } from 'react';
+import type { DragEvent, FormEvent, KeyboardEvent, ReactNode } from 'react';
 import {
     ApiRequestError,
     apiRequest,
@@ -17,9 +17,38 @@ import type {
 } from './api';
 import { ConfirmDialog, Icon, Skeleton } from './Ui';
 import { useToast } from './toast-context';
+import {
+    DOCUMENT_FILE_ACCEPT,
+    hasSupportedDocumentDrag,
+    uploadWorkspaceDocument,
+    validateDocumentFile,
+} from './document-upload';
 import './ChatWorkspace.css';
 
 type Navigate = (path: string, replace?: boolean) => void;
+
+type RecentUploadStatus = 'Uploading' | DocumentSummary['status'];
+
+interface RecentUpload {
+    key: string;
+    documentId?: string;
+    fileName: string;
+    status: RecentUploadStatus;
+    error?: string;
+}
+
+function reconcileRecentUploads(uploads: RecentUpload[], documents: DocumentSummary[]) {
+    return uploads.map((upload) => {
+        if (!upload.documentId) return upload;
+        const document = documents.find((item) => item.id === upload.documentId);
+        if (!document || document.status === upload.status) return upload;
+        return {
+            ...upload,
+            status: document.status,
+            error: document.status === 'Failed' ? 'Document processing failed.' : undefined,
+        };
+    });
+}
 
 interface ProjectChatWorkspaceProps {
     user: CurrentUser;
@@ -50,13 +79,26 @@ export function ProjectChatWorkspace({
     const [sourceToView, setSourceToView] = useState<ConversationMessageSource | null>(null);
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
+    const [recentUploads, setRecentUploads] = useState<RecentUpload[]>([]);
+    const [uploadError, setUploadError] = useState('');
+    const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const composerRef = useRef<HTMLTextAreaElement>(null);
+    const uploadInputRef = useRef<HTMLInputElement>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const shouldFollowMessagesRef = useRef(true);
+    const dragDepthRef = useRef(0);
+    const uploadingFileKeysRef = useRef(new Set<string>());
     const showToast = useToast();
     const readyDocumentCount = useMemo(
         () => documents.filter((document) => document.status === 'Ready').length,
         [documents],
+    );
+    const processingUploads = useMemo(
+        () => recentUploads.filter((upload) => upload.status === 'Uploading' || upload.status === 'Uploaded' || upload.status === 'Processing'),
+        [recentUploads],
+    );
+    const shouldPollDocuments = documents.some(
+        (document) => document.status === 'Uploaded' || document.status === 'Processing',
     );
 
     const loadConversations = useCallback(async () => {
@@ -97,13 +139,18 @@ export function ProjectChatWorkspace({
                         `/api/projects/${projectId}/conversations/${conversationId}`,
                     );
                     if (active) setConversation(detail);
+                } else if (conversationResponse.length > 0) {
+                    const detail = await apiRequest<Conversation>(
+                        `/api/projects/${projectId}/conversations/${conversationResponse[0].id}`,
+                    );
+                    if (active) setConversation(detail);
                 } else {
                     setConversation(null);
                 }
             } catch (requestError) {
                 if (!active) return;
                 setError(requestError instanceof ApiRequestError && requestError.status === 404
-                    ? 'This project or conversation is not available to your account.'
+                    ? 'This workspace or conversation is not available to your account.'
                     : getErrorMessage(requestError));
             } finally {
                 if (active) setIsLoading(false);
@@ -113,6 +160,31 @@ export function ProjectChatWorkspace({
         void load();
         return () => { active = false; };
     }, [projectId, conversationId]);
+
+    useEffect(() => {
+        if (!shouldPollDocuments) return;
+
+        let active = true;
+        const refreshDocuments = async () => {
+            try {
+                const response = await apiRequest<DocumentSummary[]>(
+                    `/api/projects/${projectId}/documents`,
+                );
+                if (active) {
+                    setDocuments(response);
+                    setRecentUploads((current) => reconcileRecentUploads(current, response));
+                    setUploadError('');
+                }
+            } catch (requestError) {
+                if (active) setUploadError(getErrorMessage(requestError));
+            }
+        };
+        const timer = window.setInterval(() => void refreshDocuments(), 2_500);
+        return () => {
+            active = false;
+            window.clearInterval(timer);
+        };
+    }, [projectId, shouldPollDocuments]);
 
     useEffect(() => {
         if (conversation && !isAsking) composerRef.current?.focus();
@@ -158,7 +230,7 @@ export function ProjectChatWorkspace({
 
         const normalized = question.trim();
         if (!normalized) {
-            setError('Enter a question about documents in this project.');
+            setError('Enter a question about documents in this workspace.');
             return;
         }
         if (normalized.length > 2_000) {
@@ -232,6 +304,87 @@ export function ProjectChatWorkspace({
         }
     };
 
+    const uploadFiles = async (files: File[]) => {
+        for (const file of files) {
+            const validationError = validateDocumentFile(file);
+            if (validationError) {
+                const message = `${file.name}: ${validationError}`;
+                setUploadError(message);
+                showToast({ message, tone: 'info' });
+                continue;
+            }
+
+            const key = `${file.name}-${file.size}-${file.lastModified}`;
+            if (uploadingFileKeysRef.current.has(key)) continue;
+
+            uploadingFileKeysRef.current.add(key);
+            setUploadError('');
+            const pendingUpload: RecentUpload = { key, fileName: file.name, status: 'Uploading' };
+            setRecentUploads((current) => [
+                pendingUpload,
+                ...current.filter((upload) => upload.key !== key),
+            ].slice(0, 4));
+
+            try {
+                const uploadedDocument = await uploadWorkspaceDocument(projectId, file);
+                setDocuments((current) => [
+                    uploadedDocument,
+                    ...current.filter((document) => document.id !== uploadedDocument.id),
+                ]);
+                setRecentUploads((current) => current.map((upload) => upload.key === key
+                    ? {
+                        ...upload,
+                        documentId: uploadedDocument.id,
+                        fileName: uploadedDocument.originalFileName,
+                        status: uploadedDocument.status,
+                    }
+                    : upload));
+                showToast({ message: `${uploadedDocument.originalFileName} added to ${project?.name ?? 'this workspace'}.` });
+            } catch (requestError) {
+                const message = getErrorMessage(requestError);
+                setUploadError(`${file.name}: ${message}`);
+                setRecentUploads((current) => current.map((upload) => upload.key === key
+                    ? { ...upload, status: 'Failed', error: message }
+                    : upload));
+                showToast({ message: `${file.name} could not be uploaded.`, tone: 'info' });
+            } finally {
+                uploadingFileKeysRef.current.delete(key);
+            }
+        }
+    };
+
+    const containsFiles = (dataTransfer: DataTransfer) =>
+        Array.from(dataTransfer.types).includes('Files');
+
+    const handleDragEnter = (event: DragEvent<HTMLElement>) => {
+        if (!containsFiles(event.dataTransfer)) return;
+        event.preventDefault();
+        if (!hasSupportedDocumentDrag(event.dataTransfer)) return;
+        dragDepthRef.current += 1;
+        setIsDraggingFiles(true);
+    };
+
+    const handleDragOver = (event: DragEvent<HTMLElement>) => {
+        if (!containsFiles(event.dataTransfer)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+    };
+
+    const handleDragLeave = (event: DragEvent<HTMLElement>) => {
+        if (!containsFiles(event.dataTransfer)) return;
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (dragDepthRef.current === 0) setIsDraggingFiles(false);
+    };
+
+    const handleDrop = (event: DragEvent<HTMLElement>) => {
+        if (!containsFiles(event.dataTransfer)) return;
+        event.preventDefault();
+        dragDepthRef.current = 0;
+        setIsDraggingFiles(false);
+        const files = Array.from(event.dataTransfer.files);
+        if (files.length > 0) void uploadFiles(files);
+    };
+
     const renameConversation = async (title: string) => {
         if (!conversation) return;
         const renamed = await apiRequest<Conversation>(
@@ -275,9 +428,9 @@ export function ProjectChatWorkspace({
         return (
             <div className="chat-fatal-state">
                 <h1>Workspace unavailable</h1>
-                <p>{error || 'The project could not be loaded.'}</p>
+                <p>{error || 'The workspace could not be loaded.'}</p>
                 <button className="primary-button" type="button" onClick={() => onNavigate('/projects')}>
-                    Return to projects
+                    Return to workspaces
                 </button>
             </div>
         );
@@ -300,10 +453,17 @@ export function ProjectChatWorkspace({
                 conversations={conversations}
                 onNavigate={onNavigate}
             />
-            <main className="chat-main">
+            <main
+                className="chat-main"
+                onDragEnter={handleDragEnter}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+            >
                 <ChatHeader
                     conversation={conversation}
                     projectName={project.name}
+                    readyDocumentCount={readyDocumentCount}
                     onRename={renameConversation}
                     onDelete={() => setConfirmDelete(true)}
                 />
@@ -313,10 +473,12 @@ export function ProjectChatWorkspace({
                 {!conversation ? (
                     <section className="chat-empty-state">
                         <div className="chat-empty-mark" aria-hidden="true">AI</div>
-                        <h1>Ask your project documents</h1>
+                        <p className="empty-project-name">Current workspace · {project.name}</p>
+                        <h1>Ask your documents</h1>
                         <p>
-                            Start a chat with <strong>{project.name}</strong>. Answers search all eligible
-                            embedded documents in this project and show their supporting sources.
+                            {documents.length === 0
+                                ? 'Upload a PDF or DOCX to get started.'
+                                : 'Start a chat to ask questions grounded in this workspace.'}
                         </p>
                         <button className="primary-button" type="button" onClick={() => void createConversation()} disabled={isCreating}>
                             {isCreating ? 'Creating…' : 'Start a new chat'}
@@ -335,10 +497,8 @@ export function ProjectChatWorkspace({
                             {conversation.messages.length === 0 ? (
                                 <ConversationEmptyState
                                     projectName={project.name}
-                                    onSelectPrompt={(prompt) => {
-                                        setQuestion(prompt);
-                                        window.requestAnimationFrame(() => composerRef.current?.focus());
-                                    }}
+                                    documentCount={documents.length}
+                                    readyDocumentCount={readyDocumentCount}
                                 />
                             ) : conversation.messages.map((message) => (
                                 <ChatMessage
@@ -360,6 +520,23 @@ export function ProjectChatWorkspace({
                         </section>
 
                         <div className="composer-region">
+                            <UploadStatusChips
+                                uploads={recentUploads}
+                                onDismiss={(key) => setRecentUploads((current) => current.filter((upload) => upload.key !== key))}
+                            />
+                            {uploadError && <div className="composer-upload-error" role="alert">{uploadError}</div>}
+                            {processingUploads.length > 0 && (
+                                <p className="composer-processing-note" role="status">
+                                    {processingUploads.length === 1
+                                        ? `${processingUploads[0].fileName} is still processing and may not be included yet.`
+                                        : `${processingUploads.length} recent uploads are still processing and may not be included yet.`}
+                                </p>
+                            )}
+                            {readyDocumentCount === 0 && (
+                                <p className="composer-processing-note zero-ready" role="status">
+                                    A document needs to finish processing before grounded answers are available.
+                                </p>
+                            )}
                             {failedQuestion && (
                                 <button
                                     className="retry-message-button"
@@ -371,12 +548,21 @@ export function ProjectChatWorkspace({
                                 </button>
                             )}
                             <form className="chat-composer" onSubmit={(event) => void askQuestion(event)}>
+                                <button
+                                    className="composer-attachment"
+                                    type="button"
+                                    aria-label="Upload document"
+                                    title="Upload PDF or DOCX"
+                                    onClick={() => uploadInputRef.current?.click()}
+                                >
+                                    <Icon name="attachment" size={18} />
+                                </button>
                                 <textarea
                                     ref={composerRef}
                                     value={question}
                                     rows={1}
                                     maxLength={2_000}
-                                    placeholder="Ask about documents in this project…"
+                                    placeholder="Ask about documents in this workspace…"
                                     disabled={isAsking}
                                     aria-label="Question"
                                     aria-describedby="composer-scope composer-shortcut"
@@ -398,11 +584,33 @@ export function ProjectChatWorkspace({
                                 <span id="composer-shortcut">Enter to send · Shift+Enter for a new line</span>
                             </div>
                             <details className="retrieval-details">
-                                <summary>Advanced: retrieval details</summary>
+                                <summary><Icon name="search" size={11} /> Retrieval details</summary>
                                 <RetrievalDebug projectId={projectId} />
                             </details>
                         </div>
                     </>
+                )}
+                <input
+                    ref={uploadInputRef}
+                    className="visually-hidden"
+                    type="file"
+                    accept={DOCUMENT_FILE_ACCEPT}
+                    aria-label="Upload document"
+                    onChange={(event) => {
+                        const input = event.currentTarget;
+                        const file = input.files?.[0];
+                        input.value = '';
+                        if (file) void uploadFiles([file]);
+                    }}
+                />
+                {isDraggingFiles && (
+                    <div className="chat-drop-overlay" aria-hidden="true">
+                        <div>
+                            <Icon name="upload" size={24} />
+                            <strong>Drop documents to add them to this workspace</strong>
+                            <span>PDF or DOCX · up to 20 MB</span>
+                        </div>
+                    </div>
                 )}
             </main>
 
@@ -412,7 +620,7 @@ export function ProjectChatWorkspace({
             <ConfirmDialog
                 open={confirmDelete}
                 title="Delete conversation?"
-                description={<>This permanently deletes <strong>{conversation?.title}</strong> and its messages. Project documents remain unchanged.</>}
+                description={<>This permanently deletes <strong>{conversation?.title}</strong> and its messages. Workspace documents remain unchanged.</>}
                 confirmLabel="Delete conversation"
                 busy={isDeleting}
                 onCancel={() => setConfirmDelete(false)}
@@ -422,25 +630,49 @@ export function ProjectChatWorkspace({
     );
 }
 
-const examplePrompts = [
-    'Summarize the key points',
-    'What are the main requirements?',
-    'Find information about…',
-    'Explain this in simple terms',
-];
-
-function ConversationEmptyState({ projectName, onSelectPrompt }: { projectName: string; onSelectPrompt: (prompt: string) => void }) {
+function ConversationEmptyState({
+    projectName,
+    documentCount,
+    readyDocumentCount,
+}: {
+    projectName: string;
+    documentCount: number;
+    readyDocumentCount: number;
+}) {
     return (
         <div className="conversation-empty">
             <div className="chat-empty-mark" aria-hidden="true">AI</div>
-            <p className="empty-project-name">Current project · {projectName}</p>
+            <p className="empty-project-name">Current workspace · {projectName}</p>
             <h2>Ask your documents</h2>
-            <p>Ask questions and get answers grounded in the documents inside this project.</p>
-            <div className="prompt-suggestions" aria-label="Example prompts">
-                {examplePrompts.map((prompt) => (
-                    <button type="button" key={prompt} onClick={() => onSelectPrompt(prompt)}>{prompt}</button>
-                ))}
-            </div>
+            <p>{documentCount === 0
+                ? 'Upload a PDF or DOCX to get started.'
+                : readyDocumentCount === 0
+                    ? 'Your documents are processing. You can ask once one is ready.'
+                    : 'Ask questions and get answers grounded in the documents inside this workspace.'}</p>
+        </div>
+    );
+}
+
+function UploadStatusChips({ uploads, onDismiss }: { uploads: RecentUpload[]; onDismiss: (key: string) => void }) {
+    if (uploads.length === 0) return null;
+
+    return (
+        <div className="upload-status-chips" aria-live="polite" aria-label="Recent document uploads">
+            {uploads.map((upload) => {
+                const statusLabel = upload.status === 'Uploaded' ? 'Queued' : upload.status;
+                const complete = upload.status === 'Ready' || upload.status === 'Failed';
+                return (
+                    <span className={`upload-status-chip status-${upload.status.toLowerCase()}`} key={upload.key} title={upload.error}>
+                        {!complete && <span className="upload-chip-spinner" aria-hidden="true" />}
+                        <span className="upload-chip-copy"><strong>{upload.fileName}</strong> · {statusLabel}</span>
+                        {complete && (
+                            <button type="button" aria-label={`Dismiss ${upload.fileName} upload status`} onClick={() => onDismiss(upload.key)}>
+                                <Icon name="close" size={12} />
+                            </button>
+                        )}
+                    </span>
+                );
+            })}
         </div>
     );
 }
@@ -517,16 +749,15 @@ function WorkspaceSidebar({
             <button className="new-chat-button" type="button" onClick={onNewChat} disabled={isCreating}>
                 <Icon name="plus" size={17} /> {isCreating ? 'Creating…' : 'New chat'}
             </button>
-            <nav className="workspace-nav" aria-label="Project navigation">
-                <button type="button" onClick={() => onNavigate('/projects')}><Icon name="folder" /> Projects</button>
+            <nav className="workspace-nav" aria-label="Workspace navigation">
+                <button type="button" onClick={() => onNavigate('/projects')}><Icon name="folder" /> Workspaces</button>
                 <button type="button" onClick={() => onNavigate(`/projects/${project.id}/documents`)}><Icon name="document" /> Documents</button>
-                <button className="active" type="button" aria-current="page" onClick={() => onNavigate(`/projects/${project.id}`)}><Icon name="chat" /> Chats</button>
             </nav>
-            <div className="current-project-block">
-                <span>Current project</span>
+            <button className="current-project-block" type="button" onClick={() => onNavigate('/projects')} aria-label={`Manage or switch workspace. Current workspace: ${project.name}`}>
+                <span>Current workspace</span>
                 <strong title={project.name}>{project.name}</strong>
                 <small>{documentCount} document{documentCount === 1 ? '' : 's'}</small>
-            </div>
+            </button>
             <div className="workspace-account">
                 <div className="account-avatar">{initials(user.displayName)}</div>
                 <div><strong>{user.displayName}</strong><span>Signed in</span></div>
@@ -601,11 +832,13 @@ function ConversationHistory({
 function ChatHeader({
     conversation,
     projectName,
+    readyDocumentCount,
     onRename,
     onDelete,
 }: {
     conversation: Conversation | null;
     projectName: string;
+    readyDocumentCount: number;
     onRename: (title: string) => Promise<void>;
     onDelete: () => void;
 }) {
@@ -647,17 +880,87 @@ function ChatHeader({
                         <button type="button" onClick={() => void save()}>Save</button>
                         <button type="button" onClick={() => { setEditing(false); setTitle(conversation.title); }}>Cancel</button>
                     </div>
-                ) : <h1>{conversation?.title ?? 'Project chats'}</h1>}
-                <p>{projectName} · all eligible project documents</p>
+                ) : <h1>{conversation?.title ?? 'Workspace chat'}</h1>}
+                <p>{projectName} · {readyDocumentCount} ready document{readyDocumentCount === 1 ? '' : 's'}</p>
                 {error && <span className="rename-error">{error}</span>}
             </div>
             {conversation && (
-                <div className="chat-header-actions">
-                    <button type="button" onClick={() => { setTitle(conversation.title); setEditing(true); }}><Icon name="edit" size={14} /> Rename</button>
-                    <button className="delete-chat" type="button" onClick={onDelete}><Icon name="delete" size={14} /> Delete</button>
-                </div>
+                <ConversationActionsMenu
+                    onRename={() => { setTitle(conversation.title); setEditing(true); }}
+                    onDelete={onDelete}
+                />
             )}
         </header>
+    );
+}
+
+function ConversationActionsMenu({ onRename, onDelete }: { onRename: () => void; onDelete: () => void }) {
+    const [open, setOpen] = useState(false);
+    const wrapperRef = useRef<HTMLDivElement>(null);
+    const triggerRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        if (!open) return;
+
+        const firstItem = wrapperRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]');
+        firstItem?.focus();
+        const close = (event: globalThis.KeyboardEvent | PointerEvent) => {
+            if (event instanceof globalThis.KeyboardEvent && event.key === 'Escape') {
+                setOpen(false);
+                triggerRef.current?.focus();
+                return;
+            }
+            if (event instanceof PointerEvent && !wrapperRef.current?.contains(event.target as Node)) {
+                setOpen(false);
+            }
+        };
+        document.addEventListener('keydown', close);
+        document.addEventListener('pointerdown', close);
+        return () => {
+            document.removeEventListener('keydown', close);
+            document.removeEventListener('pointerdown', close);
+        };
+    }, [open]);
+
+    const handleMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+        const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+        const nextIndex = event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+                ? items.length - 1
+                : event.key === 'ArrowDown'
+                    ? (currentIndex + 1) % items.length
+                    : (currentIndex - 1 + items.length) % items.length;
+        items[nextIndex]?.focus();
+    };
+
+    return (
+        <div className="conversation-actions" ref={wrapperRef}>
+            <button
+                ref={triggerRef}
+                className="conversation-actions-trigger"
+                type="button"
+                aria-label="Conversation actions"
+                aria-haspopup="menu"
+                aria-expanded={open}
+                onClick={() => setOpen((value) => !value)}
+            >
+                <Icon name="more" size={19} />
+            </button>
+            {open && (
+                <div className="conversation-actions-menu" role="menu" aria-label="Conversation actions" onKeyDown={handleMenuKeyDown}>
+                    <button type="button" role="menuitem" onClick={() => { setOpen(false); onRename(); }}>
+                        <Icon name="edit" size={14} /> Rename
+                    </button>
+                    <button className="delete-chat" type="button" role="menuitem" onClick={() => { triggerRef.current?.focus(); setOpen(false); onDelete(); }}>
+                        <Icon name="delete" size={14} /> Delete chat
+                    </button>
+                </div>
+            )}
+        </div>
     );
 }
 

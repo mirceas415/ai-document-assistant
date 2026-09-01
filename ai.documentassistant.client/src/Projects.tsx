@@ -7,6 +7,11 @@ import {
 } from './api';
 import { ConfirmDialog, Icon, Skeleton } from './Ui';
 import { useToast } from './toast-context';
+import {
+    DOCUMENT_FILE_ACCEPT,
+    uploadWorkspaceDocument,
+    validateDocumentFile,
+} from './document-upload';
 import type {
     AskProjectResponse,
     CurrentUser,
@@ -62,7 +67,7 @@ export function ProjectsDashboard({ user, onNavigate, onSignedOut }: Authenticat
                 .sort((left, right) => Date.parse(right.updatedAtUtc) - Date.parse(left.updatedAtUtc));
         });
         setEditor(null);
-        showToast({ message: wasCreated ? 'Project created.' : 'Project updated.' });
+        showToast({ message: wasCreated ? 'Workspace created.' : 'Workspace updated.' });
     };
 
     const deleteProject = async (project: ProjectSummary) => {
@@ -74,7 +79,7 @@ export function ProjectsDashboard({ user, onNavigate, onSignedOut }: Authenticat
             setProjects((currentProjects) =>
                 currentProjects.filter((item) => item.id !== project.id));
             setProjectToDelete(null);
-            showToast({ message: 'Project deleted.' });
+            showToast({ message: 'Workspace deleted.' });
         } catch (requestError) {
             setError(getErrorMessage(requestError));
             setProjectToDelete(null);
@@ -88,12 +93,12 @@ export function ProjectsDashboard({ user, onNavigate, onSignedOut }: Authenticat
             <main className="page-content">
                 <div className="page-heading">
                     <div>
-                        <p className="eyebrow">Your workspace</p>
-                        <h1>My Projects</h1>
-                        <p className="page-description">Create and organize your document workspaces.</p>
+                        <p className="eyebrow">Your document library</p>
+                        <h1>Workspaces</h1>
+                        <p className="page-description">Create and organize reusable document workspaces.</p>
                     </div>
                     <button className="primary-button" type="button" onClick={() => setEditor('create')}>
-                        <Icon name="plus" size={17} /> New project
+                        <Icon name="plus" size={17} /> New workspace
                     </button>
                 </div>
 
@@ -104,18 +109,18 @@ export function ProjectsDashboard({ user, onNavigate, onSignedOut }: Authenticat
                 ) : projects.length === 0 ? (
                     <section className="content-state empty-state">
                         <div className="empty-icon" aria-hidden="true">▦</div>
-                        <h2>No projects yet</h2>
+                        <h2>No workspaces yet</h2>
                         <p>Create your first workspace to get started.</p>
                         <button className="primary-button" type="button" onClick={() => setEditor('create')}>
-                            Create a project
+                            Create a workspace
                         </button>
                     </section>
                 ) : (
-                    <section className="project-grid" aria-label="Projects">
+                    <section className="project-grid" aria-label="Workspaces">
                         {projects.map((project) => (
                             <article className="project-card" key={project.id}>
                                 <div className="project-card-heading">
-                                    <div className="project-icon" aria-hidden="true">P</div>
+                                    <div className="project-icon" aria-hidden="true">W</div>
                                     <div>
                                         <h2>{project.name}</h2>
                                         <p className="project-description">
@@ -167,9 +172,9 @@ export function ProjectsDashboard({ user, onNavigate, onSignedOut }: Authenticat
             )}
             <ConfirmDialog
                 open={Boolean(projectToDelete)}
-                title="Delete project?"
+                title="Delete workspace?"
                 description={<>This permanently deletes <strong>{projectToDelete?.name}</strong>, including its documents and conversations. This cannot be undone.</>}
-                confirmLabel="Delete project"
+                confirmLabel="Delete workspace"
                 busy={Boolean(deletingId)}
                 onCancel={() => setProjectToDelete(null)}
                 onConfirm={() => projectToDelete && void deleteProject(projectToDelete)}
@@ -235,7 +240,7 @@ export function ProjectDetailsPage({
         <AuthenticatedLayout user={user} onNavigate={onNavigate} onSignedOut={onSignedOut}>
             <main className="page-content details-content">
                 <button className="back-button" type="button" onClick={() => onNavigate('/projects')}>
-                    <Icon name="arrow-left" size={16} /> Back to projects
+                    <Icon name="arrow-left" size={16} /> Back to workspaces
                 </button>
 
                 {isLoading ? (
@@ -243,10 +248,10 @@ export function ProjectDetailsPage({
                 ) : notFound ? (
                     <section className="content-state empty-state">
                         <div className="empty-icon" aria-hidden="true">?</div>
-                        <h1>Project not found</h1>
-                        <p>The project does not exist or is not available to your account.</p>
+                        <h1>Workspace not found</h1>
+                        <p>The workspace does not exist or is not available to your account.</p>
                         <button className="primary-button" type="button" onClick={() => onNavigate('/projects')}>
-                            Return to projects
+                            Return to workspaces
                         </button>
                     </section>
                 ) : error ? (
@@ -259,8 +264,8 @@ export function ProjectDetailsPage({
                             </button>
                         </div>
                         <section className="details-card">
-                            <div className="project-icon large-project-icon" aria-hidden="true">P</div>
-                            <p className="eyebrow">Project</p>
+                            <div className="project-icon large-project-icon" aria-hidden="true">W</div>
+                            <p className="eyebrow">Workspace</p>
                             <h1>{project.name}</h1>
                             <p className="details-description">
                                 {project.description || 'No description provided.'}
@@ -306,7 +311,7 @@ export function AskDocumentsSection({ projectId }: AskDocumentsSectionProps) {
 
         const normalizedQuestion = question.trim();
         if (!normalizedQuestion) {
-            setError('Enter a question about the documents in this project.');
+            setError('Enter a question about the documents in this workspace.');
             return;
         }
 
@@ -340,7 +345,7 @@ export function AskDocumentsSection({ projectId }: AskDocumentsSectionProps) {
                 <div>
                     <p className="eyebrow">Grounded Q&amp;A</p>
                     <h2 id="ask-documents-heading">Ask Your Documents</h2>
-                    <p>Ask one question at a time and receive an answer grounded in project sources.</p>
+                    <p>Ask one question at a time and receive an answer grounded in workspace sources.</p>
                 </div>
             </div>
 
@@ -453,7 +458,7 @@ export function SemanticSearchSection({ projectId }: SemanticSearchSectionProps)
                 <div>
                     <p className="eyebrow">Retrieval debug</p>
                     <h2 id="semantic-search-heading">Semantic Search</h2>
-                    <p>Find the closest embedded chunks across ready documents in this project.</p>
+                    <p>Find the closest embedded chunks across ready documents in this workspace.</p>
                 </div>
             </div>
 
@@ -480,7 +485,7 @@ export function SemanticSearchSection({ projectId }: SemanticSearchSectionProps)
             {isSearching ? (
                 <div className="retrieval-progress" aria-live="polite">
                     <div className="spinner small-spinner" aria-hidden="true" />
-                    <span>Searching project documents…</span>
+                    <span>Searching workspace documents…</span>
                 </div>
             ) : response ? (
                 <div className="retrieval-results" aria-live="polite">
@@ -493,7 +498,7 @@ export function SemanticSearchSection({ projectId }: SemanticSearchSectionProps)
 
                     {response.results.length === 0 ? (
                         <div className="retrieval-empty-state">
-                            No eligible matching chunks were found in this project.
+                            No eligible matching chunks were found in this workspace.
                         </div>
                     ) : (
                         <ol className="retrieval-result-list">
@@ -606,16 +611,7 @@ function DocumentsSection({
         setIsUploading(true);
 
         try {
-            const formData = new FormData();
-            formData.append('file', file);
-
-            const uploadedDocument = await apiRequest<DocumentDetails>(
-                `/api/projects/${projectId}/documents`,
-                {
-                    method: 'POST',
-                    body: formData,
-                },
-            );
+            const uploadedDocument = await uploadWorkspaceDocument(projectId, file);
 
             onDocumentsChanged((currentDocuments) => [
                 uploadedDocument,
@@ -779,7 +775,7 @@ function DocumentsSection({
         <section className="documents-card" aria-labelledby="documents-heading">
             <div className="documents-heading">
                 <div>
-                    <p className="eyebrow">Project files</p>
+                    <p className="eyebrow">Workspace files</p>
                     <h2 id="documents-heading">Documents</h2>
                     <p>PDF and DOCX files up to 20 MB.</p>
                 </div>
@@ -797,7 +793,7 @@ function DocumentsSection({
                     ref={uploadInputRef}
                     className="visually-hidden"
                     type="file"
-                    accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    accept={DOCUMENT_FILE_ACCEPT}
                     disabled={isUploading}
                     onChange={(event) => {
                         const input = event.currentTarget;
@@ -1295,12 +1291,12 @@ function ProjectEditor({ project, onCancel, onSaved }: ProjectEditorProps) {
         const normalizedDescription = description.trim();
 
         if (!normalizedName) {
-            setError('Project name is required.');
+            setError('Workspace name is required.');
             return;
         }
 
         if (normalizedName.length > 100) {
-            setError('Project name cannot exceed 100 characters.');
+            setError('Workspace name cannot exceed 100 characters.');
             return;
         }
 
@@ -1338,7 +1334,7 @@ function ProjectEditor({ project, onCancel, onSaved }: ProjectEditorProps) {
                 <div className="modal-heading">
                     <div>
                         <p className="eyebrow">{project ? 'Edit workspace' : 'New workspace'}</p>
-                        <h2 id="project-editor-title">{project ? 'Edit project' : 'Create project'}</h2>
+                        <h2 id="project-editor-title">{project ? 'Edit workspace' : 'Create workspace'}</h2>
                     </div>
                     <button className="icon-button" type="button" aria-label="Close" onClick={onCancel} disabled={isSubmitting}><Icon name="close" size={18} /></button>
                 </div>
@@ -1346,7 +1342,7 @@ function ProjectEditor({ project, onCancel, onSaved }: ProjectEditorProps) {
                 {error && <div className="alert" role="alert">{error}</div>}
 
                 <form onSubmit={submit}>
-                    <label htmlFor="project-name">Project name</label>
+                    <label htmlFor="project-name">Workspace name</label>
                     <input
                         id="project-name"
                         type="text"
@@ -1370,7 +1366,7 @@ function ProjectEditor({ project, onCancel, onSaved }: ProjectEditorProps) {
                     <div className="modal-actions">
                         <button className="secondary-button" type="button" onClick={onCancel} disabled={isSubmitting}>Cancel</button>
                         <button className="primary-button" type="submit" disabled={isSubmitting}>
-                            {isSubmitting ? 'Saving…' : project ? 'Save changes' : 'Create project'}
+                            {isSubmitting ? 'Saving…' : project ? 'Save changes' : 'Create workspace'}
                         </button>
                     </div>
                 </form>
@@ -1440,7 +1436,7 @@ function formatDate(value: string) {
 
 function ProjectListSkeleton() {
     return (
-        <section className="project-grid project-skeleton-grid" aria-label="Loading projects" aria-busy="true">
+        <section className="project-grid project-skeleton-grid" aria-label="Loading workspaces" aria-busy="true">
             {[0, 1, 2].map((item) => (
                 <div className="project-card" key={item}>
                     <Skeleton className="project-skeleton-icon" />
@@ -1455,7 +1451,7 @@ function ProjectListSkeleton() {
 
 function ProjectDetailsSkeleton() {
     return (
-        <section className="details-card details-skeleton" aria-label="Loading project and documents" aria-busy="true">
+        <section className="details-card details-skeleton" aria-label="Loading workspace and documents" aria-busy="true">
             <Skeleton className="project-skeleton-icon" />
             <Skeleton className="project-skeleton-title" />
             <Skeleton className="project-skeleton-copy" />
@@ -1524,35 +1520,6 @@ function formatPageRange(pageStart: number | null, pageEnd: number | null) {
 function getFileExtensionLabel(fileName: string) {
     const extension = fileName.split('.').pop()?.toUpperCase();
     return extension === 'PDF' || extension === 'DOCX' ? extension : 'DOC';
-}
-
-function validateDocumentFile(file: File) {
-    const maxFileSizeBytes = 20 * 1_024 * 1_024;
-    const fileName = file.name.toLowerCase();
-    const isPdf = fileName.endsWith('.pdf');
-    const isDocx = fileName.endsWith('.docx');
-
-    if (!isPdf && !isDocx) {
-        return 'Only PDF and DOCX files are supported.';
-    }
-
-    if (file.size === 0) {
-        return 'The selected file is empty.';
-    }
-
-    if (file.size > maxFileSizeBytes) {
-        return 'The file cannot exceed 20 MB.';
-    }
-
-    const expectedContentType = isPdf
-        ? 'application/pdf'
-        : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-
-    if (file.type.toLowerCase() !== expectedContentType) {
-        return `The content type does not match the ${isPdf ? 'PDF' : 'DOCX'} file type.`;
-    }
-
-    return '';
 }
 
 function isGuid(value: string) {

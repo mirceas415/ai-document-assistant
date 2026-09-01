@@ -5,11 +5,12 @@ import type { ToastOptions } from './toast-context';
 
 type IconName =
     | 'arrow-left' | 'chat' | 'check' | 'chevron-down' | 'close' | 'copy'
-    | 'delete' | 'document' | 'edit' | 'folder' | 'logout' | 'more'
+    | 'attachment' | 'delete' | 'document' | 'edit' | 'folder' | 'logout' | 'more'
     | 'plus' | 'search' | 'send' | 'source' | 'upload' | 'user';
 
 const iconPaths: Record<IconName, ReactNode> = {
     'arrow-left': <><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></>,
+    attachment: <path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9" />,
     chat: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" /><path d="M8 9h8M8 13h5" /></>,
     check: <path d="m5 12 4 4L19 6" />,
     'chevron-down': <path d="m6 9 6 6 6-6" />,

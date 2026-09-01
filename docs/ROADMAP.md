@@ -143,7 +143,7 @@ Status: Complete
 - Ask Your Documents UI with answer, safe error, and inspectable source states
 - Fake-based RAG, citation, Unicode, prompt-injection, ownership, and provider-failure tests
 
-## Milestone 9 — Conversation UX and Persistent Chat History
+## Milestone 9.1 — Conversation UX and Persistent Chat History
 
 Status: Complete
 
@@ -158,6 +158,21 @@ Status: Complete
 - Compact source cards and authoritative source-snapshot inspection
 - Document management on a dedicated project route and Retrieval Debug in a collapsed advanced panel
 - `AddConversations` EF Core migration and fake-based persistence, ownership, history, source, Unicode, and failure tests
+
+## Milestone 9.2 — Chat-first UX + Direct Workspace Document Upload
+
+Status: Complete
+
+- Chat-first workspace presentation while `Project` remains the backend ownership, security, document, and retrieval boundary
+- Workspaces/Documents primary navigation with the duplicate first-sidebar Chats item removed and conversation history preserved
+- Centered Current Workspace empty-state context without generic prompt suggestions
+- Human-readable ready-document scope in the chat header and composer
+- Accessible rename/delete conversation overflow menu using the existing confirmation dialog
+- Composer paperclip and main-chat PDF/DOCX drag/drop through the existing project document upload API
+- Shared frontend upload validation and normal extraction, normalization, chunking, and embedding processing
+- Compact transient upload status, conditional existing document-state polling, and ask-while-processing guidance
+- Documents remain reusable by every conversation in the workspace; no conversation document ownership or schema change
+- No new AI call type, model change, package, backend endpoint, or migration
 
 ## Milestone 10 — Deployment
 

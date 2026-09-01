@@ -48,6 +48,8 @@ ASP.NET Core Identity user with a GUID key, display name, email, authentication 
 
 A user-owned workspace with a name, optional description, and timestamps. Deleting a user deletes owned projects; deleting a project deletes its document and conversation database rows.
 
+`Project` remains the backend knowledge, ownership, security, document, and retrieval boundary. The frontend uses **Workspace** as the user-facing term, but routes, API contracts, entity names, relationships, and database tables continue to use `Project`/`ProjectId`.
+
 ### Document
 
 Stores the project relationship, safe original filename, generated storage filename, MIME type, size, processing status, extraction, normalization, chunking, and aggregate embedding metadata, plus bounded safe public errors.
@@ -343,9 +345,11 @@ Conversation DTOs omit owner IDs, embeddings, vectors, storage names/paths, prom
 
 ### Chat workspace
 
-The lightweight History API router supports `/projects/{projectId}`, `/projects/{projectId}/chats/{conversationId}`, and `/projects/{projectId}/documents`. The chat workspace uses a compact application sidebar, current-project/document count, local-time grouped and filterable history, focused user/assistant messages, anchored composer, loading/error/retry states, inline rename, confirmed delete, and compact source cards with a snapshot modal. Basic paragraphs, lists, bold text, and citation markers are rendered as React nodes without `dangerouslySetInnerHTML` or a Markdown dependency.
+The lightweight History API router supports `/projects/{projectId}`, `/projects/{projectId}/chats/{conversationId}`, and `/projects/{projectId}/documents`. The chat-first workspace uses a compact application sidebar, current-workspace/document count, local-time grouped and filterable history, focused user/assistant messages, anchored composer, loading/error/retry states, an accessible rename/delete overflow menu, and compact source cards with a snapshot modal. Basic paragraphs, lists, bold text, and citation markers are rendered as React nodes without `dangerouslySetInnerHTML` or a Markdown dependency.
 
-Document upload, status, raw/normalized text, chunks, embedding generation/rebuild, and deletion remain on the Documents route. Semantic Search remains available under a collapsed `Advanced: retrieval details` control instead of dominating the normal chat experience. Desktop uses the available three-column width; the history/sidebar progressively collapse on smaller screens.
+The chat composer and main chat drop surface reuse the existing document upload endpoint, frontend PDF/DOCX validation, Toast provider, and project document-status reads. A document uploaded from chat is stored under the current project/workspace, enters the normal extraction → normalization → chunking → embedding pipeline, and is reusable by every conversation in that workspace. `Conversation` does not own documents, there is no conversation/document join, and upload triggers no answer-generation request. Existing Ready documents remain usable while a recent upload processes; compact transient status chips reflect backend document state through the chat workspace's single conditional status-polling loop.
+
+Full document status, raw/normalized text, chunks, embedding generation/rebuild, processing controls, and deletion remain on the Documents route. Semantic Search remains available under a collapsed `Retrieval details` control instead of dominating the normal chat experience. Desktop uses the available three-column width; the history/sidebar progressively collapse on smaller screens.
 
 ## Normalization, Chunk, and Embedding Rebuild Flow
 
@@ -395,9 +399,10 @@ Document management is intentionally separate from the focused chat workspace. T
 - Milestone 7: Project-scoped semantic retrieval, one transient query embedding, parameterized ownership- and freshness-filtered pgvector cosine search, bounded Top-K, safe results, retrieval debug UI, tests, and exact-search index decision.
 - Milestone 8: Single-turn Ask Your Documents, bounded untrusted context, official OpenAI Responses answer generation, grounded multilingual answers, validated authoritative citations, no-evidence behavior, frontend UI, tests, and documentation.
 - Milestone 9: Persistent project conversations, bounded non-authoritative recent history, source snapshots, ownership-safe CRUD/message APIs, deterministic titles, failure/retry semantics, focused chat workspace, separate document management, tests, migration, and documentation.
+- Milestone 9.2: Chat-first workspace terminology and navigation, simplified empty states, composer and drag/drop workspace upload, backend-backed transient upload status, accessible conversation actions, shared frontend upload validation, and no backend/schema/AI-call changes.
 
 ## Core MVP Status and Limitations
 
-The core bachelor's-project MVP is complete through Milestone 9. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, no OCR for scanned documents, exact vector search sized for MVP data, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guide in `RETRIEVAL_EVALUATION.md`.
+The core bachelor's-project MVP is complete through Milestone 9.2. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, no OCR for scanned documents, exact vector search sized for MVP data, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guide in `RETRIEVAL_EVALUATION.md`.
 
 Classification, broad document understanding, metadata extraction or metadata-aware retrieval, hybrid lexical/vector search, reranking, OCR, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening are post-MVP possibilities only. They are not part of the completed implementation; see `ROADMAP.md`.
