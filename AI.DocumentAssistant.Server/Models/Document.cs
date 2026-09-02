@@ -61,4 +61,6 @@ public sealed class Document
     public ICollection<DocumentTextSection> TextSections { get; } = new List<DocumentTextSection>();
 
     public ICollection<DocumentChunk> Chunks { get; } = new List<DocumentChunk>();
+
+    public DocumentUnderstanding? Understanding { get; set; }
 }

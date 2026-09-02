@@ -9,6 +9,7 @@ using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Retrieval;
 using AI.DocumentAssistant.Server.Rag;
 using AI.DocumentAssistant.Server.Storage;
+using AI.DocumentAssistant.Server.Understanding;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Identity;
@@ -34,8 +35,11 @@ builder.Services.AddSingleton<IDocumentTextExtractor, DocxDocumentTextExtractor>
 builder.Services.AddSingleton<IDocumentTokenizer, Cl100kDocumentTokenizer>();
 builder.Services.AddSingleton<IDocumentChunkGenerator, DocumentChunkGenerator>();
 builder.Services.AddSingleton<IDocumentTextNormalizer, DocumentTextNormalizer>();
+builder.Services.AddSingleton<IDocumentUnderstandingInputBuilder, DocumentUnderstandingInputBuilder>();
+builder.Services.AddSingleton<DocumentUnderstandingValidator>();
 builder.Services.AddSingleton<IOpenAIEmbeddingClient, OpenAISdkEmbeddingClient>();
 builder.Services.AddSingleton<ITextEmbeddingService, OpenAITextEmbeddingService>();
+builder.Services.AddSingleton<IDocumentUnderstandingClient, OpenAIDocumentUnderstandingClient>();
 builder.Services.AddSingleton<IOpenAIAnswerClient, OpenAIResponsesAnswerClient>();
 builder.Services.AddSingleton<IGroundedAnswerService, OpenAIGroundedAnswerService>();
 builder.Services.AddSingleton<IRagContextBuilder, RagContextBuilder>();
@@ -44,6 +48,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IDocumentChunkingService, DocumentChunkingService>();
 builder.Services.AddScoped<IDocumentNormalizationService, DocumentNormalizationService>();
 builder.Services.AddScoped<IDocumentEmbeddingService, DocumentEmbeddingService>();
+builder.Services.AddScoped<IDocumentUnderstandingService, DocumentUnderstandingService>();
 builder.Services.AddScoped<IDocumentProcessingService, DocumentProcessingService>();
 builder.Services.AddScoped<ISemanticChunkSearch, PgvectorSemanticChunkSearch>();
 builder.Services.AddScoped<ISemanticRetrievalService, SemanticRetrievalService>();
@@ -96,6 +101,11 @@ builder.Services.AddOptions<OpenAIAnswerOptions>()
     .Validate(
         options => !string.IsNullOrWhiteSpace(options.AnswerModel),
         "OpenAI AnswerModel must not be empty.")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<OpenAIDocumentUnderstandingOptions>()
+    .Bind(builder.Configuration.GetSection(OpenAIDocumentUnderstandingOptions.SectionName))
+    .ValidateDataAnnotations()
     .ValidateOnStart();
 
 builder.Services

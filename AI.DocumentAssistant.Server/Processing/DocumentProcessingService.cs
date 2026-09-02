@@ -5,6 +5,7 @@ using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Storage;
+using AI.DocumentAssistant.Server.Understanding;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
@@ -21,6 +22,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
     private readonly IDocumentTextNormalizer _normalizer;
     private readonly IDocumentChunkGenerator _chunkGenerator;
     private readonly ITextEmbeddingService _embeddingService;
+    private readonly IDocumentUnderstandingService _understandingService;
     private readonly OpenAIEmbeddingOptions _embeddingOptions;
     private readonly ILogger<DocumentProcessingService> _logger;
 
@@ -31,6 +33,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         IDocumentTextNormalizer normalizer,
         IDocumentChunkGenerator chunkGenerator,
         ITextEmbeddingService embeddingService,
+        IDocumentUnderstandingService understandingService,
         IOptions<OpenAIEmbeddingOptions> embeddingOptions,
         ILogger<DocumentProcessingService> logger)
     {
@@ -40,6 +43,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         _normalizer = normalizer;
         _chunkGenerator = chunkGenerator;
         _embeddingService = embeddingService;
+        _understandingService = understandingService;
         _embeddingOptions = embeddingOptions.Value;
         _logger = logger;
     }
@@ -155,6 +159,31 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                 normalizationResult.RemovedCharacterCount,
                 normalizationResult.OriginalCharacterCount,
                 normalizationResult.NormalizedCharacterCount);
+
+            try
+            {
+                await _understandingService.AnalyzeAsync(
+                    document.Id,
+                    normalizationResult.Sections.Select(section =>
+                        new DocumentUnderstandingSourceSection(
+                            section.SectionIndex,
+                            section.Content,
+                            section.PageNumber,
+                            section.SectionTitle)).ToArray(),
+                    force: false,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception understandingException)
+            {
+                _logger.LogWarning(
+                    "Document understanding did not complete for document {DocumentId}; normalized-text chunking and embedding will continue. Exception type: {ExceptionType}. Document content and provider payloads were omitted.",
+                    document.Id,
+                    understandingException.GetType().FullName);
+            }
 
             var generatedChunks = _chunkGenerator.Generate(
                 normalizationResult.Sections.Select(section => new ChunkSourceSection(
@@ -283,6 +312,25 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         catch (Exception exception)
         {
             stopwatch.Stop();
+
+            if (exception is DocumentExtractionException)
+            {
+                try
+                {
+                    await _understandingService.AnalyzeAsync(
+                        document.Id,
+                        [],
+                        force: false,
+                        CancellationToken.None);
+                }
+                catch (Exception understandingException)
+                {
+                    _logger.LogWarning(
+                        "Could not persist Skipped document-understanding state after extraction produced no normalized source for document {DocumentId}. Exception type: {ExceptionType}.",
+                        document.Id,
+                        understandingException.GetType().FullName);
+                }
+            }
 
             var safeMessage = exception switch
             {

@@ -4,7 +4,7 @@
 
 Status: Complete
 
-Milestones 1 through 9 provide the complete ingestion, grounded Ask Your Documents, and persistent conversation experience. Deployment remains a separate operations milestone; the Post-MVP section lists possible improvements and is not an implementation commitment.
+Milestones 1 through 10 provide the complete ingestion, grounded Ask Your Documents, persistent conversation experience, and generic ingestion-intelligence foundation. Deployment remains a separate operations milestone; later retrieval/PDF milestones are listed independently and are not implemented by Milestone 10.
 
 ## Milestone 1 — Authentication
 
@@ -174,7 +174,47 @@ Status: Complete
 - Documents remain reusable by every conversation in the workspace; no conversation document ownership or schema change
 - No new AI call type, model change, package, backend endpoint, or migration
 
-## Milestone 10 — Deployment
+## Milestone 10 — Document Understanding / Ingestion Intelligence
+
+Status: Complete
+
+- Independent `DocumentUnderstanding` lifecycle: Pending, Processing, Ready, Failed, and Skipped
+- Generic controlled document-type taxonomy and short optional subtype
+- Primary BCP-47-compatible language code with validated confidence
+- Bounded generic document metadata entries with controlled kinds, labels, values, optional deterministic normalized values, confidence, and sequence
+- Strict OpenAI Responses JSON-schema output behind a focused provider abstraction and the existing backend-only credentials
+- Explicit untrusted-document/prompt-injection boundary with no tools or external actions
+- Deterministic full-text-or-beginning/middle/end sampling capped at approximately 6,000 `cl100k_base` tokens
+- Full normalized-content SHA-256 plus model and `document-understanding-v1` idempotency
+- Non-fatal provider/validation failures that leave chunking, embedding, semantic retrieval, and RAG usable
+- Atomic successful classification/metadata replacement and safe bounded Failed/Skipped states
+- Automatic analysis for new uploads plus ownership-protected GET and forced rebuild endpoints for historical Ready documents
+- Document Intelligence UI with statuses, confidence text, metadata, Advanced audit fields, confirmation, retry, and polling
+- `AddDocumentUnderstanding` EF Core migration, offline fake-based tests, and architecture documentation
+- No OCR, PDF technical classification, metadata-aware retrieval, hybrid search, reranking, or automatic summary
+
+## Milestone 11 — Technical PDF Intelligence / OCR-ready Routing
+
+Status: Planned
+
+- Text/scanned/image/mixed PDF diagnostics and OCR-ready routing
+- OCR provider and image-processing decisions remain out of Milestone 10
+
+## Milestone 12 — Metadata-aware Hybrid Retrieval
+
+Status: Planned
+
+- Consume validated document intelligence for metadata-aware retrieval
+- Evaluate lexical/vector hybrid search without changing Milestone 10 production semantics
+
+## Milestone 13 — Reranking / Retrieval Quality
+
+Status: Planned
+
+- Evidence-based reranking and retrieval-quality measurement after hybrid retrieval
+- No reranker is present in Milestone 10
+
+## Operations — Deployment
 
 Status: Planned
 
@@ -187,13 +227,6 @@ Status: Planned
 
 Status: Not started
 
-- Document classification
-- Broader document understanding
-- Structured metadata extraction
-- Metadata-aware retrieval and filtering
-- Hybrid lexical/vector search
-- Evidence-based reranking
-- OCR for scanned documents
 - Durable background queue and cross-process job coordination
 - Cloud/object storage
 - Streaming responses

@@ -6,6 +6,7 @@ using AI.DocumentAssistant.Server.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
+using AI.DocumentAssistant.Server.Understanding;
 
 namespace AI.DocumentAssistant.Server.Normalization;
 
@@ -18,6 +19,7 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
     private readonly IDocumentTextNormalizer _normalizer;
     private readonly IDocumentChunkGenerator _chunkGenerator;
     private readonly ITextEmbeddingService _embeddingService;
+    private readonly IDocumentUnderstandingService _understandingService;
     private readonly OpenAIEmbeddingOptions _embeddingOptions;
     private readonly ILogger<DocumentNormalizationService> _logger;
 
@@ -26,6 +28,7 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
         IDocumentTextNormalizer normalizer,
         IDocumentChunkGenerator chunkGenerator,
         ITextEmbeddingService embeddingService,
+        IDocumentUnderstandingService understandingService,
         IOptions<OpenAIEmbeddingOptions> embeddingOptions,
         ILogger<DocumentNormalizationService> logger)
     {
@@ -33,6 +36,7 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
         _normalizer = normalizer;
         _chunkGenerator = chunkGenerator;
         _embeddingService = embeddingService;
+        _understandingService = understandingService;
         _embeddingOptions = embeddingOptions.Value;
         _logger = logger;
     }
@@ -86,6 +90,12 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
                     section.PageNumber,
                     section.SectionTitle)).ToArray(),
                 cancellationToken);
+            var understandingSources = result.Sections.Select(section =>
+                new DocumentUnderstandingSourceSection(
+                    section.SectionIndex,
+                    section.Content,
+                    section.PageNumber,
+                    section.SectionTitle)).ToArray();
 
             var embeddingResult = await _embeddingService.GenerateEmbeddingsAsync(
                 generatedChunks.Select(chunk => chunk.Content).ToArray(),
@@ -98,6 +108,10 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
 
             await using var transaction = await BeginTransactionIfSupportedAsync(cancellationToken);
             await DeleteExistingChunksAsync(documentId, cancellationToken);
+            await _understandingService.StagePendingIfStaleAsync(
+                documentId,
+                understandingSources,
+                cancellationToken);
 
             var completedAtUtc = DateTime.UtcNow;
             foreach (var section in sections)
@@ -158,6 +172,25 @@ public sealed class DocumentNormalizationService : IDocumentNormalizationService
             if (transaction is not null)
             {
                 await transaction.CommitAsync(cancellationToken);
+            }
+
+            try
+            {
+                await _understandingService.AnalyzePersistedAsync(
+                    documentId,
+                    force: false,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception understandingException)
+            {
+                _logger.LogWarning(
+                    "Document understanding did not complete after normalization rebuild for document {DocumentId}; the rebuilt normalization, chunks, embeddings, and Ready status were preserved. Exception type: {ExceptionType}.",
+                    documentId,
+                    understandingException.GetType().FullName);
             }
 
             stopwatch.Stop();

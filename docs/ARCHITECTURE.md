@@ -8,7 +8,8 @@ The two main flows are:
 
 ```text
 INGESTION
-PDF/DOCX -> Extract -> Normalize -> Chunk -> Embed -> PostgreSQL + pgvector
+PDF/DOCX -> Extract -> Normalize -> Document Understanding -> Chunk -> Embed
+                                                        -> PostgreSQL + pgvector
 
 QUERY
 Question -> Query embedding -> ownership-filtered semantic retrieval
@@ -20,7 +21,7 @@ Persisted conversation -> current question -> semantic retrieval
   -> grounded answer -> persisted assistant message + source snapshots
 ```
 
-The MVP deliberately does not include OCR, classification, general document understanding, metadata extraction, hybrid/BM25 search, reranking, agents, Semantic Kernel, cloud storage, streaming, or a durable message broker.
+The application deliberately does not include OCR, metadata-aware or hybrid/BM25 retrieval, reranking, agents, Semantic Kernel, cloud storage, streaming, or a durable message broker. Milestone 10 produces document intelligence, but retrieval and answers do not consume it yet.
 
 ## Components
 
@@ -35,7 +36,8 @@ The MVP deliberately does not include OCR, classification, general document unde
 ```text
 ApplicationUser 1 ── * Project 1 ── * Document
                                       ├── * DocumentTextSection
-                                      └── * DocumentChunk
+                                      ├── * DocumentChunk
+                                      └── 0..1 DocumentUnderstanding 1 ── * DocumentMetadataEntry
                          └── * Conversation 1 ── * ConversationMessage
                                                    └── * ConversationMessageSource
 ```
@@ -62,6 +64,8 @@ Important chunking fields are:
 
 Embedding aggregates are `EmbeddedChunkCount`, `EmbeddingModel`, `EmbeddingDimensions`, `EmbeddedAtUtc`, and `EmbeddingError`. They cheaply exclude legacy or configuration-mismatched documents without returning vectors. For aggregate candidates, list/detail reads verify every chunk's vector presence, model, dimensions, timestamp, and SHA-256 against its exact current content before returning `EmbeddingsAreCurrent`; the aggregate is not treated as a substitute for chunk-row validation.
 
+Document understanding is deliberately not stored as a set of unrelated fields on `Document`. A nullable one-to-one relationship keeps its independent lifecycle separate from the document's ingestion/RAG status.
+
 ### DocumentTextSection
 
 The ordered extraction representation. PDF sections normally correspond to pages. DOCX sections correspond to heading groups. `Content` is immutable raw extraction for verification and debugging. Nullable `NormalizedContent` is the retrieval-oriented derivative, with `NormalizationChanged`, `RemovedCharacterCount`, and `NormalizedAtUtc` providing traceability. Existing rows from before Milestone 5.1 have null normalized content until normalization is rebuilt.
@@ -81,6 +85,14 @@ The embedding fields are:
 
 The hash is deterministic integrity/staleness metadata, not a security mechanism. An embedding is current only when the vector exists, model and dimensions match current configuration, and the stored hash matches the exact current chunk content. Chunk replacement always creates and embeds new rows; embeddings are never copied by chunk index, page number, or section index.
 
+### DocumentUnderstanding and DocumentMetadataEntry
+
+`DocumentUnderstanding` uses `DocumentId` as both its primary key and foreign key, so a document has at most one current understanding aggregate. Its independent status is `Pending`, `Processing`, `Ready`, `Failed`, or `Skipped`; the absence of a row represents a legacy document that has not been analyzed. A document can therefore remain `Ready` and fully retrievable while understanding is `Failed`.
+
+The aggregate stores the controlled document type, optional short subtype, classification confidence, normalized primary language code and confidence, detected title, subject, requested model identifier, prompt version, uppercase full-normalized-content SHA-256, analysis time, and a bounded safe error/reason. The controlled type taxonomy is `Unknown`, `Contract`, `Invoice`, `Receipt`, `Report`, `Policy`, `Procedure`, `Manual`, `CourseMaterial`, `ResearchPaper`, `FinancialDocument`, `Form`, `Letter`, `Resume`, `TechnicalDocument`, and `Other`.
+
+`DocumentMetadataEntry` is the bounded generic child model rather than a wide set of nullable business columns. Its controlled kinds are `Organization`, `Person`, `Identifier`, `Date`, `MonetaryAmount`, `Jurisdiction`, `Topic`, and `Other`. Each entry stores a semantic lower-snake-case label, sanitized original value, optional deterministic normalized value, optional validated confidence, and stable sequence. At most 50 validated entries are accepted. Successful rebuilds replace all entries atomically; document deletion cascades through understanding to metadata. Conversation source snapshots have no foreign key to these rows and retain their historical behavior.
+
 ### Conversation, ConversationMessage, and ConversationMessageSource
 
 `Conversation` belongs to one project and stores a GUID, a title, and UTC creation/update timestamps. `(ProjectId, UpdatedAtUtc)` supports the newest-first project history. `ConversationMessage` belongs to one conversation, stores only the constrained `User` or `Assistant` role, text, UTC creation time, and sequence; `(ConversationId, Sequence)` is unique. System/developer prompts, vectors, and provider configuration are never stored.
@@ -98,7 +110,7 @@ All project, document, Search, Ask, and conversation endpoints require authentic
 1. The authenticated user uploads a document to an owned project.
 2. The API validates the 20 MB limit, filename, extension, declared content type, and file signature.
 3. The file is saved locally with a generated `.pdf` or `.docx` filename.
-4. A `Document` row is created with status `Uploaded`.
+4. A `Document` row is created with status `Uploaded` and a separate understanding row with status `Pending`.
 5. The document ID is offered to the process-local background queue.
 6. The API returns document metadata; it never returns the storage filename or path.
 
@@ -109,17 +121,18 @@ All project, document, Search, Ask, and conversation endpoints require authentic
 3. PDF extraction reads pages in order and records page numbers.
 4. DOCX extraction reads paragraphs and tables in order, grouping Heading 1–3 content and retaining the heading as section metadata.
 5. Extracted sections remain in memory as raw source data while normalization runs.
-6. Chunks are generated from normalized sections in memory.
-7. The exact generated chunk contents are embedded and the complete result is validated in memory.
-8. Only then does a database transaction replace sections and chunks, attach their vectors and metadata, update document aggregates, and set the document to `Ready`.
+6. Document understanding receives a deterministic bounded input derived only from the normalized sections. Its result or safe failure state is persisted independently.
+7. Chunks are generated from normalized sections in memory even when understanding failed.
+8. The exact generated chunk contents are embedded and the complete result is validated in memory.
+9. Only then does a database transaction replace sections and chunks, attach their vectors and metadata, update document aggregates, and set the document to `Ready`.
 
 The complete flow is:
 
 ```text
-Upload -> Extract -> Normalize -> Chunk -> Embed -> Persist -> Ready
+Upload -> Extract -> Normalize -> Document Understanding -> Chunk -> Embed -> Persist -> Ready
 ```
 
-`Processing` covers extraction through embedding; no separate status is needed. An extraction, normalization, chunking, or embedding failure during initial/retry processing leaves no partial new authoritative sections, chunks, or embeddings, sets the document to `Failed`, stores a bounded stage-safe error, and keeps the uploaded file for retry. Retrying reopens the existing uploaded file and runs the complete current pipeline. Technical exceptions are logged without document text, physical paths, vectors, credentials, authorization headers, or provider response bodies.
+Document `Processing` still covers extraction through embedding, while document understanding has its own lifecycle. An extraction, normalization, chunking, or embedding failure during initial/retry processing leaves no partial new authoritative sections, chunks, or embeddings, sets the document to `Failed`, stores a bounded stage-safe error, and keeps the uploaded file for retry. An understanding timeout, rate limit, configuration error, malformed response, or other provider failure records understanding `Failed` but is caught at the stage boundary; chunking and embedding continue and the document can become `Ready`. Retrying reopens the existing uploaded file and runs the complete current pipeline. Technical exceptions are logged without document text, physical paths, vectors, credentials, authorization headers, or provider response bodies.
 
 ## Normalization Flow
 
@@ -173,6 +186,25 @@ Cross-line hyphen repair requires at least four Unicode letters before a trailin
 
 The transformation is deterministic and idempotent with respect to output content. Per-section and document counts make changes inspectable without exposing matching internals or document contents in logs.
 
+## Document Understanding Flow
+
+`IDocumentUnderstandingService` owns orchestration and persistence, while `IDocumentUnderstandingClient` is the narrow provider boundary over the already-installed official OpenAI .NET Responses SDK. `OpenAI:DocumentUnderstandingModel` is configurable and falls back to the configured answer model when omitted; the same backend-only `OpenAI:ApiKey` is reused. Responses have provider storage disabled, low reasoning effort, and a strict JSON-schema text format. No alternate HTTP client or AI SDK is used.
+
+Normalized document text is untrusted data. The system instruction limits the task to classification, primary-language detection, title/subject detection, and explicitly supported metadata. It says not to follow instructions embedded in a document, reveal secrets or system prompts, call tools, or perform external actions. The request provides no tools. The strict schema constrains the main classification and metadata kinds, but provider output is still treated as untrusted: local code rejects unsupported enums, malformed/empty responses, non-finite or out-of-range confidence, invalid language codes, excessive counts, overlong values, unexpected nulls, and invalid labels before persistence.
+
+The input builder uses the existing `cl100k_base` tokenizer and normalized sections only. It builds ordered content with page and heading markers where available. If the annotated document fits the 6,000-token content budget, the full text is used. Otherwise a deterministic, non-overlapping representative sample reserves schema/marker safety space and allocates approximately 50% to the beginning, 25% around the middle, and 25% to the end. The complete ordered normalized content—not merely the sample—is hashed with SHA-256, so any source change can invalidate the result. Blank, extremely small, or noisy extraction below the deterministic 20-token/40-alphanumeric-character threshold makes understanding `Skipped` with `Insufficient normalized text`; no OpenAI request is made. OCR and image/PDF technical classification are not performed.
+
+The provider call is never held inside a database transaction. The service first claims the independent understanding state as `Processing`, calls the provider, validates and normalizes the entire response, then atomically replaces the current classification and all metadata entries. Text values receive conservative whitespace normalization; unambiguous supported dates become ISO `yyyy-MM-dd`, while unsafe or ambiguous normalization remains null. Duplicate `(kind, label, normalized-or-original value)` entries are removed deterministically.
+
+Automatic execution reuses a `Ready` or `Skipped` result when full-content hash, resolved model, and `document-understanding-v1` prompt version all match. A manual rebuild forces a new request. A changed normalization, model, or prompt version triggers analysis; successful normalization rebuilds invoke the same non-fatal understanding path after their authoritative normalized text commits. Provider or validation failure stores only a bounded safe `Failed` state and cannot make an otherwise usable document fail chunking, embedding, semantic retrieval, or RAG.
+
+The ownership-protected APIs are:
+
+- `GET /api/projects/{projectId}/documents/{documentId}/understanding` for current safe status, classification, language, metadata, and bounded audit fields;
+- `POST /api/projects/{projectId}/documents/{documentId}/understanding/rebuild` for a forced analysis of persisted normalized text.
+
+Both document ID and route project ID are joined through `Project.OwnerId` in database queries. Legacy documents with no understanding row return `NotAnalyzed` and remain valid. Understanding metadata is deliberately not copied to chunks, injected into RAG context, used to rewrite queries, filter retrieval, or alter pgvector ranking in Milestone 10.
+
 ## Chunking Flow
 
 1. Stored text sections are read in `SectionIndex` order with `AsNoTracking`; chunking uses `NormalizedContent ?? Content` for compatibility with pre-normalization rows.
@@ -198,7 +230,8 @@ The default configuration is:
 "OpenAI": {
   "EmbeddingModel": "text-embedding-3-small",
   "EmbeddingDimensions": 1536,
-  "BatchSize": 32
+  "BatchSize": 32,
+  "DocumentUnderstandingModel": "gpt-5.6-luna"
 }
 ```
 
@@ -351,9 +384,11 @@ The chat composer and main chat drop surface reuse the existing document upload 
 
 Full document status, raw/normalized text, chunks, embedding generation/rebuild, processing controls, and deletion remain on the Documents route. Semantic Search remains available under a collapsed `Retrieval details` control instead of dominating the normal chat experience. Desktop uses the available three-column width; the history/sidebar progressively collapse on smaller screens.
 
-## Normalization, Chunk, and Embedding Rebuild Flow
+## Normalization, Understanding, Chunk, and Embedding Rebuild Flow
 
 `POST /api/projects/{projectId}/documents/{documentId}/normalization/rebuild` authenticates the user, filters ownership in SQL, requires a `Ready` document with stored raw sections, and atomically changes the document to `Processing` before work begins. It reruns normalization from `DocumentTextSection.Content`, regenerates chunks, generates fresh embeddings, and replaces normalized fields, chunks, vectors, and aggregate metadata in one transaction without opening the uploaded file. If normalization, chunking, or embedding fails before commit, the prior authoritative normalized content, chunks, and embeddings remain intact; the document returns to `Ready` with a bounded safe stage error.
+
+After a successful normalization commit, the non-fatal understanding path compares the new full normalized-content hash, model, and prompt version. It reuses an identical current result or analyzes the changed source. Understanding failure leaves the successfully rebuilt document, chunks, embeddings, and `Ready` status intact.
 
 `GET /api/projects/{projectId}/documents/{documentId}/text?view=raw|normalized` returns ordered DTOs with section/page/title data and raw versus normalized character statistics. A normalized request returns conflict until normalization exists. It never returns EF entities, storage names, or physical paths.
 
@@ -382,7 +417,7 @@ The project detail page polls while a document is Uploaded or Processing. A succ
 - Failed: Retry and Delete.
 - Ready: inspect raw/normalized text, view chunks, rebuild normalization, rebuild chunks, explicitly generate/rebuild embeddings, and delete. Process and Retry are never rendered.
 
-Normalization, chunk, and embedding rebuilds require browser confirmation; the embedding confirmation also makes API-credit usage explicit. Document cards show concise raw/normalized/chunk statistics plus Embedded, Not embedded, or Needs rebuild state, embedded chunk count, model, dimensions, and time. They never display vectors. Action loading state disables conflicting actions for that document, and successful requests refresh metadata. Normalized text is fetched only while the viewer is open and its normalized tab is selected. No React effect or polling path generates embeddings.
+Normalization, understanding, chunk, and embedding rebuilds require browser confirmation; AI-backed confirmations make API-credit usage explicit. Document cards show concise raw/normalized/chunk statistics plus Embedded, Not embedded, or Needs rebuild state, embedded chunk count, model, dimensions, and time. They never display vectors. A compact, lazy-loaded Document Intelligence disclosure shows independent Not analyzed, Pending, Processing, Ready, Failed, and Skipped states; Ready results show type/language confidence as simple text, title, subject, and bounded metadata. Model, prompt version, time, and source hash stay under Advanced. Action loading state disables conflicting actions for that document, and successful requests refresh metadata. Normalized text and full intelligence metadata are fetched only when their disclosures are opened. Polling observes statuses but never initiates an AI request.
 
 Document management is intentionally separate from the focused chat workspace. The chat UI persists project conversations and renders only backend-authoritative source snapshots. Semantic Search is retained as a collapsed advanced retrieval inspector with ranked document/chunk/page/heading/content results and cosine distance. Neither view receives vectors, provider configuration, prompts, storage paths, or secrets.
 
@@ -400,9 +435,10 @@ Document management is intentionally separate from the focused chat workspace. T
 - Milestone 8: Single-turn Ask Your Documents, bounded untrusted context, official OpenAI Responses answer generation, grounded multilingual answers, validated authoritative citations, no-evidence behavior, frontend UI, tests, and documentation.
 - Milestone 9: Persistent project conversations, bounded non-authoritative recent history, source snapshots, ownership-safe CRUD/message APIs, deterministic titles, failure/retry semantics, focused chat workspace, separate document management, tests, migration, and documentation.
 - Milestone 9.2: Chat-first workspace terminology and navigation, simplified empty states, composer and drag/drop workspace upload, backend-backed transient upload status, accessible conversation actions, shared frontend upload validation, and no backend/schema/AI-call changes.
+- Milestone 10: Generic document classification, primary-language detection, bounded document metadata extraction, deterministic sampling, strict and locally validated structured output, independent non-fatal status, content/model/prompt idempotency, ownership-safe APIs, Document Intelligence UI, migration, and fake-based tests.
 
 ## Core MVP Status and Limitations
 
-The core bachelor's-project MVP is complete through Milestone 9.2. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, no OCR for scanned documents, exact vector search sized for MVP data, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guide in `RETRIEVAL_EVALUATION.md`.
+The core bachelor's-project MVP and ingestion-intelligence foundation are complete through Milestone 10. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, no OCR for scanned documents, exact vector search sized for MVP data, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guide in `RETRIEVAL_EVALUATION.md`.
 
-Classification, broad document understanding, metadata extraction or metadata-aware retrieval, hybrid lexical/vector search, reranking, OCR, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening are post-MVP possibilities only. They are not part of the completed implementation; see `ROADMAP.md`.
+Metadata-aware retrieval, hybrid lexical/vector search, reranking, OCR, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening remain future work. Milestone 10 only produces persisted intelligence: it performs no OCR, PDF image routing, metadata-aware filtering, hybrid search, or reranking; see `ROADMAP.md`.

@@ -18,6 +18,8 @@ import type {
     DocumentChunk,
     DocumentDetails,
     DocumentSummary,
+    DocumentUnderstanding,
+    DocumentUnderstandingStatus,
     ExtractedTextSection,
     ProjectDetails,
     ProjectSummary,
@@ -284,6 +286,7 @@ export function ProjectDetailsPage({
                         </section>
 
                         <DocumentsSection
+                            key={project.id}
                             projectId={project.id}
                             documents={documents}
                             onDocumentsChanged={setDocuments}
@@ -547,29 +550,121 @@ function DocumentsSection({
     const [rebuildingId, setRebuildingId] = useState<string | null>(null);
     const [normalizingId, setNormalizingId] = useState<string | null>(null);
     const [embeddingId, setEmbeddingId] = useState<string | null>(null);
+    const [understandingId, setUnderstandingId] = useState<string | null>(null);
+    const [understandings, setUnderstandings] = useState<Record<string, DocumentUnderstanding>>({});
+    const [understandingLoading, setUnderstandingLoading] = useState<Record<string, boolean>>({});
+    const [understandingErrors, setUnderstandingErrors] = useState<Record<string, string>>({});
     const [chunkViewerRefreshKey, setChunkViewerRefreshKey] = useState(0);
     const [textViewerDocument, setTextViewerDocument] = useState<DocumentSummary | null>(null);
     const [chunkViewerDocument, setChunkViewerDocument] = useState<DocumentSummary | null>(null);
-    const [confirmation, setConfirmation] = useState<{
-        action: 'delete' | 'chunks' | 'normalization' | 'embeddings';
-        document: DocumentSummary;
-    } | null>(null);
+    const [confirmation, setConfirmation] = useState<DocumentConfirmation | null>(null);
     const [isDragging, setIsDragging] = useState(false);
     const uploadInputRef = useRef<HTMLInputElement>(null);
+    const understandingCacheRef = useRef<Record<string, DocumentUnderstanding>>({});
+    const understandingRequestIdsRef = useRef(new Set<string>());
     const showToast = useToast();
 
+    const cacheUnderstanding = useCallback((documentId: string, understanding: DocumentUnderstanding) => {
+        const next = { ...understandingCacheRef.current, [documentId]: understanding };
+        understandingCacheRef.current = next;
+        setUnderstandings(next);
+    }, []);
+
+    const discardCachedUnderstanding = useCallback((documentId: string) => {
+        if (!understandingCacheRef.current[documentId]) return;
+        const next = { ...understandingCacheRef.current };
+        delete next[documentId];
+        understandingCacheRef.current = next;
+        setUnderstandings(next);
+    }, []);
+
+    const applyDocumentResponse = useCallback((response: DocumentSummary[]) => {
+        let nextCache: Record<string, DocumentUnderstanding> | null = null;
+
+        for (const document of response) {
+            const cached = understandingCacheRef.current[document.id];
+            const responseStatus = document.understandingStatus ?? 'NotAnalyzed';
+            if (cached &&
+                !isUnderstandingInProgress(cached.status) &&
+                cached.status !== responseStatus) {
+                nextCache ??= { ...understandingCacheRef.current };
+                delete nextCache[document.id];
+            }
+        }
+
+        if (nextCache) {
+            understandingCacheRef.current = nextCache;
+            setUnderstandings(nextCache);
+        }
+
+        onDocumentsChanged(response);
+    }, [onDocumentsChanged]);
+
+    const loadUnderstanding = useCallback(async (
+        documentId: string,
+        force = false,
+    ): Promise<DocumentUnderstanding | null> => {
+        const cached = understandingCacheRef.current[documentId];
+        if (!force && cached) return cached;
+        if (understandingRequestIdsRef.current.has(documentId)) return cached ?? null;
+
+        understandingRequestIdsRef.current.add(documentId);
+        setUnderstandingLoading((current) => ({ ...current, [documentId]: true }));
+        setUnderstandingErrors((current) => {
+            if (!current[documentId]) return current;
+            const next = { ...current };
+            delete next[documentId];
+            return next;
+        });
+
+        try {
+            const response = await apiRequest<DocumentUnderstanding>(
+                `/api/projects/${projectId}/documents/${documentId}/understanding`,
+            );
+            cacheUnderstanding(documentId, response);
+            onDocumentsChanged((currentDocuments) => currentDocuments.map((document) =>
+                document.id === documentId
+                    ? { ...document, understandingStatus: response.status }
+                    : document));
+            return response;
+        } catch (requestError) {
+            setUnderstandingErrors((current) => ({
+                ...current,
+                [documentId]: getErrorMessage(requestError),
+            }));
+            return null;
+        } finally {
+            understandingRequestIdsRef.current.delete(documentId);
+            setUnderstandingLoading((current) => {
+                const next = { ...current };
+                delete next[documentId];
+                return next;
+            });
+        }
+    }, [cacheUnderstanding, onDocumentsChanged, projectId]);
+
     const shouldPoll = documents.some(
-        (document) => document.status === 'Uploaded' || document.status === 'Processing',
+        (document) => document.status === 'Uploaded' ||
+            document.status === 'Processing' ||
+            isUnderstandingInProgress(document.understandingStatus),
     );
+
+    const visibleDocumentIds = new Set(documents.map((document) => document.id));
+    const understandingPollKey = Object.entries(understandings)
+        .filter(([documentId, understanding]) =>
+            visibleDocumentIds.has(documentId) && isUnderstandingInProgress(understanding.status))
+        .map(([documentId]) => documentId)
+        .sort()
+        .join(',');
 
     const refreshDocuments = useCallback(async () => {
         const response = await apiRequest<DocumentSummary[]>(
             `/api/projects/${projectId}/documents`,
         );
-        onDocumentsChanged(response);
+        applyDocumentResponse(response);
         setError('');
         return response;
-    }, [projectId, onDocumentsChanged]);
+    }, [applyDocumentResponse, projectId]);
 
     useEffect(() => {
         if (!shouldPoll) return;
@@ -583,7 +678,7 @@ function DocumentsSection({
                 );
 
                 if (isActive) {
-                    onDocumentsChanged(response);
+                    applyDocumentResponse(response);
                     setError('');
                 }
             } catch (requestError) {
@@ -597,7 +692,19 @@ function DocumentsSection({
             isActive = false;
             window.clearInterval(timer);
         };
-    }, [projectId, shouldPoll, onDocumentsChanged]);
+    }, [applyDocumentResponse, projectId, shouldPoll]);
+
+    useEffect(() => {
+        if (!understandingPollKey) return;
+        const documentIds = understandingPollKey.split(',');
+        const timer = window.setInterval(() => {
+            for (const documentId of documentIds) {
+                void loadUnderstanding(documentId, true);
+            }
+        }, 2_500);
+
+        return () => window.clearInterval(timer);
+    }, [loadUnderstanding, understandingPollKey]);
 
     const uploadDocument = async (file: File) => {
         setError('');
@@ -637,6 +744,12 @@ function DocumentsSection({
             );
             onDocumentsChanged((currentDocuments) =>
                 currentDocuments.filter((item) => item.id !== document.id));
+            discardCachedUnderstanding(document.id);
+            setUnderstandingErrors((current) => {
+                const next = { ...current };
+                delete next[document.id];
+                return next;
+            });
             setError('');
             showToast({ message: 'Document deleted.' });
         } catch (requestError) {
@@ -695,8 +808,11 @@ function DocumentsSection({
     const rebuildNormalization = async (document: DocumentSummary) => {
         setError('');
         setNormalizingId(document.id);
+        discardCachedUnderstanding(document.id);
         onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
-            item.id === document.id ? { ...item, status: 'Processing' } : item));
+            item.id === document.id
+                ? { ...item, status: 'Processing', understandingStatus: 'Pending' }
+                : item));
 
         try {
             const rebuiltDocument = await apiRequest<DocumentDetails>(
@@ -751,12 +867,71 @@ function DocumentsSection({
         }
     };
 
+    const rebuildUnderstanding = async (document: DocumentSummary) => {
+        setError('');
+        setUnderstandingId(document.id);
+
+        const cached = understandingCacheRef.current[document.id];
+        if (cached) {
+            cacheUnderstanding(document.id, {
+                ...cached,
+                status: 'Processing',
+                lastError: null,
+            });
+        }
+        onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
+            item.id === document.id
+                ? { ...item, understandingStatus: 'Processing' }
+                : item));
+
+        try {
+            const response = await apiRequest<DocumentUnderstanding>(
+                `/api/projects/${projectId}/documents/${document.id}/understanding/rebuild`,
+                { method: 'POST' },
+            );
+            cacheUnderstanding(document.id, response);
+            onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
+                item.id === document.id
+                    ? { ...item, understandingStatus: response.status }
+                    : item));
+            setUnderstandingErrors((current) => {
+                if (!current[document.id]) return current;
+                const next = { ...current };
+                delete next[document.id];
+                return next;
+            });
+            setError('');
+            showToast({
+                message: response.status === 'Ready'
+                    ? 'Document understanding rebuilt.'
+                    : 'Document understanding updated.',
+                tone: response.status === 'Ready' ? 'success' : 'info',
+            });
+        } catch (requestError) {
+            const actionError = getErrorMessage(requestError);
+            const refreshed = await loadUnderstanding(document.id, true);
+            if (refreshed) {
+                setError('');
+                showToast({
+                    message: 'Document understanding could not be rebuilt.',
+                    tone: 'info',
+                });
+            } else {
+                setError(actionError);
+            }
+        } finally {
+            setUnderstandingId(null);
+        }
+    };
+
     const isDocumentActionBusy = (documentId: string) =>
         deletingId === documentId ||
         retryingId === documentId ||
         rebuildingId === documentId ||
         normalizingId === documentId ||
-        embeddingId === documentId;
+        embeddingId === documentId ||
+        understandingId === documentId ||
+        Boolean(understandingLoading[documentId]);
 
     const runConfirmedAction = async () => {
         if (!confirmation) return;
@@ -766,6 +941,7 @@ function DocumentsSection({
             if (action === 'chunks') await rebuildChunks(document);
             if (action === 'normalization') await rebuildNormalization(document);
             if (action === 'embeddings') await rebuildEmbeddings(document);
+            if (action === 'understanding') await rebuildUnderstanding(document);
         } finally {
             setConfirmation(null);
         }
@@ -910,12 +1086,35 @@ function DocumentsSection({
                                 <span className="status-dot" aria-hidden="true" />
                                 {document.status}
                             </span>
+                            <DocumentIntelligenceSection
+                                document={document}
+                                understanding={understandings[document.id]}
+                                isLoading={Boolean(understandingLoading[document.id])}
+                                error={understandingErrors[document.id]}
+                                isRebuilding={understandingId === document.id}
+                                isBusy={isDocumentActionBusy(document.id)}
+                                onLoad={loadUnderstanding}
+                                onRebuild={() => setConfirmation({ action: 'understanding', document })}
+                            />
                             {document.status !== 'Processing' && (
                                 <div className="document-actions">
                                     {document.status === 'Ready' && (
-                                        <details className="document-advanced">
+                                        <details
+                                            className="document-advanced"
+                                            onToggle={(event) => {
+                                                if (event.currentTarget.open) {
+                                                    void loadUnderstanding(document.id);
+                                                }
+                                            }}
+                                        >
                                             <summary><Icon name="more" size={16} /> Advanced</summary>
                                             <div className="document-advanced-actions">
+                                            <DocumentUnderstandingAudit
+                                                understanding={understandings[document.id]}
+                                                isLoading={Boolean(understandingLoading[document.id])}
+                                                error={understandingErrors[document.id]}
+                                                fallbackStatus={document.understandingStatus}
+                                            />
                                             <button
                                                 className="secondary-button compact-button"
                                                 type="button"
@@ -961,6 +1160,16 @@ function DocumentsSection({
                                                     : document.embeddedChunkCount > 0
                                                         ? 'Rebuild embeddings'
                                                         : 'Generate embeddings'}
+                                            </button>
+                                            <button
+                                                className="secondary-button compact-button"
+                                                type="button"
+                                                disabled={isDocumentActionBusy(document.id)}
+                                                onClick={() => setConfirmation({ action: 'understanding', document })}
+                                            >
+                                                {understandingId === document.id
+                                                    ? 'Rebuilding understanding…'
+                                                    : 'Rebuild document understanding'}
                                             </button>
                                             </div>
                                         </details>
@@ -1022,6 +1231,241 @@ function DocumentsSection({
                 onConfirm={() => void runConfirmedAction()}
             />
         </section>
+    );
+}
+
+interface DocumentIntelligenceSectionProps {
+    document: DocumentSummary;
+    understanding: DocumentUnderstanding | undefined;
+    isLoading: boolean;
+    error: string | undefined;
+    isRebuilding: boolean;
+    isBusy: boolean;
+    onLoad: (documentId: string, force?: boolean) => Promise<DocumentUnderstanding | null>;
+    onRebuild: () => void;
+}
+
+function DocumentIntelligenceSection({
+    document,
+    understanding,
+    isLoading,
+    error,
+    isRebuilding,
+    isBusy,
+    onLoad,
+    onRebuild,
+}: DocumentIntelligenceSectionProps) {
+    const [isOpen, setIsOpen] = useState(false);
+    const status = document.understandingStatus ?? understanding?.status ?? 'NotAnalyzed';
+    const canRebuild = document.normalizedAtUtc !== null && document.status === 'Ready';
+
+    useEffect(() => {
+        if (isOpen && !understanding && !isLoading && !error) {
+            void onLoad(document.id);
+        }
+    }, [document.id, error, isLoading, isOpen, onLoad, understanding]);
+
+    return (
+        <details
+            className="document-intelligence"
+            onToggle={(event) => setIsOpen(event.currentTarget.open)}
+        >
+            <summary>
+                <span className="document-intelligence-heading">
+                    <Icon name="document" size={16} />
+                    Document intelligence
+                </span>
+                <UnderstandingStatusBadge status={status} />
+                <Icon name="chevron-down" size={15} />
+            </summary>
+            <div className="document-intelligence-body">
+                {isLoading && !understanding ? (
+                    <div className="document-intelligence-state" role="status">
+                        <span className="spinner intelligence-spinner" aria-hidden="true" />
+                        Loading document intelligence…
+                    </div>
+                ) : error && !understanding ? (
+                    <div className="document-intelligence-state intelligence-error" role="alert">
+                        <span>{error}</span>
+                        <button
+                            className="secondary-button compact-button"
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void onLoad(document.id, true)}
+                        >
+                            Try again
+                        </button>
+                    </div>
+                ) : status === 'NotAnalyzed' ? (
+                    <div className="document-intelligence-state">
+                        <span>This document has not been analyzed yet.</span>
+                        {canRebuild && (
+                            <button
+                                className="secondary-button compact-button"
+                                type="button"
+                                disabled={isBusy}
+                                onClick={onRebuild}
+                            >
+                                Analyze document
+                            </button>
+                        )}
+                    </div>
+                ) : status === 'Pending' ? (
+                    <div className="document-intelligence-state" role="status">
+                        <span className="spinner intelligence-spinner" aria-hidden="true" />
+                        Document understanding is queued.
+                    </div>
+                ) : status === 'Processing' ? (
+                    <div className="document-intelligence-state" role="status">
+                        <span className="spinner intelligence-spinner" aria-hidden="true" />
+                        Detecting document type, language, and metadata…
+                    </div>
+                ) : status === 'Failed' ? (
+                    <div className="document-intelligence-state intelligence-error" role="alert">
+                        <span>{understanding?.lastError || 'Document understanding could not be completed.'}</span>
+                        {canRebuild && (
+                            <button
+                                className="secondary-button compact-button"
+                                type="button"
+                                disabled={isBusy}
+                                onClick={onRebuild}
+                            >
+                                {isRebuilding ? 'Retrying…' : 'Retry analysis'}
+                            </button>
+                        )}
+                    </div>
+                ) : status === 'Skipped' ? (
+                    <div className="document-intelligence-state">
+                        {understanding?.lastError || 'There was not enough usable normalized text to analyze this document.'}
+                    </div>
+                ) : understanding ? (
+                    <div className="document-intelligence-ready">
+                        <div className="document-intelligence-facts">
+                            <div className="document-intelligence-fact">
+                                <span>Type</span>
+                                <strong>
+                                    {formatUnderstandingValue(understanding.documentType ?? 'Unknown')}
+                                    <ConfidenceText value={understanding.documentTypeConfidence} />
+                                </strong>
+                                {understanding.documentSubtype && <small>{understanding.documentSubtype}</small>}
+                            </div>
+                            <div className="document-intelligence-fact">
+                                <span>Language</span>
+                                <strong>
+                                    {formatLanguageName(understanding.primaryLanguageCode)}
+                                    <ConfidenceText value={understanding.languageConfidence} />
+                                </strong>
+                                {understanding.primaryLanguageCode && understanding.primaryLanguageCode !== 'und' && (
+                                    <small>{understanding.primaryLanguageCode}</small>
+                                )}
+                            </div>
+                            {understanding.detectedTitle && (
+                                <div className="document-intelligence-fact intelligence-fact-wide">
+                                    <span>Detected title</span>
+                                    <strong>{understanding.detectedTitle}</strong>
+                                </div>
+                            )}
+                            {understanding.subject && (
+                                <div className="document-intelligence-fact intelligence-fact-wide">
+                                    <span>Subject</span>
+                                    <strong>{understanding.subject}</strong>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="document-metadata-section">
+                            <h4>Metadata</h4>
+                            {understanding.metadata.length === 0 ? (
+                                <p className="document-metadata-empty">No supported metadata was extracted.</p>
+                            ) : (
+                                <dl className="document-metadata-list">
+                                    {understanding.metadata.map((entry, index) => (
+                                        <div key={`${entry.sequence}-${entry.kind}-${index}`}>
+                                            <dt>
+                                                <strong>{formatMetadataLabel(entry.label)}</strong>
+                                                <span>
+                                                    {formatUnderstandingValue(entry.kind)}
+                                                    <ConfidenceText value={entry.confidence} />
+                                                </span>
+                                            </dt>
+                                            <dd>
+                                                {entry.normalizedValue ?? entry.value}
+                                                {entry.normalizedValue && entry.normalizedValue !== entry.value && (
+                                                    <small>As written: {entry.value}</small>
+                                                )}
+                                            </dd>
+                                        </div>
+                                    ))}
+                                </dl>
+                            )}
+                        </div>
+                        {error && <p className="document-intelligence-refresh-error" role="alert">{error}</p>}
+                    </div>
+                ) : (
+                    <div className="document-intelligence-state" role="status">
+                        <span className="spinner intelligence-spinner" aria-hidden="true" />
+                        Loading document intelligence…
+                    </div>
+                )}
+            </div>
+        </details>
+    );
+}
+
+function UnderstandingStatusBadge({ status }: { status: DocumentUnderstandingStatus }) {
+    return (
+        <span className={`status-pill understanding-status status-${getUnderstandingStatusClass(status)}`}>
+            <span className="status-dot" aria-hidden="true" />
+            {formatUnderstandingStatus(status)}
+        </span>
+    );
+}
+
+function ConfidenceText({ value }: { value: number | null }) {
+    const confidence = formatConfidence(value);
+    return confidence ? <span className="intelligence-confidence"> · {confidence}</span> : null;
+}
+
+interface DocumentUnderstandingAuditProps {
+    understanding: DocumentUnderstanding | undefined;
+    isLoading: boolean;
+    error: string | undefined;
+    fallbackStatus: DocumentUnderstandingStatus | null;
+}
+
+function DocumentUnderstandingAudit({
+    understanding,
+    isLoading,
+    error,
+    fallbackStatus,
+}: DocumentUnderstandingAuditProps) {
+    if (isLoading && !understanding) {
+        return <p className="document-understanding-audit-state">Loading understanding details…</p>;
+    }
+
+    if (error && !understanding) {
+        return <p className="document-understanding-audit-state audit-error">{error}</p>;
+    }
+
+    const status = understanding?.status ?? fallbackStatus ?? 'NotAnalyzed';
+    return (
+        <div className="document-understanding-audit">
+            <p>Understanding audit</p>
+            <dl>
+                <div><dt>Status</dt><dd>{formatUnderstandingStatus(status)}</dd></div>
+                {understanding?.model && <div><dt>Model</dt><dd>{understanding.model}</dd></div>}
+                {understanding?.promptVersion && <div><dt>Prompt version</dt><dd>{understanding.promptVersion}</dd></div>}
+                {understanding?.analyzedAtUtc && (
+                    <div><dt>Analyzed</dt><dd>{formatDate(understanding.analyzedAtUtc)}</dd></div>
+                )}
+                {understanding?.sourceContentHash && (
+                    <div>
+                        <dt>Source content hash</dt>
+                        <dd><code>{understanding.sourceContentHash}</code></dd>
+                    </div>
+                )}
+            </dl>
+        </div>
     );
 }
 
@@ -1463,7 +1907,7 @@ function ProjectDetailsSkeleton() {
 }
 
 type DocumentConfirmation = {
-    action: 'delete' | 'chunks' | 'normalization' | 'embeddings';
+    action: 'delete' | 'chunks' | 'normalization' | 'embeddings' | 'understanding';
     document: DocumentSummary;
 };
 
@@ -1472,6 +1916,7 @@ function getDocumentConfirmationTitle(action?: DocumentConfirmation['action']) {
     if (action === 'chunks') return 'Rebuild chunks?';
     if (action === 'normalization') return 'Rebuild normalized text?';
     if (action === 'embeddings') return 'Rebuild embeddings?';
+    if (action === 'understanding') return 'Rebuild document understanding?';
     return 'Confirm action';
 }
 
@@ -1480,6 +1925,7 @@ function getDocumentConfirmationLabel(action?: DocumentConfirmation['action']) {
     if (action === 'chunks') return 'Rebuild chunks';
     if (action === 'normalization') return 'Rebuild normalization';
     if (action === 'embeddings') return 'Continue';
+    if (action === 'understanding') return 'Rebuild understanding';
     return 'Continue';
 }
 
@@ -1487,7 +1933,7 @@ function getDocumentConfirmationDescription(confirmation: DocumentConfirmation |
     if (!confirmation) return '';
     const name = <strong>{confirmation.document.originalFileName}</strong>;
     if (confirmation.action === 'delete') {
-        return <>This permanently removes {name}, its extracted content, chunks, and embeddings.</>;
+        return <>This permanently removes {name}, its extracted content, document intelligence, chunks, and embeddings.</>;
     }
     if (confirmation.action === 'chunks') {
         return <>Rebuild chunks for {name} from its stored extracted text?</>;
@@ -1495,9 +1941,55 @@ function getDocumentConfirmationDescription(confirmation: DocumentConfirmation |
     if (confirmation.action === 'normalization') {
         return <>Rebuild normalized text and chunks for {name} from the stored raw extraction?</>;
     }
+    if (confirmation.action === 'understanding') {
+        return <>Re-analyze {name} and replace its current document intelligence metadata? This uses OpenAI API credits.</>;
+    }
     return confirmation.document.embeddedChunkCount > 0
         ? <>Replace the current embedding set for {name}? This uses OpenAI API credits.</>
         : <>Generate embeddings for {name}? This uses OpenAI API credits.</>;
+}
+
+function isUnderstandingInProgress(status: DocumentUnderstandingStatus | null | undefined) {
+    return status === 'Pending' || status === 'Processing';
+}
+
+function formatUnderstandingStatus(status: DocumentUnderstandingStatus) {
+    return status === 'NotAnalyzed' ? 'Not analyzed' : status;
+}
+
+function getUnderstandingStatusClass(status: DocumentUnderstandingStatus) {
+    return status === 'NotAnalyzed' ? 'not-analyzed' : status.toLocaleLowerCase();
+}
+
+function formatUnderstandingValue(value: string) {
+    const separated = value
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/[_-]+/g, ' ')
+        .trim();
+    if (!separated) return 'Unknown';
+    const normalized = separated.toLocaleLowerCase();
+    return normalized.charAt(0).toLocaleUpperCase() + normalized.slice(1);
+}
+
+function formatMetadataLabel(value: string) {
+    return formatUnderstandingValue(value || 'Other');
+}
+
+function formatConfidence(value: number | null) {
+    if (value === null || !Number.isFinite(value)) return null;
+    const bounded = Math.min(1, Math.max(0, value));
+    return `${Math.round(bounded * 100)}%`;
+}
+
+function formatLanguageName(code: string | null) {
+    const normalizedCode = code?.trim();
+    if (!normalizedCode || normalizedCode.toLocaleLowerCase() === 'und') return 'Unknown';
+
+    try {
+        return new Intl.DisplayNames(undefined, { type: 'language' }).of(normalizedCode) ?? normalizedCode;
+    } catch {
+        return normalizedCode;
+    }
 }
 
 function formatFileSize(bytes: number) {

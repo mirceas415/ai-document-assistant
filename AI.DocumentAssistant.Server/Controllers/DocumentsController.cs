@@ -85,6 +85,7 @@ public sealed class DocumentsController : ControllerBase
 
         var documents = await _dbContext.Documents
             .AsNoTracking()
+            .Include(document => document.Understanding)
             .Where(document =>
                 document.ProjectId == projectId &&
                 document.Project.OwnerId == ownerId)
@@ -116,6 +117,7 @@ public sealed class DocumentsController : ControllerBase
 
         var document = await _dbContext.Documents
             .AsNoTracking()
+            .Include(document => document.Understanding)
             .SingleOrDefaultAsync(
                 document =>
                     document.Id == documentId &&
@@ -193,6 +195,11 @@ public sealed class DocumentsController : ControllerBase
                 Status = DocumentStatus.Uploaded,
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now
+            };
+            document.Understanding = new DocumentUnderstanding
+            {
+                DocumentId = document.Id,
+                Status = DocumentUnderstandingStatus.Pending
             };
 
             _dbContext.Documents.Add(document);
@@ -447,6 +454,7 @@ public sealed class DocumentsController : ControllerBase
                 cancellationToken);
             var refreshedDocument = await _dbContext.Documents
                 .AsNoTracking()
+                .Include(item => item.Understanding)
                 .SingleAsync(item => item.Id == documentId, cancellationToken);
 
             _logger.LogInformation(
@@ -597,6 +605,7 @@ public sealed class DocumentsController : ControllerBase
 
             var refreshedDocument = await _dbContext.Documents
                 .AsNoTracking()
+                .Include(item => item.Understanding)
                 .SingleAsync(item => item.Id == documentId, cancellationToken);
 
             return Ok(ToDetails(refreshedDocument, embeddingsAreCurrent: true));
@@ -682,6 +691,7 @@ public sealed class DocumentsController : ControllerBase
                 cancellationToken);
             var refreshedDocument = await _dbContext.Documents
                 .AsNoTracking()
+                .Include(item => item.Understanding)
                 .SingleAsync(item => item.Id == documentId, cancellationToken);
 
             _logger.LogInformation(
@@ -726,7 +736,14 @@ public sealed class DocumentsController : ControllerBase
             return ResourceNotFound();
         }
 
-        if (document.Status == DocumentStatus.Processing)
+        if (document.Status == DocumentStatus.Processing ||
+            await _dbContext.DocumentUnderstandings
+                .AsNoTracking()
+                .AnyAsync(
+                    understanding =>
+                        understanding.DocumentId == documentId &&
+                        understanding.Status == DocumentUnderstandingStatus.Processing,
+                    cancellationToken))
         {
             return Conflict(new ApiErrorResponse(
                 "The document cannot be deleted while it is processing or being rebuilt."));
@@ -741,7 +758,9 @@ public sealed class DocumentsController : ControllerBase
                     item.Id == documentId &&
                     item.ProjectId == projectId &&
                     item.Project.OwnerId == ownerId &&
-                    item.Status == document.Status)
+                    item.Status == document.Status &&
+                    (item.Understanding == null ||
+                     item.Understanding.Status != DocumentUnderstandingStatus.Processing))
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(item => item.Status, DocumentStatus.Processing)
                     .SetProperty(item => item.UpdatedAtUtc, DateTime.UtcNow),
@@ -804,7 +823,9 @@ public sealed class DocumentsController : ControllerBase
                     item.Id == document.Id &&
                     item.ProjectId == document.ProjectId &&
                     item.Project.OwnerId == ownerId &&
-                    item.Status == expectedStatus)
+                    item.Status == expectedStatus &&
+                    (item.Understanding == null ||
+                     item.Understanding.Status != DocumentUnderstandingStatus.Processing))
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(item => item.Status, DocumentStatus.Processing)
                     .SetProperty(item => item.ProcessingStartedAtUtc, now)
@@ -819,7 +840,14 @@ public sealed class DocumentsController : ControllerBase
             return updated == 1;
         }
 
-        if (document.Status != expectedStatus)
+        if (document.Status != expectedStatus ||
+            await _dbContext.DocumentUnderstandings
+                .AsNoTracking()
+                .AnyAsync(
+                    understanding =>
+                        understanding.DocumentId == document.Id &&
+                        understanding.Status == DocumentUnderstandingStatus.Processing,
+                    cancellationToken))
         {
             return false;
         }
@@ -1064,7 +1092,8 @@ public sealed class DocumentsController : ControllerBase
             document.EmbeddingDimensions,
             document.EmbeddedAtUtc,
             document.EmbeddingError,
-            embeddingsAreCurrent);
+            embeddingsAreCurrent,
+            document.Understanding?.Status);
 
     private DocumentDetails ToDetails(
         Document document,
@@ -1096,7 +1125,8 @@ public sealed class DocumentsController : ControllerBase
             document.EmbeddingDimensions,
             document.EmbeddedAtUtc,
             document.EmbeddingError,
-            embeddingsAreCurrent);
+            embeddingsAreCurrent,
+            document.Understanding?.Status);
 
     private sealed record ValidatedFile(
         string OriginalFileName,

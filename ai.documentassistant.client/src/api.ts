@@ -17,6 +17,42 @@ export type ProjectDetails = ProjectSummary;
 
 export type DocumentStatus = 'Uploaded' | 'Processing' | 'Ready' | 'Failed';
 
+export type DocumentUnderstandingStatus =
+    | 'NotAnalyzed'
+    | 'Pending'
+    | 'Processing'
+    | 'Ready'
+    | 'Failed'
+    | 'Skipped';
+
+export type DocumentType =
+    | 'Unknown'
+    | 'Contract'
+    | 'Invoice'
+    | 'Receipt'
+    | 'Report'
+    | 'Policy'
+    | 'Procedure'
+    | 'Manual'
+    | 'CourseMaterial'
+    | 'ResearchPaper'
+    | 'FinancialDocument'
+    | 'Form'
+    | 'Letter'
+    | 'Resume'
+    | 'TechnicalDocument'
+    | 'Other';
+
+export type DocumentMetadataKind =
+    | 'Organization'
+    | 'Person'
+    | 'Identifier'
+    | 'Date'
+    | 'MonetaryAmount'
+    | 'Jurisdiction'
+    | 'Topic'
+    | 'Other';
+
 export interface DocumentSummary {
     id: string;
     originalFileName: string;
@@ -44,11 +80,38 @@ export interface DocumentSummary {
     embeddedAtUtc: string | null;
     embeddingError: string | null;
     embeddingsAreCurrent: boolean;
+    understandingStatus: DocumentUnderstandingStatus | null;
 }
 
 export type DocumentDetails = DocumentSummary & {
     projectId: string;
 };
+
+export interface DocumentMetadataEntry {
+    kind: DocumentMetadataKind;
+    label: string;
+    value: string;
+    normalizedValue: string | null;
+    confidence: number | null;
+    sequence: number;
+}
+
+export interface DocumentUnderstanding {
+    status: DocumentUnderstandingStatus;
+    documentType: DocumentType | null;
+    documentSubtype: string | null;
+    documentTypeConfidence: number | null;
+    primaryLanguageCode: string | null;
+    languageConfidence: number | null;
+    detectedTitle: string | null;
+    subject: string | null;
+    metadata: DocumentMetadataEntry[];
+    model: string | null;
+    promptVersion: string | null;
+    sourceContentHash: string | null;
+    analyzedAtUtc: string | null;
+    lastError: string | null;
+}
 
 export interface ExtractedTextSection {
     sectionIndex: number;

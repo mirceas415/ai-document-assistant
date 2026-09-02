@@ -4,7 +4,9 @@ using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Processing;
+using AI.DocumentAssistant.Server.Rag;
 using AI.DocumentAssistant.Server.Storage;
+using AI.DocumentAssistant.Server.Understanding;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -346,6 +348,68 @@ public sealed class DocumentProcessingServiceTests
     }
 
     [Fact]
+    public async Task UnderstandingProviderFailureIsNonFatalAndDocumentStillBecomesReady()
+    {
+        await using var database = await ProcessingTestDatabase.CreateAsync();
+        var document = await database.AddDocumentAsync(DocumentStatus.Uploaded);
+        var embeddingService = new DeterministicTextEmbeddingService();
+        var understandingClient = new ThrowingDocumentUnderstandingClient();
+        var understandingService = new DocumentUnderstandingService(
+            database.Context,
+            new DocumentUnderstandingInputBuilder(new Cl100kDocumentTokenizer()),
+            understandingClient,
+            new DocumentUnderstandingValidator(),
+            Options.Create(new OpenAIDocumentUnderstandingOptions
+            {
+                DocumentUnderstandingModel = "test-understanding-model"
+            }),
+            Options.Create(new OpenAIAnswerOptions
+            {
+                AnswerModel = "test-answer-model"
+            }),
+            TimeProvider.System,
+            NullLogger<DocumentUnderstandingService>.Instance);
+        var extractor = new StubExtractor(
+        [
+            new ExtractedTextSection(
+                0,
+                string.Join(' ', Enumerable.Repeat(
+                    "This generic multilingual document contains enough normalized business text for understanding, chunking, and semantic retrieval.",
+                    8)),
+                PageNumber: 1)
+        ]);
+        var processingService = new DocumentProcessingService(
+            database.Context,
+            database.Storage,
+            [extractor],
+            new DocumentTextNormalizer(Options.Create(new DocumentNormalizationOptions())),
+            new DocumentChunkGenerator(
+                new Cl100kDocumentTokenizer(),
+                Options.Create(new DocumentChunkingOptions())),
+            embeddingService,
+            understandingService,
+            Options.Create(new OpenAIEmbeddingOptions()),
+            NullLogger<DocumentProcessingService>.Instance);
+
+        await processingService.ProcessAsync(document.Id, CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var storedDocument = await database.Context.Documents.SingleAsync();
+        var understanding = await database.Context.DocumentUnderstandings.SingleAsync();
+        var chunks = await database.Context.DocumentChunks.ToArrayAsync();
+        Assert.Equal(DocumentStatus.Ready, storedDocument.Status);
+        Assert.Equal(DocumentUnderstandingStatus.Failed, understanding.Status);
+        Assert.Equal(
+            DocumentUnderstandingArchitecture.SafeFailureMessage,
+            understanding.LastError);
+        Assert.NotEmpty(chunks);
+        Assert.Equal(chunks.Length, storedDocument.EmbeddedChunkCount);
+        Assert.All(chunks, AssertCompleteEmbedding);
+        Assert.Single(embeddingService.Calls);
+        Assert.Equal(1, understandingClient.CallCount);
+    }
+
+    [Fact]
     public async Task ProcessingPreservesChunkToEmbeddingAssociationForMultipleChunks()
     {
         await using var database = await ProcessingTestDatabase.CreateAsync();
@@ -547,6 +611,7 @@ public sealed class DocumentProcessingServiceTests
                 normalizer,
                 generator,
                 embeddingService,
+                new NoOpDocumentUnderstandingService(),
                 Options.Create(new OpenAIEmbeddingOptions()),
                 NullLogger<DocumentProcessingService>.Instance);
         }
@@ -630,6 +695,23 @@ public sealed class DocumentProcessingServiceTests
                     return vector;
                 })
                 .ToArray());
+        }
+    }
+
+    private sealed class ThrowingDocumentUnderstandingClient
+        : IDocumentUnderstandingClient
+    {
+        public int CallCount { get; private set; }
+
+        public Task<DocumentUnderstandingProviderResult> AnalyzeAsync(
+            string model,
+            string documentContent,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CallCount++;
+            return Task.FromException<DocumentUnderstandingProviderResult>(
+                new InvalidOperationException("Synthetic provider outage."));
         }
     }
 

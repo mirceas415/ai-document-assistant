@@ -205,11 +205,16 @@ public sealed class ProjectsController : ControllerBase
                 {
                     document.Id,
                     document.StoredFileName,
-                    document.Status
+                    document.Status,
+                    UnderstandingStatus = document.Understanding == null
+                        ? (DocumentUnderstandingStatus?)null
+                        : document.Understanding.Status
                 })
                 .ToListAsync(cancellationToken);
 
-            if (documents.Any(document => document.Status == DocumentStatus.Processing))
+            if (documents.Any(document =>
+                    document.Status == DocumentStatus.Processing ||
+                    document.UnderstandingStatus == DocumentUnderstandingStatus.Processing))
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Conflict(new ApiErrorResponse(
@@ -220,7 +225,9 @@ public sealed class ProjectsController : ControllerBase
                 .Where(document =>
                     document.ProjectId == id &&
                     document.Project.OwnerId == ownerId &&
-                    document.Status != DocumentStatus.Processing)
+                    document.Status != DocumentStatus.Processing &&
+                    (document.Understanding == null ||
+                     document.Understanding.Status != DocumentUnderstandingStatus.Processing))
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(document => document.Status, DocumentStatus.Processing)
                     .SetProperty(document => document.UpdatedAtUtc, DateTime.UtcNow),
@@ -260,7 +267,9 @@ public sealed class ProjectsController : ControllerBase
                 document =>
                     document.ProjectId == id &&
                     document.Project.OwnerId == ownerId &&
-                    document.Status == DocumentStatus.Processing,
+                    (document.Status == DocumentStatus.Processing ||
+                     (document.Understanding != null &&
+                      document.Understanding.Status == DocumentUnderstandingStatus.Processing)),
                 cancellationToken);
         if (hasProcessingDocument)
         {

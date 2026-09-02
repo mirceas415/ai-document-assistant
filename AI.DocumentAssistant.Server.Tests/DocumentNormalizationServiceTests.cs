@@ -273,6 +273,7 @@ public sealed class DocumentNormalizationServiceTests
                     Options.Create(new DocumentNormalizationOptions())),
                 generator,
                 embeddingService ?? new DeterministicTextEmbeddingService(),
+                new NoOpDocumentUnderstandingService(),
                 Options.Create(new OpenAIEmbeddingOptions()),
                 NullLogger<DocumentNormalizationService>.Instance);
         }

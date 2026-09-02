@@ -29,7 +29,8 @@ public sealed record DocumentSummary(
     int? EmbeddingDimensions,
     DateTime? EmbeddedAtUtc,
     string? EmbeddingError,
-    bool EmbeddingsAreCurrent);
+    bool EmbeddingsAreCurrent,
+    DocumentUnderstandingStatus? UnderstandingStatus);
 
 public sealed record DocumentDetails(
     Guid Id,
@@ -58,7 +59,8 @@ public sealed record DocumentDetails(
     int? EmbeddingDimensions,
     DateTime? EmbeddedAtUtc,
     string? EmbeddingError,
-    bool EmbeddingsAreCurrent);
+    bool EmbeddingsAreCurrent,
+    DocumentUnderstandingStatus? UnderstandingStatus);
 
 public sealed record ExtractedTextSectionResponse(
     int SectionIndex,

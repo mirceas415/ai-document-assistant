@@ -1,5 +1,6 @@
 using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
+using AI.DocumentAssistant.Server.Understanding;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -21,6 +22,12 @@ public sealed class ApplicationDbContext
     public DbSet<DocumentTextSection> DocumentTextSections => Set<DocumentTextSection>();
 
     public DbSet<DocumentChunk> DocumentChunks => Set<DocumentChunk>();
+
+    public DbSet<DocumentUnderstanding> DocumentUnderstandings =>
+        Set<DocumentUnderstanding>();
+
+    public DbSet<DocumentMetadataEntry> DocumentMetadataEntries =>
+        Set<DocumentMetadataEntry>();
 
     public DbSet<Conversation> Conversations => Set<Conversation>();
 
@@ -207,6 +214,98 @@ public sealed class ApplicationDbContext
 
             chunk.HasIndex(value => new { value.DocumentId, value.ChunkIndex })
                 .IsUnique();
+        });
+
+        builder.Entity<DocumentUnderstanding>(understanding =>
+        {
+            understanding.ToTable("DocumentUnderstandings", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_DocumentUnderstandings_DocumentTypeConfidence",
+                    "\"DocumentTypeConfidence\" IS NULL OR (\"DocumentTypeConfidence\" >= 0 AND \"DocumentTypeConfidence\" <= 1)");
+                table.HasCheckConstraint(
+                    "CK_DocumentUnderstandings_LanguageConfidence",
+                    "\"LanguageConfidence\" IS NULL OR (\"LanguageConfidence\" >= 0 AND \"LanguageConfidence\" <= 1)");
+            });
+
+            understanding.HasKey(value => value.DocumentId);
+
+            understanding.Property(value => value.Status)
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            understanding.Property(value => value.DocumentType)
+                .HasConversion<string>()
+                .HasMaxLength(32);
+
+            understanding.Property(value => value.DocumentSubtype)
+                .HasMaxLength(DocumentUnderstandingLimits.MaximumDocumentSubtypeLength);
+
+            understanding.Property(value => value.PrimaryLanguageCode)
+                .HasMaxLength(DocumentUnderstandingLimits.MaximumLanguageCodeLength);
+
+            understanding.Property(value => value.DetectedTitle)
+                .HasMaxLength(DocumentUnderstandingLimits.MaximumDetectedTitleLength);
+
+            understanding.Property(value => value.Subject)
+                .HasMaxLength(DocumentUnderstandingLimits.MaximumSubjectLength);
+
+            understanding.Property(value => value.Model)
+                .HasMaxLength(DocumentUnderstandingLimits.MaximumModelLength);
+
+            understanding.Property(value => value.PromptVersion)
+                .HasMaxLength(DocumentUnderstandingLimits.MaximumPromptVersionLength);
+
+            understanding.Property(value => value.SourceContentHash)
+                .HasMaxLength(DocumentUnderstandingLimits.SourceContentHashLength);
+
+            understanding.Property(value => value.LastError)
+                .HasMaxLength(DocumentUnderstandingLimits.MaximumErrorLength);
+
+            understanding.HasOne(value => value.Document)
+                .WithOne(document => document.Understanding)
+                .HasForeignKey<DocumentUnderstanding>(value => value.DocumentId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<DocumentMetadataEntry>(entry =>
+        {
+            entry.ToTable("DocumentMetadataEntries", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_DocumentMetadataEntries_Confidence",
+                    "\"Confidence\" IS NULL OR (\"Confidence\" >= 0 AND \"Confidence\" <= 1)");
+            });
+
+            entry.HasKey(value => value.Id);
+
+            entry.Property(value => value.Kind)
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            entry.Property(value => value.Label)
+                .HasMaxLength(DocumentUnderstandingLimits.MaximumMetadataLabelLength)
+                .IsRequired();
+
+            entry.Property(value => value.Value)
+                .HasMaxLength(DocumentUnderstandingLimits.MaximumMetadataValueLength)
+                .IsRequired();
+
+            entry.Property(value => value.NormalizedValue)
+                .HasMaxLength(DocumentUnderstandingLimits.MaximumMetadataValueLength);
+
+            entry.HasOne(value => value.DocumentUnderstanding)
+                .WithMany(understanding => understanding.MetadataEntries)
+                .HasForeignKey(value => value.DocumentUnderstandingId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entry.HasIndex(value => new
+                { value.DocumentUnderstandingId, value.Sequence })
+                .IsUnique();
+
+            entry.HasIndex(value => new { value.Kind, value.Label });
         });
 
         builder.Entity<Conversation>(conversation =>

@@ -574,6 +574,7 @@ public sealed class DocumentsControllerAuthorizationTests
                 normalizer,
                 generator,
                 EmbeddingService,
+                new NoOpDocumentUnderstandingService(),
                 embeddingOptions,
                 NullLogger<DocumentNormalizationService>.Instance);
             var documentEmbeddingService = new DocumentEmbeddingService(
