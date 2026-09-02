@@ -30,7 +30,8 @@ public sealed record DocumentSummary(
     DateTime? EmbeddedAtUtc,
     string? EmbeddingError,
     bool EmbeddingsAreCurrent,
-    DocumentUnderstandingStatus? UnderstandingStatus);
+    DocumentUnderstandingStatus? UnderstandingStatus,
+    DocumentTechnicalAnalysisStatus? TechnicalAnalysisStatus);
 
 public sealed record DocumentDetails(
     Guid Id,
@@ -60,7 +61,8 @@ public sealed record DocumentDetails(
     DateTime? EmbeddedAtUtc,
     string? EmbeddingError,
     bool EmbeddingsAreCurrent,
-    DocumentUnderstandingStatus? UnderstandingStatus);
+    DocumentUnderstandingStatus? UnderstandingStatus,
+    DocumentTechnicalAnalysisStatus? TechnicalAnalysisStatus);
 
 public sealed record ExtractedTextSectionResponse(
     int SectionIndex,

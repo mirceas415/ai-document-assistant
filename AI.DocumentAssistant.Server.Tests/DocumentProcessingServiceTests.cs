@@ -6,6 +6,7 @@ using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Rag;
 using AI.DocumentAssistant.Server.Storage;
+using AI.DocumentAssistant.Server.TechnicalAnalysis;
 using AI.DocumentAssistant.Server.Understanding;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -388,6 +389,7 @@ public sealed class DocumentProcessingServiceTests
                 Options.Create(new DocumentChunkingOptions())),
             embeddingService,
             understandingService,
+            new NoOpDocumentTechnicalAnalysisService(),
             Options.Create(new OpenAIEmbeddingOptions()),
             NullLogger<DocumentProcessingService>.Instance);
 
@@ -407,6 +409,75 @@ public sealed class DocumentProcessingServiceTests
         Assert.All(chunks, AssertCompleteEmbedding);
         Assert.Single(embeddingService.Calls);
         Assert.Equal(1, understandingClient.CallCount);
+    }
+
+    [Fact]
+    public async Task TechnicalAnalysisFailureIsNonFatalAndDocumentStillBecomesReady()
+    {
+        await using var database = await ProcessingTestDatabase.CreateAsync();
+        var document = await database.AddDocumentAsync(DocumentStatus.Uploaded);
+        var technicalAnalysisService = new DocumentTechnicalAnalysisService(
+            database.Context,
+            database.Storage,
+            new StubPdfTechnicalAnalyzer(
+                new InvalidOperationException("Synthetic PDF inspection failure.")),
+            TimeProvider.System,
+            NullLogger<DocumentTechnicalAnalysisService>.Instance);
+        var processingService = database.CreateService(
+            technicalAnalysisService,
+            new StubExtractor([
+                new ExtractedTextSection(
+                    0,
+                    "Usable extracted text remains available for chunking and retrieval.",
+                    PageNumber: 1)
+            ]));
+
+        await processingService.ProcessAsync(document.Id, CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var storedDocument = await database.Context.Documents.SingleAsync();
+        var analysis = await database.Context.DocumentTechnicalAnalyses.SingleAsync();
+        var chunks = await database.Context.DocumentChunks.ToArrayAsync();
+        Assert.Equal(DocumentStatus.Ready, storedDocument.Status);
+        Assert.Equal(DocumentTechnicalAnalysisStatus.Failed, analysis.Status);
+        Assert.Equal(
+            PdfTechnicalAnalysisArchitecture.SafeFailureMessage,
+            analysis.LastError);
+        Assert.NotEmpty(chunks);
+        Assert.Equal(chunks.Length, storedDocument.EmbeddedChunkCount);
+    }
+
+    [Fact]
+    public async Task ExtractionFailureDoesNotCorruptReadyTechnicalDiagnostics()
+    {
+        await using var database = await ProcessingTestDatabase.CreateAsync();
+        var document = await database.AddDocumentAsync(DocumentStatus.Uploaded);
+        var page = PdfTechnicalClassifier.ClassifyPage(
+            new PdfPageTechnicalMetrics(1, 90, 12, 0, 0));
+        var technicalAnalysisService = new DocumentTechnicalAnalysisService(
+            database.Context,
+            database.Storage,
+            new StubPdfTechnicalAnalyzer(
+                new PdfTechnicalAnalysisResult(TechnicalType.TextBased, [page])),
+            TimeProvider.System,
+            NullLogger<DocumentTechnicalAnalysisService>.Instance);
+        var processingService = database.CreateService(
+            technicalAnalysisService,
+            new StubExtractor(new DocumentExtractionException(
+                "Synthetic extraction failure.")));
+
+        await Assert.ThrowsAsync<DocumentExtractionException>(() =>
+            processingService.ProcessAsync(document.Id, CancellationToken.None));
+
+        database.Context.ChangeTracker.Clear();
+        var storedDocument = await database.Context.Documents.SingleAsync();
+        var analysis = await database.Context.DocumentTechnicalAnalyses
+            .Include(item => item.Pages)
+            .SingleAsync();
+        Assert.Equal(DocumentStatus.Failed, storedDocument.Status);
+        Assert.Equal(DocumentTechnicalAnalysisStatus.Ready, analysis.Status);
+        Assert.Equal(TechnicalType.TextBased, analysis.TechnicalType);
+        Assert.Single(analysis.Pages);
     }
 
     [Fact]
@@ -598,10 +669,33 @@ public sealed class DocumentProcessingServiceTests
                 embeddingService,
                 extractors);
 
+        public DocumentProcessingService CreateService(
+            IDocumentTechnicalAnalysisService technicalAnalysisService,
+            params IDocumentTextExtractor[] extractors) =>
+            CreateService(
+                new DocumentTextNormalizer(Options.Create(new DocumentNormalizationOptions())),
+                CreateGenerator(),
+                new DeterministicTextEmbeddingService(),
+                technicalAnalysisService,
+                extractors);
+
         private DocumentProcessingService CreateService(
             IDocumentTextNormalizer normalizer,
             IDocumentChunkGenerator generator,
             ITextEmbeddingService embeddingService,
+            params IDocumentTextExtractor[] extractors)
+            => CreateService(
+                normalizer,
+                generator,
+                embeddingService,
+                new NoOpDocumentTechnicalAnalysisService(),
+                extractors);
+
+        private DocumentProcessingService CreateService(
+            IDocumentTextNormalizer normalizer,
+            IDocumentChunkGenerator generator,
+            ITextEmbeddingService embeddingService,
+            IDocumentTechnicalAnalysisService technicalAnalysisService,
             params IDocumentTextExtractor[] extractors)
         {
             return new DocumentProcessingService(
@@ -612,6 +706,7 @@ public sealed class DocumentProcessingServiceTests
                 generator,
                 embeddingService,
                 new NoOpDocumentUnderstandingService(),
+                technicalAnalysisService,
                 Options.Create(new OpenAIEmbeddingOptions()),
                 NullLogger<DocumentProcessingService>.Instance);
         }
@@ -657,6 +752,30 @@ public sealed class DocumentProcessingServiceTests
             return _exception is null
                 ? Task.FromResult(_sections!)
                 : Task.FromException<IReadOnlyList<ExtractedTextSection>>(_exception);
+        }
+    }
+
+    private sealed class StubPdfTechnicalAnalyzer : IPdfTechnicalAnalyzer
+    {
+        private readonly PdfTechnicalAnalysisResult? _result;
+        private readonly Exception? _exception;
+
+        public StubPdfTechnicalAnalyzer(PdfTechnicalAnalysisResult result) =>
+            _result = result;
+
+        public StubPdfTechnicalAnalyzer(Exception exception) =>
+            _exception = exception;
+
+        public string AnalyzerVersion => "processing-test-analyzer-v1";
+
+        public Task<PdfTechnicalAnalysisResult> AnalyzeAsync(
+            Stream pdfStream,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return _exception is null
+                ? Task.FromResult(_result!)
+                : Task.FromException<PdfTechnicalAnalysisResult>(_exception);
         }
     }
 

@@ -63,4 +63,6 @@ public sealed class Document
     public ICollection<DocumentChunk> Chunks { get; } = new List<DocumentChunk>();
 
     public DocumentUnderstanding? Understanding { get; set; }
+
+    public DocumentTechnicalAnalysis? TechnicalAnalysis { get; set; }
 }

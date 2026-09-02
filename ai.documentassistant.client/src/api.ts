@@ -25,6 +25,20 @@ export type DocumentUnderstandingStatus =
     | 'Failed'
     | 'Skipped';
 
+export type DocumentTechnicalAnalysisStatus =
+    | 'NotAnalyzed'
+    | 'Processing'
+    | 'Ready'
+    | 'Failed'
+    | 'Skipped';
+
+export type TechnicalType =
+    | 'Unknown'
+    | 'TextBased'
+    | 'Scanned'
+    | 'ImageBased'
+    | 'Mixed';
+
 export type DocumentType =
     | 'Unknown'
     | 'Contract'
@@ -81,6 +95,7 @@ export interface DocumentSummary {
     embeddingError: string | null;
     embeddingsAreCurrent: boolean;
     understandingStatus: DocumentUnderstandingStatus | null;
+    technicalAnalysisStatus: DocumentTechnicalAnalysisStatus | null;
 }
 
 export type DocumentDetails = DocumentSummary & {
@@ -111,6 +126,33 @@ export interface DocumentUnderstanding {
     sourceContentHash: string | null;
     analyzedAtUtc: string | null;
     lastError: string | null;
+}
+
+export interface DocumentPageTechnicalAnalysis {
+    pageNumber: number;
+    technicalType: TechnicalType;
+    textCharacterCount: number;
+    wordCount: number;
+    imageCount: number;
+    imageCoverageRatio: number;
+    hasMeaningfulText: boolean;
+    hasPageSizedImage: boolean;
+}
+
+export interface DocumentTechnicalAnalysis {
+    status: DocumentTechnicalAnalysisStatus;
+    technicalType: TechnicalType;
+    pageCount: number;
+    textBasedPageCount: number;
+    scannedPageCount: number;
+    imageBasedPageCount: number;
+    mixedPageCount: number;
+    unknownPageCount: number;
+    sourceFileHash: string | null;
+    analyzerVersion: string | null;
+    analyzedAtUtc: string | null;
+    lastError: string | null;
+    pages: DocumentPageTechnicalAnalysis[];
 }
 
 export interface ExtractedTextSection {

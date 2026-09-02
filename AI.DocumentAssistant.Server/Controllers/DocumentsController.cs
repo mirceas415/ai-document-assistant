@@ -8,6 +8,7 @@ using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Storage;
+using AI.DocumentAssistant.Server.TechnicalAnalysis;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -86,6 +87,7 @@ public sealed class DocumentsController : ControllerBase
         var documents = await _dbContext.Documents
             .AsNoTracking()
             .Include(document => document.Understanding)
+            .Include(document => document.TechnicalAnalysis)
             .Where(document =>
                 document.ProjectId == projectId &&
                 document.Project.OwnerId == ownerId)
@@ -118,6 +120,7 @@ public sealed class DocumentsController : ControllerBase
         var document = await _dbContext.Documents
             .AsNoTracking()
             .Include(document => document.Understanding)
+            .Include(document => document.TechnicalAnalysis)
             .SingleOrDefaultAsync(
                 document =>
                     document.Id == documentId &&
@@ -200,6 +203,18 @@ public sealed class DocumentsController : ControllerBase
             {
                 DocumentId = document.Id,
                 Status = DocumentUnderstandingStatus.Pending
+            };
+            document.TechnicalAnalysis = new DocumentTechnicalAnalysis
+            {
+                DocumentId = document.Id,
+                Status = PdfTechnicalAnalysisArchitecture.IsPdf(document.ContentType)
+                    ? DocumentTechnicalAnalysisStatus.NotAnalyzed
+                    : DocumentTechnicalAnalysisStatus.Skipped,
+                TechnicalType = TechnicalType.Unknown,
+                AnalyzerVersion = PdfTechnicalAnalysisArchitecture.AnalyzerVersion,
+                AnalyzedAtUtc = PdfTechnicalAnalysisArchitecture.IsPdf(document.ContentType)
+                    ? null
+                    : now
             };
 
             _dbContext.Documents.Add(document);
@@ -455,6 +470,7 @@ public sealed class DocumentsController : ControllerBase
             var refreshedDocument = await _dbContext.Documents
                 .AsNoTracking()
                 .Include(item => item.Understanding)
+                .Include(item => item.TechnicalAnalysis)
                 .SingleAsync(item => item.Id == documentId, cancellationToken);
 
             _logger.LogInformation(
@@ -606,6 +622,7 @@ public sealed class DocumentsController : ControllerBase
             var refreshedDocument = await _dbContext.Documents
                 .AsNoTracking()
                 .Include(item => item.Understanding)
+                .Include(item => item.TechnicalAnalysis)
                 .SingleAsync(item => item.Id == documentId, cancellationToken);
 
             return Ok(ToDetails(refreshedDocument, embeddingsAreCurrent: true));
@@ -692,6 +709,7 @@ public sealed class DocumentsController : ControllerBase
             var refreshedDocument = await _dbContext.Documents
                 .AsNoTracking()
                 .Include(item => item.Understanding)
+                .Include(item => item.TechnicalAnalysis)
                 .SingleAsync(item => item.Id == documentId, cancellationToken);
 
             _logger.LogInformation(
@@ -749,6 +767,18 @@ public sealed class DocumentsController : ControllerBase
                 "The document cannot be deleted while it is processing or being rebuilt."));
         }
 
+        if (await _dbContext.DocumentTechnicalAnalyses
+                .AsNoTracking()
+                .AnyAsync(
+                    analysis =>
+                        analysis.DocumentId == documentId &&
+                        analysis.Status == DocumentTechnicalAnalysisStatus.Processing,
+                    cancellationToken))
+        {
+            return Conflict(new ApiErrorResponse(
+                "The document cannot be deleted while it is processing or being rebuilt."));
+        }
+
         if (_dbContext.Database.IsRelational())
         {
             await using var transaction = await _dbContext.Database.BeginTransactionAsync(
@@ -760,7 +790,9 @@ public sealed class DocumentsController : ControllerBase
                     item.Project.OwnerId == ownerId &&
                     item.Status == document.Status &&
                     (item.Understanding == null ||
-                     item.Understanding.Status != DocumentUnderstandingStatus.Processing))
+                     item.Understanding.Status != DocumentUnderstandingStatus.Processing) &&
+                    (item.TechnicalAnalysis == null ||
+                     item.TechnicalAnalysis.Status != DocumentTechnicalAnalysisStatus.Processing))
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(item => item.Status, DocumentStatus.Processing)
                     .SetProperty(item => item.UpdatedAtUtc, DateTime.UtcNow),
@@ -825,7 +857,9 @@ public sealed class DocumentsController : ControllerBase
                     item.Project.OwnerId == ownerId &&
                     item.Status == expectedStatus &&
                     (item.Understanding == null ||
-                     item.Understanding.Status != DocumentUnderstandingStatus.Processing))
+                     item.Understanding.Status != DocumentUnderstandingStatus.Processing) &&
+                    (item.TechnicalAnalysis == null ||
+                     item.TechnicalAnalysis.Status != DocumentTechnicalAnalysisStatus.Processing))
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(item => item.Status, DocumentStatus.Processing)
                     .SetProperty(item => item.ProcessingStartedAtUtc, now)
@@ -846,7 +880,14 @@ public sealed class DocumentsController : ControllerBase
                 .AnyAsync(
                     understanding =>
                         understanding.DocumentId == document.Id &&
-                        understanding.Status == DocumentUnderstandingStatus.Processing,
+                    understanding.Status == DocumentUnderstandingStatus.Processing,
+                    cancellationToken) ||
+            await _dbContext.DocumentTechnicalAnalyses
+                .AsNoTracking()
+                .AnyAsync(
+                    analysis =>
+                        analysis.DocumentId == document.Id &&
+                        analysis.Status == DocumentTechnicalAnalysisStatus.Processing,
                     cancellationToken))
         {
             return false;
@@ -1093,7 +1134,8 @@ public sealed class DocumentsController : ControllerBase
             document.EmbeddedAtUtc,
             document.EmbeddingError,
             embeddingsAreCurrent,
-            document.Understanding?.Status);
+            document.Understanding?.Status,
+            document.TechnicalAnalysis?.Status);
 
     private DocumentDetails ToDetails(
         Document document,
@@ -1126,7 +1168,8 @@ public sealed class DocumentsController : ControllerBase
             document.EmbeddedAtUtc,
             document.EmbeddingError,
             embeddingsAreCurrent,
-            document.Understanding?.Status);
+            document.Understanding?.Status,
+            document.TechnicalAnalysis?.Status);
 
     private sealed record ValidatedFile(
         string OriginalFileName,

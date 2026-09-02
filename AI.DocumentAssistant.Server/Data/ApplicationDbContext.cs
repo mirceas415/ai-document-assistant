@@ -1,5 +1,6 @@
 using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
+using AI.DocumentAssistant.Server.TechnicalAnalysis;
 using AI.DocumentAssistant.Server.Understanding;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
@@ -28,6 +29,12 @@ public sealed class ApplicationDbContext
 
     public DbSet<DocumentMetadataEntry> DocumentMetadataEntries =>
         Set<DocumentMetadataEntry>();
+
+    public DbSet<DocumentTechnicalAnalysis> DocumentTechnicalAnalyses =>
+        Set<DocumentTechnicalAnalysis>();
+
+    public DbSet<DocumentPageTechnicalAnalysis> DocumentPageTechnicalAnalyses =>
+        Set<DocumentPageTechnicalAnalysis>();
 
     public DbSet<Conversation> Conversations => Set<Conversation>();
 
@@ -306,6 +313,61 @@ public sealed class ApplicationDbContext
                 .IsUnique();
 
             entry.HasIndex(value => new { value.Kind, value.Label });
+        });
+
+        builder.Entity<DocumentTechnicalAnalysis>(analysis =>
+        {
+            analysis.ToTable("DocumentTechnicalAnalyses");
+
+            analysis.HasKey(value => value.DocumentId);
+
+            analysis.Property(value => value.Status)
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            analysis.Property(value => value.TechnicalType)
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            analysis.Property(value => value.SourceFileHash)
+                .HasMaxLength(PdfTechnicalAnalysisArchitecture.SourceFileHashLength);
+
+            analysis.Property(value => value.AnalyzerVersion)
+                .HasMaxLength(
+                    PdfTechnicalAnalysisArchitecture.MaximumAnalyzerVersionLength);
+
+            analysis.Property(value => value.LastError)
+                .HasMaxLength(PdfTechnicalAnalysisArchitecture.MaximumErrorLength);
+
+            analysis.HasOne(value => value.Document)
+                .WithOne(document => document.TechnicalAnalysis)
+                .HasForeignKey<DocumentTechnicalAnalysis>(value => value.DocumentId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<DocumentPageTechnicalAnalysis>(page =>
+        {
+            page.ToTable("DocumentPageTechnicalAnalyses", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_DocumentPageTechnicalAnalyses_ImageCoverageRatio",
+                    "\"ImageCoverageRatio\" >= 0 AND \"ImageCoverageRatio\" <= 1");
+            });
+
+            page.HasKey(value => new
+                { value.DocumentTechnicalAnalysisId, value.PageNumber });
+
+            page.Property(value => value.TechnicalType)
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            page.HasOne(value => value.DocumentTechnicalAnalysis)
+                .WithMany(analysis => analysis.Pages)
+                .HasForeignKey(value => value.DocumentTechnicalAnalysisId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         builder.Entity<Conversation>(conversation =>

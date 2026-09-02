@@ -17,6 +17,8 @@ import type {
     CurrentUser,
     DocumentChunk,
     DocumentDetails,
+    DocumentTechnicalAnalysis,
+    DocumentTechnicalAnalysisStatus,
     DocumentSummary,
     DocumentUnderstanding,
     DocumentUnderstandingStatus,
@@ -551,9 +553,13 @@ function DocumentsSection({
     const [normalizingId, setNormalizingId] = useState<string | null>(null);
     const [embeddingId, setEmbeddingId] = useState<string | null>(null);
     const [understandingId, setUnderstandingId] = useState<string | null>(null);
+    const [technicalAnalysisId, setTechnicalAnalysisId] = useState<string | null>(null);
     const [understandings, setUnderstandings] = useState<Record<string, DocumentUnderstanding>>({});
     const [understandingLoading, setUnderstandingLoading] = useState<Record<string, boolean>>({});
     const [understandingErrors, setUnderstandingErrors] = useState<Record<string, string>>({});
+    const [technicalAnalyses, setTechnicalAnalyses] = useState<Record<string, DocumentTechnicalAnalysis>>({});
+    const [technicalAnalysisLoading, setTechnicalAnalysisLoading] = useState<Record<string, boolean>>({});
+    const [technicalAnalysisErrors, setTechnicalAnalysisErrors] = useState<Record<string, string>>({});
     const [chunkViewerRefreshKey, setChunkViewerRefreshKey] = useState(0);
     const [textViewerDocument, setTextViewerDocument] = useState<DocumentSummary | null>(null);
     const [chunkViewerDocument, setChunkViewerDocument] = useState<DocumentSummary | null>(null);
@@ -562,6 +568,8 @@ function DocumentsSection({
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const understandingCacheRef = useRef<Record<string, DocumentUnderstanding>>({});
     const understandingRequestIdsRef = useRef(new Set<string>());
+    const technicalAnalysisCacheRef = useRef<Record<string, DocumentTechnicalAnalysis>>({});
+    const technicalAnalysisRequestIdsRef = useRef(new Set<string>());
     const showToast = useToast();
 
     const cacheUnderstanding = useCallback((documentId: string, understanding: DocumentUnderstanding) => {
@@ -578,8 +586,26 @@ function DocumentsSection({
         setUnderstandings(next);
     }, []);
 
+    const cacheTechnicalAnalysis = useCallback((
+        documentId: string,
+        analysis: DocumentTechnicalAnalysis,
+    ) => {
+        const next = { ...technicalAnalysisCacheRef.current, [documentId]: analysis };
+        technicalAnalysisCacheRef.current = next;
+        setTechnicalAnalyses(next);
+    }, []);
+
+    const discardCachedTechnicalAnalysis = useCallback((documentId: string) => {
+        if (!technicalAnalysisCacheRef.current[documentId]) return;
+        const next = { ...technicalAnalysisCacheRef.current };
+        delete next[documentId];
+        technicalAnalysisCacheRef.current = next;
+        setTechnicalAnalyses(next);
+    }, []);
+
     const applyDocumentResponse = useCallback((response: DocumentSummary[]) => {
         let nextCache: Record<string, DocumentUnderstanding> | null = null;
+        let nextTechnicalCache: Record<string, DocumentTechnicalAnalysis> | null = null;
 
         for (const document of response) {
             const cached = understandingCacheRef.current[document.id];
@@ -590,11 +616,26 @@ function DocumentsSection({
                 nextCache ??= { ...understandingCacheRef.current };
                 delete nextCache[document.id];
             }
+
+            const cachedTechnicalAnalysis = technicalAnalysisCacheRef.current[document.id];
+            const technicalStatus = document.technicalAnalysisStatus ??
+                (isPdfDocument(document) ? 'NotAnalyzed' : 'Skipped');
+            if (cachedTechnicalAnalysis &&
+                !isTechnicalAnalysisInProgress(cachedTechnicalAnalysis.status) &&
+                cachedTechnicalAnalysis.status !== technicalStatus) {
+                nextTechnicalCache ??= { ...technicalAnalysisCacheRef.current };
+                delete nextTechnicalCache[document.id];
+            }
         }
 
         if (nextCache) {
             understandingCacheRef.current = nextCache;
             setUnderstandings(nextCache);
+        }
+
+        if (nextTechnicalCache) {
+            technicalAnalysisCacheRef.current = nextTechnicalCache;
+            setTechnicalAnalyses(nextTechnicalCache);
         }
 
         onDocumentsChanged(response);
@@ -643,16 +684,66 @@ function DocumentsSection({
         }
     }, [cacheUnderstanding, onDocumentsChanged, projectId]);
 
+    const loadTechnicalAnalysis = useCallback(async (
+        documentId: string,
+        force = false,
+    ): Promise<DocumentTechnicalAnalysis | null> => {
+        const cached = technicalAnalysisCacheRef.current[documentId];
+        if (!force && cached) return cached;
+        if (technicalAnalysisRequestIdsRef.current.has(documentId)) return cached ?? null;
+
+        technicalAnalysisRequestIdsRef.current.add(documentId);
+        setTechnicalAnalysisLoading((current) => ({ ...current, [documentId]: true }));
+        setTechnicalAnalysisErrors((current) => {
+            if (!current[documentId]) return current;
+            const next = { ...current };
+            delete next[documentId];
+            return next;
+        });
+
+        try {
+            const response = await apiRequest<DocumentTechnicalAnalysis>(
+                `/api/projects/${projectId}/documents/${documentId}/technical-analysis`,
+            );
+            cacheTechnicalAnalysis(documentId, response);
+            onDocumentsChanged((currentDocuments) => currentDocuments.map((document) =>
+                document.id === documentId
+                    ? { ...document, technicalAnalysisStatus: response.status }
+                    : document));
+            return response;
+        } catch (requestError) {
+            setTechnicalAnalysisErrors((current) => ({
+                ...current,
+                [documentId]: getErrorMessage(requestError),
+            }));
+            return null;
+        } finally {
+            technicalAnalysisRequestIdsRef.current.delete(documentId);
+            setTechnicalAnalysisLoading((current) => {
+                const next = { ...current };
+                delete next[documentId];
+                return next;
+            });
+        }
+    }, [cacheTechnicalAnalysis, onDocumentsChanged, projectId]);
+
     const shouldPoll = documents.some(
         (document) => document.status === 'Uploaded' ||
             document.status === 'Processing' ||
-            isUnderstandingInProgress(document.understandingStatus),
+            isUnderstandingInProgress(document.understandingStatus) ||
+            isTechnicalAnalysisInProgress(document.technicalAnalysisStatus),
     );
 
     const visibleDocumentIds = new Set(documents.map((document) => document.id));
     const understandingPollKey = Object.entries(understandings)
         .filter(([documentId, understanding]) =>
             visibleDocumentIds.has(documentId) && isUnderstandingInProgress(understanding.status))
+        .map(([documentId]) => documentId)
+        .sort()
+        .join(',');
+    const technicalAnalysisPollKey = Object.entries(technicalAnalyses)
+        .filter(([documentId, analysis]) =>
+            visibleDocumentIds.has(documentId) && isTechnicalAnalysisInProgress(analysis.status))
         .map(([documentId]) => documentId)
         .sort()
         .join(',');
@@ -706,6 +797,18 @@ function DocumentsSection({
         return () => window.clearInterval(timer);
     }, [loadUnderstanding, understandingPollKey]);
 
+    useEffect(() => {
+        if (!technicalAnalysisPollKey) return;
+        const documentIds = technicalAnalysisPollKey.split(',');
+        const timer = window.setInterval(() => {
+            for (const documentId of documentIds) {
+                void loadTechnicalAnalysis(documentId, true);
+            }
+        }, 2_500);
+
+        return () => window.clearInterval(timer);
+    }, [loadTechnicalAnalysis, technicalAnalysisPollKey]);
+
     const uploadDocument = async (file: File) => {
         setError('');
 
@@ -745,7 +848,13 @@ function DocumentsSection({
             onDocumentsChanged((currentDocuments) =>
                 currentDocuments.filter((item) => item.id !== document.id));
             discardCachedUnderstanding(document.id);
+            discardCachedTechnicalAnalysis(document.id);
             setUnderstandingErrors((current) => {
+                const next = { ...current };
+                delete next[document.id];
+                return next;
+            });
+            setTechnicalAnalysisErrors((current) => {
                 const next = { ...current };
                 delete next[document.id];
                 return next;
@@ -924,6 +1033,59 @@ function DocumentsSection({
         }
     };
 
+    const rebuildTechnicalAnalysis = async (document: DocumentSummary) => {
+        setError('');
+        setTechnicalAnalysisId(document.id);
+
+        const cached = technicalAnalysisCacheRef.current[document.id];
+        if (cached) {
+            cacheTechnicalAnalysis(document.id, {
+                ...cached,
+                status: 'Processing',
+                lastError: null,
+                pages: [],
+            });
+        }
+        onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
+            item.id === document.id
+                ? { ...item, technicalAnalysisStatus: 'Processing' }
+                : item));
+
+        try {
+            const response = await apiRequest<DocumentTechnicalAnalysis>(
+                `/api/projects/${projectId}/documents/${document.id}/technical-analysis/rebuild`,
+                { method: 'POST' },
+            );
+            cacheTechnicalAnalysis(document.id, response);
+            onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
+                item.id === document.id
+                    ? { ...item, technicalAnalysisStatus: response.status }
+                    : item));
+            setTechnicalAnalysisErrors((current) => {
+                if (!current[document.id]) return current;
+                const next = { ...current };
+                delete next[document.id];
+                return next;
+            });
+            setError('');
+            showToast({ message: 'Technical PDF analysis rebuilt.' });
+        } catch (requestError) {
+            const actionError = getErrorMessage(requestError);
+            const refreshed = await loadTechnicalAnalysis(document.id, true);
+            if (refreshed) {
+                setError('');
+                showToast({
+                    message: 'Technical PDF analysis could not be rebuilt.',
+                    tone: 'info',
+                });
+            } else {
+                setError(actionError);
+            }
+        } finally {
+            setTechnicalAnalysisId(null);
+        }
+    };
+
     const isDocumentActionBusy = (documentId: string) =>
         deletingId === documentId ||
         retryingId === documentId ||
@@ -931,7 +1093,9 @@ function DocumentsSection({
         normalizingId === documentId ||
         embeddingId === documentId ||
         understandingId === documentId ||
-        Boolean(understandingLoading[documentId]);
+        technicalAnalysisId === documentId ||
+        Boolean(understandingLoading[documentId]) ||
+        Boolean(technicalAnalysisLoading[documentId]);
 
     const runConfirmedAction = async () => {
         if (!confirmation) return;
@@ -942,6 +1106,7 @@ function DocumentsSection({
             if (action === 'normalization') await rebuildNormalization(document);
             if (action === 'embeddings') await rebuildEmbeddings(document);
             if (action === 'understanding') await rebuildUnderstanding(document);
+            if (action === 'technical-analysis') await rebuildTechnicalAnalysis(document);
         } finally {
             setConfirmation(null);
         }
@@ -1086,6 +1251,16 @@ function DocumentsSection({
                                 <span className="status-dot" aria-hidden="true" />
                                 {document.status}
                             </span>
+                            <DocumentTechnicalAnalysisSection
+                                document={document}
+                                analysis={technicalAnalyses[document.id]}
+                                isLoading={Boolean(technicalAnalysisLoading[document.id])}
+                                error={technicalAnalysisErrors[document.id]}
+                                isRebuilding={technicalAnalysisId === document.id}
+                                isBusy={isDocumentActionBusy(document.id)}
+                                onLoad={loadTechnicalAnalysis}
+                                onRebuild={() => setConfirmation({ action: 'technical-analysis', document })}
+                            />
                             <DocumentIntelligenceSection
                                 document={document}
                                 understanding={understandings[document.id]}
@@ -1098,79 +1273,104 @@ function DocumentsSection({
                             />
                             {document.status !== 'Processing' && (
                                 <div className="document-actions">
-                                    {document.status === 'Ready' && (
+                                    {(document.status === 'Ready' || isPdfDocument(document)) && (
                                         <details
                                             className="document-advanced"
                                             onToggle={(event) => {
                                                 if (event.currentTarget.open) {
-                                                    void loadUnderstanding(document.id);
+                                                    void loadTechnicalAnalysis(document.id);
+                                                    if (document.status === 'Ready') {
+                                                        void loadUnderstanding(document.id);
+                                                    }
                                                 }
                                             }}
                                         >
                                             <summary><Icon name="more" size={16} /> Advanced</summary>
                                             <div className="document-advanced-actions">
-                                            <DocumentUnderstandingAudit
-                                                understanding={understandings[document.id]}
-                                                isLoading={Boolean(understandingLoading[document.id])}
-                                                error={understandingErrors[document.id]}
-                                                fallbackStatus={document.understandingStatus}
-                                            />
-                                            <button
-                                                className="secondary-button compact-button"
-                                                type="button"
-                                                disabled={isDocumentActionBusy(document.id)}
-                                                onClick={() => setTextViewerDocument(document)}
-                                            >
-                                                View extracted text
-                                            </button>
-                                            <button
-                                                className="secondary-button compact-button"
-                                                type="button"
-                                                disabled={isDocumentActionBusy(document.id)}
-                                                onClick={() => setChunkViewerDocument(document)}
-                                            >
-                                                View chunks
-                                            </button>
-                                            <button
-                                                className="secondary-button compact-button"
-                                                type="button"
-                                                disabled={isDocumentActionBusy(document.id)}
-                                                onClick={() => setConfirmation({ action: 'normalization', document })}
-                                            >
-                                                {normalizingId === document.id ? 'Normalizing…' : 'Rebuild normalization'}
-                                            </button>
-                                            <button
-                                                className="secondary-button compact-button"
-                                                type="button"
-                                                disabled={isDocumentActionBusy(document.id)}
-                                                onClick={() => setConfirmation({ action: 'chunks', document })}
-                                            >
-                                                {rebuildingId === document.id ? 'Rebuilding…' : 'Rebuild chunks'}
-                                            </button>
-                                            <button
-                                                className="secondary-button compact-button"
-                                                type="button"
-                                                disabled={isDocumentActionBusy(document.id)}
-                                                onClick={() => setConfirmation({ action: 'embeddings', document })}
-                                            >
-                                                {embeddingId === document.id
-                                                    ? document.embeddedChunkCount > 0
-                                                        ? 'Rebuilding embeddings…'
-                                                        : 'Generating embeddings…'
-                                                    : document.embeddedChunkCount > 0
-                                                        ? 'Rebuild embeddings'
-                                                        : 'Generate embeddings'}
-                                            </button>
-                                            <button
-                                                className="secondary-button compact-button"
-                                                type="button"
-                                                disabled={isDocumentActionBusy(document.id)}
-                                                onClick={() => setConfirmation({ action: 'understanding', document })}
-                                            >
-                                                {understandingId === document.id
-                                                    ? 'Rebuilding understanding…'
-                                                    : 'Rebuild document understanding'}
-                                            </button>
+                                                <DocumentTechnicalAnalysisAudit
+                                                    document={document}
+                                                    analysis={technicalAnalyses[document.id]}
+                                                    isLoading={Boolean(technicalAnalysisLoading[document.id])}
+                                                    error={technicalAnalysisErrors[document.id]}
+                                                />
+                                                {document.status === 'Ready' && (
+                                                    <>
+                                                        <DocumentUnderstandingAudit
+                                                            understanding={understandings[document.id]}
+                                                            isLoading={Boolean(understandingLoading[document.id])}
+                                                            error={understandingErrors[document.id]}
+                                                            fallbackStatus={document.understandingStatus}
+                                                        />
+                                                        <button
+                                                            className="secondary-button compact-button"
+                                                            type="button"
+                                                            disabled={isDocumentActionBusy(document.id)}
+                                                            onClick={() => setTextViewerDocument(document)}
+                                                        >
+                                                            View extracted text
+                                                        </button>
+                                                        <button
+                                                            className="secondary-button compact-button"
+                                                            type="button"
+                                                            disabled={isDocumentActionBusy(document.id)}
+                                                            onClick={() => setChunkViewerDocument(document)}
+                                                        >
+                                                            View chunks
+                                                        </button>
+                                                        <button
+                                                            className="secondary-button compact-button"
+                                                            type="button"
+                                                            disabled={isDocumentActionBusy(document.id)}
+                                                            onClick={() => setConfirmation({ action: 'normalization', document })}
+                                                        >
+                                                            {normalizingId === document.id ? 'Normalizing…' : 'Rebuild normalization'}
+                                                        </button>
+                                                        <button
+                                                            className="secondary-button compact-button"
+                                                            type="button"
+                                                            disabled={isDocumentActionBusy(document.id)}
+                                                            onClick={() => setConfirmation({ action: 'chunks', document })}
+                                                        >
+                                                            {rebuildingId === document.id ? 'Rebuilding…' : 'Rebuild chunks'}
+                                                        </button>
+                                                        <button
+                                                            className="secondary-button compact-button"
+                                                            type="button"
+                                                            disabled={isDocumentActionBusy(document.id)}
+                                                            onClick={() => setConfirmation({ action: 'embeddings', document })}
+                                                        >
+                                                            {embeddingId === document.id
+                                                                ? document.embeddedChunkCount > 0
+                                                                    ? 'Rebuilding embeddings…'
+                                                                    : 'Generating embeddings…'
+                                                                : document.embeddedChunkCount > 0
+                                                                    ? 'Rebuild embeddings'
+                                                                    : 'Generate embeddings'}
+                                                        </button>
+                                                        <button
+                                                            className="secondary-button compact-button"
+                                                            type="button"
+                                                            disabled={isDocumentActionBusy(document.id)}
+                                                            onClick={() => setConfirmation({ action: 'understanding', document })}
+                                                        >
+                                                            {understandingId === document.id
+                                                                ? 'Rebuilding understanding…'
+                                                                : 'Rebuild document understanding'}
+                                                        </button>
+                                                    </>
+                                                )}
+                                                {isPdfDocument(document) && (
+                                                    <button
+                                                        className="secondary-button compact-button"
+                                                        type="button"
+                                                        disabled={isDocumentActionBusy(document.id)}
+                                                        onClick={() => setConfirmation({ action: 'technical-analysis', document })}
+                                                    >
+                                                        {technicalAnalysisId === document.id
+                                                            ? 'Analyzing PDF…'
+                                                            : 'Rebuild technical analysis'}
+                                                    </button>
+                                                )}
                                             </div>
                                         </details>
                                     )}
@@ -1231,6 +1431,147 @@ function DocumentsSection({
                 onConfirm={() => void runConfirmedAction()}
             />
         </section>
+    );
+}
+
+interface DocumentTechnicalAnalysisSectionProps {
+    document: DocumentSummary;
+    analysis: DocumentTechnicalAnalysis | undefined;
+    isLoading: boolean;
+    error: string | undefined;
+    isRebuilding: boolean;
+    isBusy: boolean;
+    onLoad: (documentId: string, force?: boolean) => Promise<DocumentTechnicalAnalysis | null>;
+    onRebuild: () => void;
+}
+
+function DocumentTechnicalAnalysisSection({
+    document,
+    analysis,
+    isLoading,
+    error,
+    isRebuilding,
+    isBusy,
+    onLoad,
+    onRebuild,
+}: DocumentTechnicalAnalysisSectionProps) {
+    const [isOpen, setIsOpen] = useState(false);
+    const status = getTechnicalAnalysisStatus(document, analysis);
+    const canRebuild = isPdfDocument(document) && document.status !== 'Processing';
+
+    useEffect(() => {
+        if (isOpen && !analysis && !isLoading && !error) {
+            void onLoad(document.id);
+        }
+    }, [analysis, document.id, error, isLoading, isOpen, onLoad]);
+
+    return (
+        <details
+            className="document-intelligence technical-analysis"
+            onToggle={(event) => setIsOpen(event.currentTarget.open)}
+        >
+            <summary>
+                <span className="document-intelligence-heading">
+                    <Icon name="document" size={16} />
+                    Technical analysis
+                </span>
+                <TechnicalAnalysisStatusBadge
+                    status={status}
+                    technicalType={analysis?.status === 'Ready' ? analysis.technicalType : undefined}
+                />
+                <Icon name="chevron-down" size={15} />
+            </summary>
+            <div className="document-intelligence-body">
+                {isLoading && !analysis ? (
+                    <div className="document-intelligence-state" role="status">
+                        <span className="spinner intelligence-spinner" aria-hidden="true" />
+                        Loading technical analysis…
+                    </div>
+                ) : error && !analysis ? (
+                    <div className="document-intelligence-state intelligence-error" role="alert">
+                        <span>{error}</span>
+                        <button
+                            className="secondary-button compact-button"
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void onLoad(document.id, true)}
+                        >
+                            Try again
+                        </button>
+                    </div>
+                ) : status === 'NotAnalyzed' ? (
+                    <div className="document-intelligence-state">
+                        <span>This PDF has not been technically analyzed yet.</span>
+                        {canRebuild && (
+                            <button
+                                className="secondary-button compact-button"
+                                type="button"
+                                disabled={isBusy}
+                                onClick={onRebuild}
+                            >
+                                Analyze PDF
+                            </button>
+                        )}
+                    </div>
+                ) : status === 'Processing' ? (
+                    <div className="document-intelligence-state" role="status">
+                        <span className="spinner intelligence-spinner" aria-hidden="true" />
+                        Inspecting PDF text and image structure…
+                    </div>
+                ) : status === 'Failed' ? (
+                    <div className="document-intelligence-state intelligence-error" role="alert">
+                        <span>{analysis?.lastError || 'Technical PDF analysis could not be completed.'}</span>
+                        {canRebuild && (
+                            <button
+                                className="secondary-button compact-button"
+                                type="button"
+                                disabled={isBusy}
+                                onClick={onRebuild}
+                            >
+                                {isRebuilding ? 'Retrying…' : 'Retry analysis'}
+                            </button>
+                        )}
+                    </div>
+                ) : status === 'Skipped' ? (
+                    <div className="document-intelligence-state">
+                        Not applicable to DOCX.
+                    </div>
+                ) : analysis ? (
+                    <div className="document-intelligence-ready technical-analysis-ready">
+                        <div>
+                            <span>Technical type</span>
+                            <strong>{formatUnderstandingValue(analysis.technicalType)}</strong>
+                        </div>
+                        <div>
+                            <span>Pages</span>
+                            <strong>{analysis.pageCount.toLocaleString()}</strong>
+                        </div>
+                        <p>{formatTechnicalPageCounts(analysis)}</p>
+                        {error && <p className="document-intelligence-refresh-error" role="alert">{error}</p>}
+                    </div>
+                ) : (
+                    <div className="document-intelligence-state" role="status">
+                        <span className="spinner intelligence-spinner" aria-hidden="true" />
+                        Loading technical analysis…
+                    </div>
+                )}
+            </div>
+        </details>
+    );
+}
+
+function TechnicalAnalysisStatusBadge({
+    status,
+    technicalType,
+}: {
+    status: DocumentTechnicalAnalysisStatus;
+    technicalType?: DocumentTechnicalAnalysis['technicalType'];
+}) {
+    return (
+        <span className={`status-pill understanding-status status-${getTechnicalAnalysisStatusClass(status)}`}>
+            <span className="status-dot" aria-hidden="true" />
+            {technicalType ? formatUnderstandingValue(technicalType) : formatTechnicalAnalysisStatus(status)}
+        </span>
     );
 }
 
@@ -1465,6 +1806,82 @@ function DocumentUnderstandingAudit({
                     </div>
                 )}
             </dl>
+        </div>
+    );
+}
+
+interface DocumentTechnicalAnalysisAuditProps {
+    document: DocumentSummary;
+    analysis: DocumentTechnicalAnalysis | undefined;
+    isLoading: boolean;
+    error: string | undefined;
+}
+
+function DocumentTechnicalAnalysisAudit({
+    document,
+    analysis,
+    isLoading,
+    error,
+}: DocumentTechnicalAnalysisAuditProps) {
+    if (isLoading && !analysis) {
+        return <p className="document-understanding-audit-state">Loading technical diagnostics…</p>;
+    }
+
+    if (error && !analysis) {
+        return <p className="document-understanding-audit-state audit-error">{error}</p>;
+    }
+
+    const status = getTechnicalAnalysisStatus(document, analysis);
+    return (
+        <div className="document-understanding-audit technical-analysis-audit">
+            <p>Technical analysis</p>
+            <dl>
+                <div><dt>Status</dt><dd>{formatTechnicalAnalysisStatus(status)}</dd></div>
+                {analysis?.status === 'Ready' && (
+                    <div><dt>Type</dt><dd>{formatUnderstandingValue(analysis.technicalType)}</dd></div>
+                )}
+                {analysis?.analyzerVersion && (
+                    <div><dt>Analyzer</dt><dd>{analysis.analyzerVersion}</dd></div>
+                )}
+                {analysis?.analyzedAtUtc && (
+                    <div><dt>Analyzed</dt><dd>{formatDate(analysis.analyzedAtUtc)}</dd></div>
+                )}
+                {analysis?.sourceFileHash && (
+                    <div>
+                        <dt>Source file hash</dt>
+                        <dd><code>{analysis.sourceFileHash}</code></dd>
+                    </div>
+                )}
+            </dl>
+            {analysis?.status === 'Ready' && analysis.pages.length > 0 && (
+                <div className="technical-page-diagnostics">
+                    <p>Page diagnostics</p>
+                    <div className="technical-page-table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Page</th>
+                                    <th>Type</th>
+                                    <th>Text</th>
+                                    <th>Images</th>
+                                    <th>Image coverage</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {analysis.pages.map((page) => (
+                                    <tr key={page.pageNumber}>
+                                        <td>{page.pageNumber}</td>
+                                        <td>{formatUnderstandingValue(page.technicalType)}</td>
+                                        <td>{page.textCharacterCount.toLocaleString()} chars</td>
+                                        <td>{page.imageCount.toLocaleString()}</td>
+                                        <td>{formatPercentage(page.imageCoverageRatio)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -1907,7 +2324,7 @@ function ProjectDetailsSkeleton() {
 }
 
 type DocumentConfirmation = {
-    action: 'delete' | 'chunks' | 'normalization' | 'embeddings' | 'understanding';
+    action: 'delete' | 'chunks' | 'normalization' | 'embeddings' | 'understanding' | 'technical-analysis';
     document: DocumentSummary;
 };
 
@@ -1917,6 +2334,7 @@ function getDocumentConfirmationTitle(action?: DocumentConfirmation['action']) {
     if (action === 'normalization') return 'Rebuild normalized text?';
     if (action === 'embeddings') return 'Rebuild embeddings?';
     if (action === 'understanding') return 'Rebuild document understanding?';
+    if (action === 'technical-analysis') return 'Rebuild technical PDF analysis?';
     return 'Confirm action';
 }
 
@@ -1926,6 +2344,7 @@ function getDocumentConfirmationLabel(action?: DocumentConfirmation['action']) {
     if (action === 'normalization') return 'Rebuild normalization';
     if (action === 'embeddings') return 'Continue';
     if (action === 'understanding') return 'Rebuild understanding';
+    if (action === 'technical-analysis') return 'Rebuild technical analysis';
     return 'Continue';
 }
 
@@ -1933,7 +2352,7 @@ function getDocumentConfirmationDescription(confirmation: DocumentConfirmation |
     if (!confirmation) return '';
     const name = <strong>{confirmation.document.originalFileName}</strong>;
     if (confirmation.action === 'delete') {
-        return <>This permanently removes {name}, its extracted content, document intelligence, chunks, and embeddings.</>;
+        return <>This permanently removes {name}, its extracted content, technical diagnostics, document intelligence, chunks, and embeddings.</>;
     }
     if (confirmation.action === 'chunks') {
         return <>Rebuild chunks for {name} from its stored extracted text?</>;
@@ -1944,6 +2363,9 @@ function getDocumentConfirmationDescription(confirmation: DocumentConfirmation |
     if (confirmation.action === 'understanding') {
         return <>Re-analyze {name} and replace its current document intelligence metadata? This uses OpenAI API credits.</>;
     }
+    if (confirmation.action === 'technical-analysis') {
+        return <>Reinspect the original PDF for text and raster-image structure? This is local and does not perform OCR or use OpenAI.</>;
+    }
     return confirmation.document.embeddedChunkCount > 0
         ? <>Replace the current embedding set for {name}? This uses OpenAI API credits.</>
         : <>Generate embeddings for {name}? This uses OpenAI API credits.</>;
@@ -1951,6 +2373,53 @@ function getDocumentConfirmationDescription(confirmation: DocumentConfirmation |
 
 function isUnderstandingInProgress(status: DocumentUnderstandingStatus | null | undefined) {
     return status === 'Pending' || status === 'Processing';
+}
+
+function isTechnicalAnalysisInProgress(status: DocumentTechnicalAnalysisStatus | null | undefined) {
+    return status === 'Processing';
+}
+
+function isPdfDocument(document: DocumentSummary) {
+    return document.contentType.toLowerCase() === 'application/pdf';
+}
+
+function getTechnicalAnalysisStatus(
+    document: DocumentSummary,
+    analysis: DocumentTechnicalAnalysis | undefined,
+): DocumentTechnicalAnalysisStatus {
+    return analysis?.status ??
+        document.technicalAnalysisStatus ??
+        (isPdfDocument(document) ? 'NotAnalyzed' : 'Skipped');
+}
+
+function formatTechnicalAnalysisStatus(status: DocumentTechnicalAnalysisStatus) {
+    if (status === 'NotAnalyzed') return 'Not analyzed';
+    if (status === 'Skipped') return 'Not applicable';
+    return status;
+}
+
+function getTechnicalAnalysisStatusClass(status: DocumentTechnicalAnalysisStatus) {
+    return status === 'NotAnalyzed' ? 'not-analyzed' : status.toLocaleLowerCase();
+}
+
+function formatTechnicalPageCounts(analysis: DocumentTechnicalAnalysis) {
+    const counts = [
+        [analysis.textBasedPageCount, 'text'],
+        [analysis.scannedPageCount, 'scanned'],
+        [analysis.imageBasedPageCount, 'image-based'],
+        [analysis.mixedPageCount, 'mixed'],
+        [analysis.unknownPageCount, 'unknown'],
+    ] as const;
+    const summary = counts
+        .filter(([count]) => count > 0)
+        .map(([count, label]) => `${count.toLocaleString()} ${label}`)
+        .join(' · ');
+    return summary || 'No classifiable pages.';
+}
+
+function formatPercentage(value: number) {
+    const safeValue = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+    return `${Math.round(safeValue * 100)}%`;
 }
 
 function formatUnderstandingStatus(status: DocumentUnderstandingStatus) {

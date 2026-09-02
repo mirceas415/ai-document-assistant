@@ -8,8 +8,8 @@ The two main flows are:
 
 ```text
 INGESTION
-PDF/DOCX -> Extract -> Normalize -> Document Understanding -> Chunk -> Embed
-                                                        -> PostgreSQL + pgvector
+Upload -> Technical PDF Analysis -> Extract -> Normalize -> Document Understanding
+       -> Chunk -> Embed -> PostgreSQL + pgvector
 
 QUERY
 Question -> Query embedding -> ownership-filtered semantic retrieval
@@ -21,7 +21,7 @@ Persisted conversation -> current question -> semantic retrieval
   -> grounded answer -> persisted assistant message + source snapshots
 ```
 
-The application deliberately does not include OCR, metadata-aware or hybrid/BM25 retrieval, reranking, agents, Semantic Kernel, cloud storage, streaming, or a durable message broker. Milestone 10 produces document intelligence, but retrieval and answers do not consume it yet.
+The application deliberately does not include OCR, computer vision, metadata-aware or hybrid/BM25 retrieval, reranking, agents, Semantic Kernel, cloud storage, streaming, or a durable message broker. Milestone 11 produces deterministic structural PDF intelligence, but extraction, retrieval, and answers do not consume it.
 
 ## Components
 
@@ -37,7 +37,8 @@ The application deliberately does not include OCR, metadata-aware or hybrid/BM25
 ApplicationUser 1 ── * Project 1 ── * Document
                                       ├── * DocumentTextSection
                                       ├── * DocumentChunk
-                                      └── 0..1 DocumentUnderstanding 1 ── * DocumentMetadataEntry
+                                      ├── 0..1 DocumentUnderstanding 1 ── * DocumentMetadataEntry
+                                      └── 0..1 DocumentTechnicalAnalysis 1 ── * DocumentPageTechnicalAnalysis
                          └── * Conversation 1 ── * ConversationMessage
                                                    └── * ConversationMessageSource
 ```
@@ -64,7 +65,7 @@ Important chunking fields are:
 
 Embedding aggregates are `EmbeddedChunkCount`, `EmbeddingModel`, `EmbeddingDimensions`, `EmbeddedAtUtc`, and `EmbeddingError`. They cheaply exclude legacy or configuration-mismatched documents without returning vectors. For aggregate candidates, list/detail reads verify every chunk's vector presence, model, dimensions, timestamp, and SHA-256 against its exact current content before returning `EmbeddingsAreCurrent`; the aggregate is not treated as a substitute for chunk-row validation.
 
-Document understanding is deliberately not stored as a set of unrelated fields on `Document`. A nullable one-to-one relationship keeps its independent lifecycle separate from the document's ingestion/RAG status.
+Document understanding and technical PDF intelligence are deliberately not stored as sets of unrelated fields on `Document`. Separate nullable one-to-one relationships keep both lifecycles independent from the document's ingestion/RAG status.
 
 ### DocumentTextSection
 
@@ -93,6 +94,18 @@ The aggregate stores the controlled document type, optional short subtype, class
 
 `DocumentMetadataEntry` is the bounded generic child model rather than a wide set of nullable business columns. Its controlled kinds are `Organization`, `Person`, `Identifier`, `Date`, `MonetaryAmount`, `Jurisdiction`, `Topic`, and `Other`. Each entry stores a semantic lower-snake-case label, sanitized original value, optional deterministic normalized value, optional validated confidence, and stable sequence. At most 50 validated entries are accepted. Successful rebuilds replace all entries atomically; document deletion cascades through understanding to metadata. Conversation source snapshots have no foreign key to these rows and retain their historical behavior.
 
+### DocumentTechnicalAnalysis and DocumentPageTechnicalAnalysis
+
+`DocumentTechnicalAnalysis` uses `DocumentId` as its primary key and foreign key. Its independent status is `NotAnalyzed`, `Processing`, `Ready`, `Failed`, or `Skipped`; absence of a row is valid for pre-Milestone-11 documents. It stores the controlled `TechnicalType`, page totals by type, uppercase SHA-256 of the original file bytes, analyzer version, completion time, and a bounded safe error. `TechnicalType` values mean:
+
+- `TextBased`: a meaningful text layer is the primary useful representation;
+- `Scanned`: little or no meaningful text exists and a raster image covers at least 80% of the visible page, which is structurally consistent with a scan;
+- `ImageBased`: little or no meaningful text exists and raster images are present, but none meets the scan threshold;
+- `Mixed`: meaningful text and substantial raster content coexist, or materially different useful page types coexist; and
+- `Unknown`: structural evidence is insufficient for a safe classification.
+
+`DocumentPageTechnicalAnalysis` has the composite key `(DocumentTechnicalAnalysisId, PageNumber)` and stores type, alphanumeric text-character count, useful-word count, non-mask raster-image count, largest-image coverage, meaningful-text and page-sized-image signals. Deleting a document cascades through its technical aggregate to every page diagnostic. These rows are metadata only and never become document text or RAG context.
+
 ### Conversation, ConversationMessage, and ConversationMessageSource
 
 `Conversation` belongs to one project and stores a GUID, a title, and UTC creation/update timestamps. `(ProjectId, UpdatedAtUtc)` supports the newest-first project history. `ConversationMessage` belongs to one conversation, stores only the constrained `User` or `Assistant` role, text, UTC creation time, and sequence; `(ConversationId, Sequence)` is unique. System/developer prompts, vectors, and provider configuration are never stored.
@@ -110,29 +123,59 @@ All project, document, Search, Ask, and conversation endpoints require authentic
 1. The authenticated user uploads a document to an owned project.
 2. The API validates the 20 MB limit, filename, extension, declared content type, and file signature.
 3. The file is saved locally with a generated `.pdf` or `.docx` filename.
-4. A `Document` row is created with status `Uploaded` and a separate understanding row with status `Pending`.
+4. A `Document` row is created with status `Uploaded`, a separate understanding row with status `Pending`, and a technical-analysis row with `NotAnalyzed` for PDF or `Skipped` for DOCX.
 5. The document ID is offered to the process-local background queue.
 6. The API returns document metadata; it never returns the storage filename or path.
 
 ## Extraction Flow
 
 1. The worker changes an Uploaded or Failed document to `Processing` and clears prior public errors and counts.
-2. The processor selects the registered extractor by MIME type and stored extension.
-3. PDF extraction reads pages in order and records page numbers.
-4. DOCX extraction reads paragraphs and tables in order, grouping Heading 1–3 content and retaining the heading as section metadata.
-5. Extracted sections remain in memory as raw source data while normalization runs.
-6. Document understanding receives a deterministic bounded input derived only from the normalized sections. Its result or safe failure state is persisted independently.
-7. Chunks are generated from normalized sections in memory even when understanding failed.
-8. The exact generated chunk contents are embedded and the complete result is validated in memory.
-9. Only then does a database transaction replace sections and chunks, attach their vectors and metadata, update document aggregates, and set the document to `Ready`.
+2. The technical-analysis service inspects the original stored file. It analyzes PDF locally and marks DOCX `Skipped`; failure is caught at this independent boundary.
+3. The processor selects the registered extractor by MIME type and stored extension.
+4. PDF extraction reads pages in order and records page numbers.
+5. DOCX extraction reads paragraphs and tables in order, grouping Heading 1–3 content and retaining the heading as section metadata.
+6. Extracted sections remain in memory as raw source data while normalization runs.
+7. Document understanding receives a deterministic bounded input derived only from the normalized sections. Its result or safe failure state is persisted independently.
+8. Chunks are generated from normalized sections in memory even when technical analysis or understanding failed.
+9. The exact generated chunk contents are embedded and the complete result is validated in memory.
+10. Only then does a database transaction replace sections and chunks, attach their vectors and metadata, update document aggregates, and set the document to `Ready`.
 
 The complete flow is:
 
 ```text
-Upload -> Extract -> Normalize -> Document Understanding -> Chunk -> Embed -> Persist -> Ready
+Upload -> Technical PDF Analysis -> Extract -> Normalize -> Document Understanding -> Chunk -> Embed -> Persist -> Ready
 ```
 
-Document `Processing` still covers extraction through embedding, while document understanding has its own lifecycle. An extraction, normalization, chunking, or embedding failure during initial/retry processing leaves no partial new authoritative sections, chunks, or embeddings, sets the document to `Failed`, stores a bounded stage-safe error, and keeps the uploaded file for retry. An understanding timeout, rate limit, configuration error, malformed response, or other provider failure records understanding `Failed` but is caught at the stage boundary; chunking and embedding continue and the document can become `Ready`. Retrying reopens the existing uploaded file and runs the complete current pipeline. Technical exceptions are logged without document text, physical paths, vectors, credentials, authorization headers, or provider response bodies.
+Document `Processing` still covers the main extraction-through-embedding flow, while technical analysis and document understanding have independent lifecycles. An extraction, normalization, chunking, or embedding failure during initial/retry processing leaves no partial new authoritative sections, chunks, or embeddings, sets the document to `Failed`, stores a bounded stage-safe error, and keeps the uploaded file for retry. A technical-analysis failure records technical status `Failed`, but extraction and every normal downstream stage still run. Conversely, extraction failure does not delete already completed technical diagnostics. An understanding timeout, rate limit, configuration error, malformed response, or other provider failure records understanding `Failed` but is caught at its stage boundary; chunking and embedding continue and the document can become `Ready`. Retrying reopens the existing uploaded file and runs the complete current pipeline. Technical exceptions are logged without document text, physical paths, vectors, credentials, authorization headers, or provider response bodies.
+
+## Technical PDF Analysis Flow
+
+`IDocumentTechnicalAnalysisService` owns source-file hashing, idempotency, status transitions, and persistence. `IPdfTechnicalAnalyzer` is the narrow, local PDF-inspection boundary implemented by `PdfPigPdfTechnicalAnalyzer`. It uses the already-installed PdfPig package to read each page's text, crop-box dimensions, non-mask raster images, and image placement bounds. It never decodes pixels, rasterizes a page, performs OCR, calls OpenAI, creates embeddings, or uses an external service.
+
+Text measurement counts Unicode letters and digits plus contiguous alphanumeric runs of at least two characters as useful words. A page has meaningful text when it contains at least 40 alphanumeric characters **or** at least 8 useful words. This prevents a page number, small footer, watermark, or a few OCR artifacts from establishing a useful text layer.
+
+For every non-mask raster image with positive sample dimensions, coverage is the intersection of its axis-aligned placement bounds with the visible crop box divided by crop-box area. Every ratio is finite and clamped to `[0, 1]`. The persisted page coverage is the maximum single-image ratio rather than a sum: this is a conservative lower bound on union coverage and cannot double-count overlapping placements. A page-sized image is one with coverage at least 0.80. Image content is substantial at coverage at least 0.30.
+
+Page classification is fixed and ordered:
+
+1. meaningful text plus coverage at least 0.30 → `Mixed`;
+2. other meaningful text → `TextBased`;
+3. no meaningful text plus a page-sized image (at least 0.80) → `Scanned`;
+4. no meaningful text plus one or more raster images → `ImageBased`; and
+5. no meaningful text and no raster-image evidence → `Unknown`.
+
+A scan-like page with an existing meaningful hidden/searchable OCR text layer is therefore `Mixed`, not `Scanned`; future OCR routing can see both `HasMeaningfulText` and `HasPageSizedImage`. Per-page `Scanned` is an OCR candidate, `ImageBased` a possible OCR/vision candidate, `TextBased` does not require OCR, and `Mixed` preserves the signal for later inspection. Milestone 11 performs none of those future actions.
+
+Document aggregation ignores `Unknown` pages only within a bounded blank-page tolerance: `max(1, floor(total pages × 0.20))`. More unknown pages make the document `Unknown`. Among remaining useful pages, a type representing at least 80% wins. Otherwise, two or more useful types make the document `Mixed`; without enough evidence it remains `Unknown`. Thus one decorative outlier cannot make a 100-page homogeneous document mixed, while a material 70/30 split does. All thresholds belong to `pdf-technical-analysis-v1`; changing their meaning requires a new analyzer version.
+
+The service computes SHA-256 from the original uploaded PDF bytes. Automatic analysis reuses only a `Ready` result whose `SourceFileHash` and `AnalyzerVersion` both match. Manual rebuild always forces inspection and atomic page replacement. No migration/startup backfill or filesystem scan occurs; legacy PDFs return `NotAnalyzed` until explicitly rebuilt or normally reprocessed. DOCX returns `Skipped`/not applicable without opening or inspecting DOCX internals.
+
+The ownership-protected APIs are:
+
+- `GET /api/projects/{projectId}/documents/{documentId}/technical-analysis`, which explicitly returns document aggregates and ordered page diagnostics; and
+- `POST /api/projects/{projectId}/documents/{documentId}/technical-analysis/rebuild`, which forces local analysis of the original PDF and rejects DOCX with a safe not-applicable response.
+
+Both routes constrain document ID, route project ID, and `Project.OwnerId`; neither returns a storage name, path, exception, content, secret, or credential.
 
 ## Normalization Flow
 
@@ -384,7 +427,9 @@ The chat composer and main chat drop surface reuse the existing document upload 
 
 Full document status, raw/normalized text, chunks, embedding generation/rebuild, processing controls, and deletion remain on the Documents route. Semantic Search remains available under a collapsed `Retrieval details` control instead of dominating the normal chat experience. Desktop uses the available three-column width; the history/sidebar progressively collapse on smaller screens.
 
-## Normalization, Understanding, Chunk, and Embedding Rebuild Flow
+## Technical Analysis, Normalization, Understanding, Chunk, and Embedding Rebuild Flow
+
+`POST /api/projects/{projectId}/documents/{documentId}/technical-analysis/rebuild` authenticates the user, enforces the route project/document relationship and owner in SQL, requires PDF, and forces re-analysis from the original uploaded bytes. It does not change the main `Document.Status`, extraction, normalization, understanding, chunks, embeddings, retrieval, or RAG. Its independent failure state is safe and bounded.
 
 `POST /api/projects/{projectId}/documents/{documentId}/normalization/rebuild` authenticates the user, filters ownership in SQL, requires a `Ready` document with stored raw sections, and atomically changes the document to `Processing` before work begins. It reruns normalization from `DocumentTextSection.Content`, regenerates chunks, generates fresh embeddings, and replaces normalized fields, chunks, vectors, and aggregate metadata in one transaction without opening the uploaded file. If normalization, chunking, or embedding fails before commit, the prior authoritative normalized content, chunks, and embeddings remain intact; the document returns to `Ready` with a bounded safe stage error.
 
@@ -417,7 +462,7 @@ The project detail page polls while a document is Uploaded or Processing. A succ
 - Failed: Retry and Delete.
 - Ready: inspect raw/normalized text, view chunks, rebuild normalization, rebuild chunks, explicitly generate/rebuild embeddings, and delete. Process and Retry are never rendered.
 
-Normalization, understanding, chunk, and embedding rebuilds require browser confirmation; AI-backed confirmations make API-credit usage explicit. Document cards show concise raw/normalized/chunk statistics plus Embedded, Not embedded, or Needs rebuild state, embedded chunk count, model, dimensions, and time. They never display vectors. A compact, lazy-loaded Document Intelligence disclosure shows independent Not analyzed, Pending, Processing, Ready, Failed, and Skipped states; Ready results show type/language confidence as simple text, title, subject, and bounded metadata. Model, prompt version, time, and source hash stay under Advanced. Action loading state disables conflicting actions for that document, and successful requests refresh metadata. Normalized text and full intelligence metadata are fetched only when their disclosures are opened. Polling observes statuses but never initiates an AI request.
+Technical analysis, normalization, understanding, chunk, and embedding rebuilds require browser confirmation; AI-backed confirmations make API-credit usage explicit, while the technical-analysis confirmation explicitly states that it is local and performs no OCR. Document cards show concise raw/normalized/chunk statistics plus Embedded, Not embedded, or Needs rebuild state, embedded chunk count, model, dimensions, and time. They never display vectors. A compact, lazy-loaded Technical Analysis disclosure shows Not analyzed, Processing, Ready, Failed, and Not applicable states; Ready results show type, page count, and per-type counts. Ordered page diagnostics (`Page`, `Type`, `Text`, `Images`, `Image coverage`), analyzer version, time, and source-file hash stay under Advanced. DOCX displays `Not applicable to DOCX`. A separate lazy-loaded Document Intelligence disclosure retains its independent M10 states and business metadata. Action loading state disables conflicting actions for that document, and successful requests refresh metadata. Polling observes statuses but never initiates technical analysis or an AI request.
 
 Document management is intentionally separate from the focused chat workspace. The chat UI persists project conversations and renders only backend-authoritative source snapshots. Semantic Search is retained as a collapsed advanced retrieval inspector with ranked document/chunk/page/heading/content results and cosine distance. Neither view receives vectors, provider configuration, prompts, storage paths, or secrets.
 
@@ -436,9 +481,10 @@ Document management is intentionally separate from the focused chat workspace. T
 - Milestone 9: Persistent project conversations, bounded non-authoritative recent history, source snapshots, ownership-safe CRUD/message APIs, deterministic titles, failure/retry semantics, focused chat workspace, separate document management, tests, migration, and documentation.
 - Milestone 9.2: Chat-first workspace terminology and navigation, simplified empty states, composer and drag/drop workspace upload, backend-backed transient upload status, accessible conversation actions, shared frontend upload validation, and no backend/schema/AI-call changes.
 - Milestone 10: Generic document classification, primary-language detection, bounded document metadata extraction, deterministic sampling, strict and locally validated structured output, independent non-fatal status, content/model/prompt idempotency, ownership-safe APIs, Document Intelligence UI, migration, and fake-based tests.
+- Milestone 11: Original-file PDF hashing, deterministic PdfPig text/image/page diagnostics, conservative text/scanned/image/mixed classification, OCR-ready page signals, independent non-fatal persistence, ownership-safe read/rebuild APIs, compact UI, migration, and offline tests.
 
 ## Core MVP Status and Limitations
 
-The core bachelor's-project MVP and ingestion-intelligence foundation are complete through Milestone 10. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, no OCR for scanned documents, exact vector search sized for MVP data, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guide in `RETRIEVAL_EVALUATION.md`.
+The core bachelor's-project MVP and ingestion-intelligence foundation are complete through Milestone 11. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, no OCR for scanned documents, exact vector search sized for MVP data, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guide in `RETRIEVAL_EVALUATION.md`.
 
-Metadata-aware retrieval, hybrid lexical/vector search, reranking, OCR, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening remain future work. Milestone 10 only produces persisted intelligence: it performs no OCR, PDF image routing, metadata-aware filtering, hybrid search, or reranking; see `ROADMAP.md`.
+Metadata-aware retrieval, hybrid lexical/vector search, reranking, OCR, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening remain future work. Milestone 11 uses deterministic structural heuristics only: no OCR, computer vision, page rasterization, page-layout reconstruction, OpenAI request, retrieval change, metadata filter, hybrid search, or reranking is present. Technical PDF intelligence asks “How is this PDF represented?”; M10 Document Understanding independently asks “What does this document mean?” A PDF can therefore have `TechnicalType = Scanned` and `DocumentType = Contract` without either classification altering the other; see `ROADMAP.md`.

@@ -5,6 +5,7 @@ using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
 using AI.DocumentAssistant.Server.Storage;
+using AI.DocumentAssistant.Server.TechnicalAnalysis;
 using AI.DocumentAssistant.Server.Understanding;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -23,6 +24,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
     private readonly IDocumentChunkGenerator _chunkGenerator;
     private readonly ITextEmbeddingService _embeddingService;
     private readonly IDocumentUnderstandingService _understandingService;
+    private readonly IDocumentTechnicalAnalysisService _technicalAnalysisService;
     private readonly OpenAIEmbeddingOptions _embeddingOptions;
     private readonly ILogger<DocumentProcessingService> _logger;
 
@@ -34,6 +36,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         IDocumentChunkGenerator chunkGenerator,
         ITextEmbeddingService embeddingService,
         IDocumentUnderstandingService understandingService,
+        IDocumentTechnicalAnalysisService technicalAnalysisService,
         IOptions<OpenAIEmbeddingOptions> embeddingOptions,
         ILogger<DocumentProcessingService> logger)
     {
@@ -44,6 +47,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         _chunkGenerator = chunkGenerator;
         _embeddingService = embeddingService;
         _understandingService = understandingService;
+        _technicalAnalysisService = technicalAnalysisService;
         _embeddingOptions = embeddingOptions.Value;
         _logger = logger;
     }
@@ -88,6 +92,21 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         document.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        try
+        {
+            await _technicalAnalysisService.AnalyzeAsync(
+                document.Id,
+                force: false,
+                cancellationToken);
+        }
+        catch (Exception technicalAnalysisException)
+        {
+            _logger.LogWarning(
+                "Technical PDF analysis did not complete for document {DocumentId}; normal extraction and downstream processing will continue. Exception type: {ExceptionType}. Document content was omitted.",
+                document.Id,
+                technicalAnalysisException.GetType().FullName);
+        }
 
         var stopwatch = Stopwatch.StartNew();
         var extension = Path.GetExtension(document.StoredFileName);

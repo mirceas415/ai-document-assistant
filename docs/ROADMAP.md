@@ -4,7 +4,7 @@
 
 Status: Complete
 
-Milestones 1 through 10 provide the complete ingestion, grounded Ask Your Documents, persistent conversation experience, and generic ingestion-intelligence foundation. Deployment remains a separate operations milestone; later retrieval/PDF milestones are listed independently and are not implemented by Milestone 10.
+Milestones 1 through 11 provide the complete ingestion, grounded Ask Your Documents, persistent conversation experience, generic document understanding, and deterministic PDF-structure foundation. Deployment remains a separate operations milestone; later retrieval milestones are listed independently and are not implemented by Milestone 11.
 
 ## Milestone 1 — Authentication
 
@@ -195,24 +195,31 @@ Status: Complete
 
 ## Milestone 11 — Technical PDF Intelligence / OCR-ready Routing
 
-Status: Planned
+Status: Complete
 
-- Text/scanned/image/mixed PDF diagnostics and OCR-ready routing
-- OCR provider and image-processing decisions remain out of Milestone 10
+- Independent `DocumentTechnicalAnalysis` lifecycle with ordered `DocumentPageTechnicalAnalysis` diagnostics
+- Controlled Unknown, TextBased, Scanned, ImageBased, and Mixed page/document taxonomy
+- Deterministic meaningful-text thresholds and conservative page-sized raster-image detection through existing PdfPig APIs
+- Original-file SHA-256 plus `pdf-technical-analysis-v1` idempotency, with forced manual rebuild
+- Automatic pre-extraction analysis that remains non-fatal to extraction and every downstream ingestion stage
+- Blank-page tolerance, 80% document majority, OCR-text-layer-safe Mixed handling, and future per-page OCR routing signals
+- Ownership-protected read/rebuild APIs, compact status/count UI, and Advanced page diagnostics
+- DOCX Skipped/not-applicable behavior, legacy document compatibility, cascade deletion, safe failures, migration, and offline tests
+- No OCR, computer vision, rasterization pipeline, OpenAI call, extraction change, Document Understanding change, or retrieval/RAG change
 
 ## Milestone 12 — Metadata-aware Hybrid Retrieval
 
 Status: Planned
 
 - Consume validated document intelligence for metadata-aware retrieval
-- Evaluate lexical/vector hybrid search without changing Milestone 10 production semantics
+- Evaluate lexical/vector hybrid search without changing Milestone 11 production semantics
 
 ## Milestone 13 — Reranking / Retrieval Quality
 
 Status: Planned
 
 - Evidence-based reranking and retrieval-quality measurement after hybrid retrieval
-- No reranker is present in Milestone 10
+- No reranker is present in Milestone 11
 
 ## Operations — Deployment
 
