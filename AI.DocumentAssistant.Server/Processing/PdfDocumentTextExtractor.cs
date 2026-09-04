@@ -1,5 +1,6 @@
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
+using AI.DocumentAssistant.Server.Models;
 
 namespace AI.DocumentAssistant.Server.Processing;
 
@@ -36,13 +37,8 @@ public sealed class PdfDocumentTextExtractor : IDocumentTextExtractor
                 sections.Add(new ExtractedTextSection(
                     sections.Count,
                     content,
-                    PageNumber: page.Number));
-            }
-
-            if (sections.Count == 0)
-            {
-                throw new DocumentExtractionException(
-                    "No extractable text was found. OCR is not supported yet.");
+                    PageNumber: page.Number,
+                    ExtractionMethod: DocumentTextExtractionMethod.NativePdf));
             }
 
             return Task.FromResult<IReadOnlyList<ExtractedTextSection>>(sections);

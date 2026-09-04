@@ -3,6 +3,7 @@ using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
+using AI.DocumentAssistant.Server.Ocr;
 using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Rag;
 using AI.DocumentAssistant.Server.Storage;
@@ -390,6 +391,7 @@ public sealed class DocumentProcessingServiceTests
             embeddingService,
             understandingService,
             new NoOpDocumentTechnicalAnalysisService(),
+            new NoOpDocumentOcrExtractionService(),
             Options.Create(new OpenAIEmbeddingOptions()),
             NullLogger<DocumentProcessingService>.Instance);
 
@@ -478,6 +480,89 @@ public sealed class DocumentProcessingServiceTests
         Assert.Equal(DocumentTechnicalAnalysisStatus.Ready, analysis.Status);
         Assert.Equal(TechnicalType.TextBased, analysis.TechnicalType);
         Assert.Single(analysis.Pages);
+    }
+
+    [Fact]
+    public async Task ForcedOcrRebuildReplacesRawTextAndRegeneratesDownstreamData()
+    {
+        await using var database = await ProcessingTestDatabase.CreateAsync();
+        var document = await database.AddDocumentAsync(DocumentStatus.Ready);
+        database.Context.DocumentTextSections.Add(new DocumentTextSection
+        {
+            Id = Guid.NewGuid(),
+            DocumentId = document.Id,
+            SectionIndex = 0,
+            PageNumber = 1,
+            Content = "obsolete extracted text",
+            NormalizedContent = "obsolete extracted text",
+            ExtractionMethod = DocumentTextExtractionMethod.NativePdf,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        database.Context.DocumentChunks.Add(new DocumentChunk
+        {
+            Id = Guid.NewGuid(),
+            DocumentId = document.Id,
+            ChunkIndex = 0,
+            Content = "obsolete chunk",
+            CharacterCount = 14,
+            TokenCount = 2,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await database.Context.SaveChangesAsync();
+        var ocrExtraction = new RecordingOcrExtractionService([
+            new ExtractedTextSection(
+                0,
+                "Current native page text.",
+                PageNumber: 1,
+                ExtractionMethod: DocumentTextExtractionMethod.NativePdf),
+            new ExtractedTextSection(
+                1,
+                "Recovered Romanian OCR text pentru pagina scanată.",
+                PageNumber: 2,
+                ExtractionMethod: DocumentTextExtractionMethod.Ocr)
+        ]);
+        var understanding = new RecordingDocumentUnderstandingService();
+        var service = database.CreateService(
+            new NoOpDocumentTechnicalAnalysisService(),
+            ocrExtraction,
+            understanding,
+            new StubExtractor([
+                new ExtractedTextSection(
+                    0,
+                    "Current native page text.",
+                    PageNumber: 1,
+                    ExtractionMethod: DocumentTextExtractionMethod.NativePdf)
+            ]));
+
+        await service.RebuildOcrAsync(document.Id, CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var storedDocument = await database.Context.Documents.SingleAsync();
+        var sections = await database.Context.DocumentTextSections
+            .OrderBy(section => section.SectionIndex)
+            .ToArrayAsync();
+        var chunks = await database.Context.DocumentChunks
+            .OrderBy(chunk => chunk.ChunkIndex)
+            .ToArrayAsync();
+        Assert.True(ocrExtraction.Force);
+        Assert.Equal(0, understanding.AnalyzeInMemoryCallCount);
+        Assert.Equal(1, understanding.StagePendingCallCount);
+        Assert.Equal(1, understanding.AnalyzePersistedCallCount);
+        Assert.Contains(
+            understanding.StagedSections,
+            section => section.NormalizedContent.Contains("Recovered Romanian OCR text"));
+        Assert.Equal(DocumentStatus.Ready, storedDocument.Status);
+        Assert.Equal([1, 2], sections.Select(section => section.PageNumber));
+        Assert.Equal(
+            [DocumentTextExtractionMethod.NativePdf, DocumentTextExtractionMethod.Ocr],
+            sections.Select(section => section.ExtractionMethod));
+        Assert.All(sections, section => Assert.NotNull(section.NormalizedContent));
+        Assert.DoesNotContain(sections, section => section.Content.Contains("obsolete"));
+        Assert.NotEmpty(chunks);
+        Assert.DoesNotContain(chunks, chunk => chunk.Content.Contains("obsolete"));
+        Assert.Contains(chunks, chunk => chunk.Content.Contains("Recovered Romanian OCR text"));
+        Assert.Equal(chunks.Length, storedDocument.EmbeddedChunkCount);
+        Assert.NotNull(storedDocument.EmbeddedAtUtc);
     }
 
     [Fact]
@@ -677,6 +762,35 @@ public sealed class DocumentProcessingServiceTests
                 CreateGenerator(),
                 new DeterministicTextEmbeddingService(),
                 technicalAnalysisService,
+                new NoOpDocumentOcrExtractionService(),
+                new NoOpDocumentUnderstandingService(),
+                extractors);
+
+        public DocumentProcessingService CreateService(
+            IDocumentTechnicalAnalysisService technicalAnalysisService,
+            IDocumentOcrExtractionService ocrExtractionService,
+            params IDocumentTextExtractor[] extractors) =>
+            CreateService(
+                new DocumentTextNormalizer(Options.Create(new DocumentNormalizationOptions())),
+                CreateGenerator(),
+                new DeterministicTextEmbeddingService(),
+                technicalAnalysisService,
+                ocrExtractionService,
+                new NoOpDocumentUnderstandingService(),
+                extractors);
+
+        public DocumentProcessingService CreateService(
+            IDocumentTechnicalAnalysisService technicalAnalysisService,
+            IDocumentOcrExtractionService ocrExtractionService,
+            IDocumentUnderstandingService understandingService,
+            params IDocumentTextExtractor[] extractors) =>
+            CreateService(
+                new DocumentTextNormalizer(Options.Create(new DocumentNormalizationOptions())),
+                CreateGenerator(),
+                new DeterministicTextEmbeddingService(),
+                technicalAnalysisService,
+                ocrExtractionService,
+                understandingService,
                 extractors);
 
         private DocumentProcessingService CreateService(
@@ -689,6 +803,8 @@ public sealed class DocumentProcessingServiceTests
                 generator,
                 embeddingService,
                 new NoOpDocumentTechnicalAnalysisService(),
+                new NoOpDocumentOcrExtractionService(),
+                new NoOpDocumentUnderstandingService(),
                 extractors);
 
         private DocumentProcessingService CreateService(
@@ -696,6 +812,8 @@ public sealed class DocumentProcessingServiceTests
             IDocumentChunkGenerator generator,
             ITextEmbeddingService embeddingService,
             IDocumentTechnicalAnalysisService technicalAnalysisService,
+            IDocumentOcrExtractionService ocrExtractionService,
+            IDocumentUnderstandingService understandingService,
             params IDocumentTextExtractor[] extractors)
         {
             return new DocumentProcessingService(
@@ -705,8 +823,9 @@ public sealed class DocumentProcessingServiceTests
                 normalizer,
                 generator,
                 embeddingService,
-                new NoOpDocumentUnderstandingService(),
+                understandingService,
                 technicalAnalysisService,
+                ocrExtractionService,
                 Options.Create(new OpenAIEmbeddingOptions()),
                 NullLogger<DocumentProcessingService>.Instance);
         }
@@ -720,6 +839,75 @@ public sealed class DocumentProcessingServiceTests
         {
             await Context.DisposeAsync();
         }
+    }
+
+    private sealed class RecordingOcrExtractionService(
+        IReadOnlyList<ExtractedTextSection> sections) : IDocumentOcrExtractionService
+    {
+        public bool Force { get; private set; }
+
+        public Task<IReadOnlyList<ExtractedTextSection>> ApplyAsync(
+            Guid documentId,
+            Stream pdfStream,
+            IReadOnlyList<ExtractedTextSection> nativeSections,
+            bool force,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Force = force;
+            return Task.FromResult(sections);
+        }
+    }
+
+    private sealed class RecordingDocumentUnderstandingService : IDocumentUnderstandingService
+    {
+        public int AnalyzeInMemoryCallCount { get; private set; }
+
+        public int StagePendingCallCount { get; private set; }
+
+        public int AnalyzePersistedCallCount { get; private set; }
+
+        public IReadOnlyList<DocumentUnderstandingSourceSection> StagedSections { get; private set; } = [];
+
+        public Task<DocumentUnderstandingRunResult> AnalyzeAsync(
+            Guid documentId,
+            IReadOnlyList<DocumentUnderstandingSourceSection> sourceSections,
+            bool force,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            AnalyzeInMemoryCallCount++;
+            return Task.FromResult(Result());
+        }
+
+        public Task<DocumentUnderstandingRunResult> AnalyzePersistedAsync(
+            Guid documentId,
+            bool force,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            AnalyzePersistedCallCount++;
+            return Task.FromResult(Result());
+        }
+
+        public Task StagePendingIfStaleAsync(
+            Guid documentId,
+            IReadOnlyList<DocumentUnderstandingSourceSection> sourceSections,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            StagePendingCallCount++;
+            StagedSections = sourceSections.ToArray();
+            return Task.CompletedTask;
+        }
+
+        private static DocumentUnderstandingRunResult Result() =>
+            new(
+                DocumentUnderstandingStatus.Ready,
+                DocumentUnderstandingContentHasher.Compute(string.Empty),
+                "test-understanding-model",
+                DocumentUnderstandingArchitecture.PromptVersion,
+                false);
     }
 
     private sealed class ThrowingNormalizer : IDocumentTextNormalizer

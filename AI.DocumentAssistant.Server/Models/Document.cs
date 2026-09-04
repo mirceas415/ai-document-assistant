@@ -65,4 +65,6 @@ public sealed class Document
     public DocumentUnderstanding? Understanding { get; set; }
 
     public DocumentTechnicalAnalysis? TechnicalAnalysis { get; set; }
+
+    public DocumentOcrAnalysis? OcrAnalysis { get; set; }
 }

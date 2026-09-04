@@ -73,7 +73,8 @@ public sealed record ExtractedTextSectionResponse(
     int? NormalizedCharacterCount,
     int RemovedCharacterCount,
     bool NormalizationChanged,
-    DateTime? NormalizedAtUtc);
+    DateTime? NormalizedAtUtc,
+    DocumentTextExtractionMethod ExtractionMethod);
 
 public sealed record DocumentChunkResponse(
     int ChunkIndex,

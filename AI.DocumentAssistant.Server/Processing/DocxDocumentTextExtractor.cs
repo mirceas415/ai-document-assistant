@@ -1,6 +1,7 @@
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
+using AI.DocumentAssistant.Server.Models;
 
 namespace AI.DocumentAssistant.Server.Processing;
 
@@ -110,7 +111,8 @@ public sealed class DocxDocumentTextExtractor : IDocumentTextExtractor
             sections.Add(new ExtractedTextSection(
                 sections.Count,
                 content,
-                SectionTitle: currentTitle));
+                SectionTitle: currentTitle,
+                ExtractionMethod: DocumentTextExtractionMethod.Docx));
         }
 
         currentLines.Clear();

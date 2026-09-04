@@ -36,17 +36,14 @@ public sealed class DocumentTextExtractorTests
     }
 
     [Fact]
-    public async Task PdfWithoutTextFailsWithOcrMessage()
+    public async Task PdfWithoutNativeTextReturnsNoSectionsForOcrAwareOrchestration()
     {
         await using var stream = CreatePdf((string?)null);
         var extractor = new PdfDocumentTextExtractor();
 
-        var exception = await Assert.ThrowsAsync<DocumentExtractionException>(
-            () => extractor.ExtractAsync(stream, CancellationToken.None));
+        var sections = await extractor.ExtractAsync(stream, CancellationToken.None);
 
-        Assert.Equal(
-            "No extractable text was found. OCR is not supported yet.",
-            exception.SafeMessage);
+        Assert.Empty(sections);
     }
 
     [Fact]

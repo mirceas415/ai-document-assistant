@@ -2,13 +2,13 @@
 
 ## Overview
 
-AI Document Assistant is a modular monolith with an ASP.NET Core 10 backend, a React and TypeScript frontend, PostgreSQL persistence through Entity Framework Core and pgvector, OpenAI embedding and answer generation, and local document storage. The completed core MVP supports authenticated, user-owned projects, PDF and DOCX ingestion, semantic search across a project, grounded answers with authoritative document citations, and persistent project conversations.
+AI Document Assistant is a modular monolith with an ASP.NET Core 10 backend, a React and TypeScript frontend, PostgreSQL persistence through Entity Framework Core and pgvector, OpenAI embedding and answer generation, local document storage, and selective local OCR. The completed core MVP supports authenticated, user-owned projects, PDF and DOCX ingestion, semantic search across a project, grounded answers with authoritative document citations, and persistent project conversations.
 
 The two main flows are:
 
 ```text
 INGESTION
-Upload -> Technical PDF Analysis -> Extract -> Normalize -> Document Understanding
+Upload -> Technical PDF Analysis -> OCR-aware Extract -> Normalize -> Document Understanding
        -> Chunk -> Embed -> PostgreSQL + pgvector
 
 QUERY
@@ -21,7 +21,7 @@ Persisted conversation -> current question -> semantic retrieval
   -> grounded answer -> persisted assistant message + source snapshots
 ```
 
-The application deliberately does not include OCR, computer vision, metadata-aware or hybrid/BM25 retrieval, reranking, agents, Semantic Kernel, cloud storage, streaming, or a durable message broker. Milestone 11 produces deterministic structural PDF intelligence, but extraction, retrieval, and answers do not consume it.
+The application deliberately does not include cloud OCR, vision/image understanding, custom computer vision, metadata-aware or hybrid/BM25 retrieval, reranking, agents, Semantic Kernel, cloud storage, streaming, or a durable message broker. Milestone 12 consumes only Milestone 11's page-level `Scanned` signal for local Tesseract OCR; retrieval and answer logic are unchanged.
 
 ## Components
 
@@ -65,11 +65,11 @@ Important chunking fields are:
 
 Embedding aggregates are `EmbeddedChunkCount`, `EmbeddingModel`, `EmbeddingDimensions`, `EmbeddedAtUtc`, and `EmbeddingError`. They cheaply exclude legacy or configuration-mismatched documents without returning vectors. For aggregate candidates, list/detail reads verify every chunk's vector presence, model, dimensions, timestamp, and SHA-256 against its exact current content before returning `EmbeddingsAreCurrent`; the aggregate is not treated as a substitute for chunk-row validation.
 
-Document understanding and technical PDF intelligence are deliberately not stored as sets of unrelated fields on `Document`. Separate nullable one-to-one relationships keep both lifecycles independent from the document's ingestion/RAG status.
+Document understanding, technical PDF intelligence, and OCR processing are deliberately not stored as sets of unrelated fields on `Document`. Separate nullable one-to-one relationships keep their lifecycles independent from the document's ingestion/RAG status.
 
 ### DocumentTextSection
 
-The ordered extraction representation. PDF sections normally correspond to pages. DOCX sections correspond to heading groups. `Content` is immutable raw extraction for verification and debugging. Nullable `NormalizedContent` is the retrieval-oriented derivative, with `NormalizationChanged`, `RemovedCharacterCount`, and `NormalizedAtUtc` providing traceability. Existing rows from before Milestone 5.1 have null normalized content until normalization is rebuilt.
+The ordered extraction representation. PDF sections normally correspond to pages. DOCX sections correspond to heading groups. `Content` is immutable raw extraction for verification and debugging. `ExtractionMethod` records `NativePdf`, `Ocr`, `Docx`, or legacy-compatible `Unknown` provenance. Nullable `NormalizedContent` is the retrieval-oriented derivative, with `NormalizationChanged`, `RemovedCharacterCount`, and `NormalizedAtUtc` providing traceability. Existing rows from before Milestone 5.1 have null normalized content until normalization is rebuilt; existing rows receive `Unknown` provenance through the database default.
 
 The document row stores useful aggregates: normalized character count, removed character count, changed-section count, completion time, and a bounded safe normalization error. Raw content is never overwritten by normalization or chunk rebuilding.
 
@@ -106,6 +106,12 @@ The aggregate stores the controlled document type, optional short subtype, class
 
 `DocumentPageTechnicalAnalysis` has the composite key `(DocumentTechnicalAnalysisId, PageNumber)` and stores type, alphanumeric text-character count, useful-word count, non-mask raster-image count, largest-image coverage, meaningful-text and page-sized-image signals. Deleting a document cascades through its technical aggregate to every page diagnostic. These rows are metadata only and never become document text or RAG context.
 
+### DocumentOcrAnalysis and DocumentPageOcrResult
+
+`DocumentOcrAnalysis` is a separate nullable one-to-one document concern. Its status is `NotAnalyzed`, `Processing`, `Ready`, `Partial`, `Failed`, or `Skipped`. It stores bounded aggregate counts, engine name/version, configured languages and rendering limits, source-file hash, routing version/hash, configuration hash, completion time, and a safe bounded error. No tessdata path, native-library path, rendered image, raw exception, or duplicate OCR text is persisted.
+
+`DocumentPageOcrResult` has the composite key `(DocumentOcrAnalysisId, PageNumber)` and exists only for M11 `Scanned` candidates. It stores `Ready`, `Empty`, `Failed`, or `SkippedLimit`, the source technical type, recognized character/word counts, optional mean confidence, effective render DPI and dimensions, optional duration, whether the recognized text was used, and a bounded error. OCR text used by ingestion lives once as the raw `DocumentTextSection.Content` for that page. Document deletion cascades through the OCR aggregate to diagnostics.
+
 ### Conversation, ConversationMessage, and ConversationMessageSource
 
 `Conversation` belongs to one project and stores a GUID, a title, and UTC creation/update timestamps. `(ProjectId, UpdatedAtUtc)` supports the newest-first project history. `ConversationMessage` belongs to one conversation, stores only the constrained `User` or `Assistant` role, text, UTC creation time, and sequence; `(ConversationId, Sequence)` is unique. System/developer prompts, vectors, and provider configuration are never stored.
@@ -123,7 +129,7 @@ All project, document, Search, Ask, and conversation endpoints require authentic
 1. The authenticated user uploads a document to an owned project.
 2. The API validates the 20 MB limit, filename, extension, declared content type, and file signature.
 3. The file is saved locally with a generated `.pdf` or `.docx` filename.
-4. A `Document` row is created with status `Uploaded`, a separate understanding row with status `Pending`, and a technical-analysis row with `NotAnalyzed` for PDF or `Skipped` for DOCX.
+4. A `Document` row is created with status `Uploaded`, a separate understanding row with status `Pending`, a technical-analysis row with `NotAnalyzed` for PDF or `Skipped` for DOCX, and an OCR row with `NotAnalyzed` for PDF or `Skipped` for DOCX.
 5. The document ID is offered to the process-local background queue.
 6. The API returns document metadata; it never returns the storage filename or path.
 
@@ -132,9 +138,9 @@ All project, document, Search, Ask, and conversation endpoints require authentic
 1. The worker changes an Uploaded or Failed document to `Processing` and clears prior public errors and counts.
 2. The technical-analysis service inspects the original stored file. It analyzes PDF locally and marks DOCX `Skipped`; failure is caught at this independent boundary.
 3. The processor selects the registered extractor by MIME type and stored extension.
-4. PDF extraction reads pages in order and records page numbers.
+4. PDF extraction first reads native page text in order with PdfPig. M11 page diagnostics then route only `Scanned` pages through PDFium rendering and local Tesseract OCR; successful OCR text replaces that page's ineffective native extraction. Other page types retain existing native extraction behavior.
 5. DOCX extraction reads paragraphs and tables in order, grouping Heading 1–3 content and retaining the heading as section metadata.
-6. Extracted sections remain in memory as raw source data while normalization runs.
+6. Native and OCR-derived sections are merged in original page order and remain in memory as one raw source representation while normalization runs.
 7. Document understanding receives a deterministic bounded input derived only from the normalized sections. Its result or safe failure state is persisted independently.
 8. Chunks are generated from normalized sections in memory even when technical analysis or understanding failed.
 9. The exact generated chunk contents are embedded and the complete result is validated in memory.
@@ -143,7 +149,7 @@ All project, document, Search, Ask, and conversation endpoints require authentic
 The complete flow is:
 
 ```text
-Upload -> Technical PDF Analysis -> Extract -> Normalize -> Document Understanding -> Chunk -> Embed -> Persist -> Ready
+Upload -> Technical PDF Analysis -> OCR-aware Extract -> Normalize -> Document Understanding -> Chunk -> Embed -> Persist -> Ready
 ```
 
 Document `Processing` still covers the main extraction-through-embedding flow, while technical analysis and document understanding have independent lifecycles. An extraction, normalization, chunking, or embedding failure during initial/retry processing leaves no partial new authoritative sections, chunks, or embeddings, sets the document to `Failed`, stores a bounded stage-safe error, and keeps the uploaded file for retry. A technical-analysis failure records technical status `Failed`, but extraction and every normal downstream stage still run. Conversely, extraction failure does not delete already completed technical diagnostics. An understanding timeout, rate limit, configuration error, malformed response, or other provider failure records understanding `Failed` but is caught at its stage boundary; chunking and embedding continue and the document can become `Ready`. Retrying reopens the existing uploaded file and runs the complete current pipeline. Technical exceptions are logged without document text, physical paths, vectors, credentials, authorization headers, or provider response bodies.
@@ -164,7 +170,7 @@ Page classification is fixed and ordered:
 4. no meaningful text plus one or more raster images → `ImageBased`; and
 5. no meaningful text and no raster-image evidence → `Unknown`.
 
-A scan-like page with an existing meaningful hidden/searchable OCR text layer is therefore `Mixed`, not `Scanned`; future OCR routing can see both `HasMeaningfulText` and `HasPageSizedImage`. Per-page `Scanned` is an OCR candidate, `ImageBased` a possible OCR/vision candidate, `TextBased` does not require OCR, and `Mixed` preserves the signal for later inspection. Milestone 11 performs none of those future actions.
+A scan-like page with an existing meaningful hidden/searchable OCR text layer is therefore `Mixed`, not `Scanned`; routing can see both `HasMeaningfulText` and `HasPageSizedImage`. M11 itself performs no OCR. M12 consumes only per-page `Scanned` as an automatic OCR candidate; `TextBased`, `Mixed`, `ImageBased`, and `Unknown` pages are not automatically OCRed.
 
 Document aggregation ignores `Unknown` pages only within a bounded blank-page tolerance: `max(1, floor(total pages × 0.20))`. More unknown pages make the document `Unknown`. Among remaining useful pages, a type representing at least 80% wins. Otherwise, two or more useful types make the document `Mixed`; without enough evidence it remains `Unknown`. Thus one decorative outlier cannot make a 100-page homogeneous document mixed, while a material 70/30 split does. All thresholds belong to `pdf-technical-analysis-v1`; changing their meaning requires a new analyzer version.
 
@@ -176,6 +182,33 @@ The ownership-protected APIs are:
 - `POST /api/projects/{projectId}/documents/{documentId}/technical-analysis/rebuild`, which forces local analysis of the original PDF and rejects DOCX with a safe not-applicable response.
 
 Both routes constrain document ID, route project ID, and `Project.OwnerId`; neither returns a storage name, path, exception, content, secret, or credential.
+
+## Local OCR Routing and Extraction Flow
+
+Milestone 11 answers **“Does this page structurally need OCR?”** Milestone 12 answers **“Recover text locally from pages identified as scans.”** The persisted M11 page diagnostics are the sole routing authority; OCR does not duplicate image-coverage or meaningful-text heuristics. The centralized `ocr-routing-v1` policy is exact:
+
+- `Scanned` -> render that page and run local OCR;
+- `TextBased` -> preserve PdfPig native text;
+- `Mixed` -> preserve meaningful PdfPig native text and do not OCR;
+- `ImageBased` -> preserve existing extraction behavior and do not OCR; and
+- `Unknown` -> preserve existing extraction behavior and do not OCR.
+
+Routing is page-level, never based only on the document aggregate. A PDF with native pages 1 and 3 and scanned pages 2 and 4 becomes one ordered sequence: page 1 `NativePdf`, page 2 `Ocr`, page 3 `NativePdf`, page 4 `Ocr`. There is no separate OCR chunk store or OCR-specific RAG path. OCR output is minimally line-ending-cleaned, stored as raw section content, normalized by the existing normalizer, and then enters the unchanged Document Understanding, chunking, embedding, retrieval, and RAG pipeline.
+
+`IPdfPageRenderer` isolates rendering from ingestion and is implemented by `PdfiumPdfPageRenderer` using PDFtoImage/PDFium and SkiaSharp. `IOcrService` isolates recognition and is implemented by `TesseractOcrService` using the TesseractOCR managed/native wrapper with the modern default engine. The processor renders and recognizes one selected page at a time, uses in-memory PNG buffers, disposes bitmaps, streams, OCR pages, and pixel buffers promptly, and reuses one engine only inside its scoped, serialized document-processing lifetime. It never invokes `tesseract.exe`, creates an external process, or writes a rendered page to disk.
+
+Default OCR configuration is enabled, `ron+eng`, 300 DPI, at most 200 candidate pages per document, and at most 25,000,000 rendered pixels per page. Before rendering, page dimensions are converted to requested pixels. Pages exceeding the pixel budget are scaled down proportionally while preserving aspect ratio, and effective dimensions/DPI are recorded. When the candidate maximum is exceeded, aggregate failed counts include every omitted page while one bounded representative diagnostic records the first omitted page as `SkippedLimit`; work and diagnostic-row growth remain bounded. The aggregate is `Partial` when any eligible page succeeded or `Failed` when none did.
+
+Status semantics are independent of `Document.Status`: `Skipped` means non-PDF/not applicable or no scanned candidates; `Ready` means every candidate succeeded; `Partial` means at least one candidate succeeded and at least one did not; and `Failed` means OCR was required but no candidate succeeded or infrastructure was unavailable. An empty/whitespace OCR result becomes an `Empty` page result and contributes no placeholder or error string to searchable content. A failed candidate never removes successful OCR text from other pages. Useful native pages can still take a document to `Ready`; a fully scanned document with no recognized or native text honestly fails normal extraction.
+
+Automatic reuse requires a successful complete OCR analysis matching the original-file SHA-256, engine name/version and traineddata fingerprint, normalized language configuration, render DPI and limits, `ocr-routing-v1`, and the deterministic SHA-256 routing fingerprint built from ordered `PageNumber:TechnicalType` candidates. It also requires corresponding persisted OCR sections. Manual rebuild bypasses reuse. New PDFs run M11 before OCR-aware extraction; a zero-candidate PDF never invokes the renderer or OCR engine. Historical documents are neither backfilled nor scanned at startup and remain valid with no OCR row until normal reprocessing or explicit rebuild.
+
+The ownership-protected APIs are:
+
+- `GET /api/projects/{projectId}/documents/{documentId}/ocr`, returning safe aggregate and candidate-page diagnostics; and
+- `POST /api/projects/{projectId}/documents/{documentId}/ocr/rebuild`, requiring PDF and forcing OCR-aware extraction followed by normalization, the existing M10 analysis, chunking, and embeddings.
+
+OCR itself is entirely local and adds zero OpenAI calls. A rebuild that changes extracted text deliberately runs the pre-existing M10 and embedding stages, which can make their normal OpenAI requests. No page image is sent to OpenAI or another OCR/vision provider. Missing native dependencies or traineddata do not fail application startup or DOCX/text-based processing; they produce bounded OCR failure diagnostics only when a scanned page actually requires OCR. Local installation, tessdata, and three-PDF acceptance steps are documented in [`OCR_SETUP.md`](OCR_SETUP.md).
 
 ## Normalization Flow
 
@@ -427,9 +460,11 @@ The chat composer and main chat drop surface reuse the existing document upload 
 
 Full document status, raw/normalized text, chunks, embedding generation/rebuild, processing controls, and deletion remain on the Documents route. Semantic Search remains available under a collapsed `Retrieval details` control instead of dominating the normal chat experience. Desktop uses the available three-column width; the history/sidebar progressively collapse on smaller screens.
 
-## Technical Analysis, Normalization, Understanding, Chunk, and Embedding Rebuild Flow
+## Technical Analysis, OCR, Normalization, Understanding, Chunk, and Embedding Rebuild Flow
 
 `POST /api/projects/{projectId}/documents/{documentId}/technical-analysis/rebuild` authenticates the user, enforces the route project/document relationship and owner in SQL, requires PDF, and forces re-analysis from the original uploaded bytes. It does not change the main `Document.Status`, extraction, normalization, understanding, chunks, embeddings, retrieval, or RAG. Its independent failure state is safe and bounded.
+
+`POST /api/projects/{projectId}/documents/{documentId}/ocr/rebuild` applies the same route consistency and ownership rules, requires a completed PDF, and forces the current page-level OCR route even when hashes match. It reuses the normal processing orchestration from technical analysis through OCR-aware extraction, normalization, M10, chunking, and embeddings. Successful replacement makes OCR-derived raw text and all downstream representations current together. For an already Ready document, a downstream rebuild failure preserves the prior authoritative sections/chunks/embeddings and restores Ready with a safe stage error; OCR's independent result still reports the attempted page outcomes.
 
 `POST /api/projects/{projectId}/documents/{documentId}/normalization/rebuild` authenticates the user, filters ownership in SQL, requires a `Ready` document with stored raw sections, and atomically changes the document to `Processing` before work begins. It reruns normalization from `DocumentTextSection.Content`, regenerates chunks, generates fresh embeddings, and replaces normalized fields, chunks, vectors, and aggregate metadata in one transaction without opening the uploaded file. If normalization, chunking, or embedding fails before commit, the prior authoritative normalized content, chunks, and embeddings remain intact; the document returns to `Ready` with a bounded safe stage error.
 
@@ -462,7 +497,7 @@ The project detail page polls while a document is Uploaded or Processing. A succ
 - Failed: Retry and Delete.
 - Ready: inspect raw/normalized text, view chunks, rebuild normalization, rebuild chunks, explicitly generate/rebuild embeddings, and delete. Process and Retry are never rendered.
 
-Technical analysis, normalization, understanding, chunk, and embedding rebuilds require browser confirmation; AI-backed confirmations make API-credit usage explicit, while the technical-analysis confirmation explicitly states that it is local and performs no OCR. Document cards show concise raw/normalized/chunk statistics plus Embedded, Not embedded, or Needs rebuild state, embedded chunk count, model, dimensions, and time. They never display vectors. A compact, lazy-loaded Technical Analysis disclosure shows Not analyzed, Processing, Ready, Failed, and Not applicable states; Ready results show type, page count, and per-type counts. Ordered page diagnostics (`Page`, `Type`, `Text`, `Images`, `Image coverage`), analyzer version, time, and source-file hash stay under Advanced. DOCX displays `Not applicable to DOCX`. A separate lazy-loaded Document Intelligence disclosure retains its independent M10 states and business metadata. Action loading state disables conflicting actions for that document, and successful requests refresh metadata. Polling observes statuses but never initiates technical analysis or an AI request.
+Technical analysis, OCR, normalization, understanding, chunk, and embedding rebuilds require browser confirmation. AI-backed confirmations make API-credit usage explicit; the OCR confirmation distinguishes local recognition from the existing downstream M10/embedding calls. Document cards show concise raw/normalized/chunk statistics plus Embedded, Not embedded, or Needs rebuild state, embedded chunk count, model, dimensions, and time. They never display vectors. Compact lazy-loaded Technical Analysis and OCR disclosures show their independent states. OCR summarizes pages processed, engine, Romanian + English languages, and target DPI; Advanced shows only candidate pages with status, characters, confidence, source type, and effective DPI. DOCX displays `Not applicable to DOCX`. A separate lazy-loaded Document Intelligence disclosure retains its independent M10 states and business metadata. Action loading state disables conflicting actions for that document, and successful requests refresh metadata. Polling observes statuses but never initiates technical analysis, OCR, or an AI request.
 
 Document management is intentionally separate from the focused chat workspace. The chat UI persists project conversations and renders only backend-authoritative source snapshots. Semantic Search is retained as a collapsed advanced retrieval inspector with ranked document/chunk/page/heading/content results and cosine distance. Neither view receives vectors, provider configuration, prompts, storage paths, or secrets.
 
@@ -482,9 +517,10 @@ Document management is intentionally separate from the focused chat workspace. T
 - Milestone 9.2: Chat-first workspace terminology and navigation, simplified empty states, composer and drag/drop workspace upload, backend-backed transient upload status, accessible conversation actions, shared frontend upload validation, and no backend/schema/AI-call changes.
 - Milestone 10: Generic document classification, primary-language detection, bounded document metadata extraction, deterministic sampling, strict and locally validated structured output, independent non-fatal status, content/model/prompt idempotency, ownership-safe APIs, Document Intelligence UI, migration, and fake-based tests.
 - Milestone 11: Original-file PDF hashing, deterministic PdfPig text/image/page diagnostics, conservative text/scanned/image/mixed classification, OCR-ready page signals, independent non-fatal persistence, ownership-safe read/rebuild APIs, compact UI, migration, and offline tests.
+- Milestone 12: Page-selective local PDFium rendering and Tesseract OCR for M11 `Scanned` pages, unified extraction provenance, bounded diagnostics and resources, content/configuration/routing idempotency, ownership-safe read/forced-rebuild APIs, compact UI, migration, offline fake-based tests, and local setup documentation.
 
 ## Core MVP Status and Limitations
 
-The core bachelor's-project MVP and ingestion-intelligence foundation are complete through Milestone 11. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, no OCR for scanned documents, exact vector search sized for MVP data, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guide in `RETRIEVAL_EVALUATION.md`.
+The core bachelor's-project MVP and ingestion-intelligence foundation are complete through Milestone 12. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, OCR limited to M11 `Scanned` pages and locally installed Romanian/English Tesseract models, no layout/table/image understanding, exact vector search sized for MVP data, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guides.
 
-Metadata-aware retrieval, hybrid lexical/vector search, reranking, OCR, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening remain future work. Milestone 11 uses deterministic structural heuristics only: no OCR, computer vision, page rasterization, page-layout reconstruction, OpenAI request, retrieval change, metadata filter, hybrid search, or reranking is present. Technical PDF intelligence asks “How is this PDF represented?”; M10 Document Understanding independently asks “What does this document mean?” A PDF can therefore have `TechnicalType = Scanned` and `DocumentType = Contract` without either classification altering the other; see `ROADMAP.md`.
+Metadata-aware retrieval, hybrid lexical/vector search, reranking, broader image/vision policies, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening remain future work. M11 still uses only deterministic structural heuristics; M12 consumes its `Scanned` page result without changing classification. Technical PDF intelligence asks “How is this PDF represented?”, local OCR asks “What text can be recovered from pages identified as scans?”, and M10 Document Understanding independently asks “What does this document mean?” No M12 code changes semantic retrieval, prompts, citation semantics, or source mapping; see `ROADMAP.md`.

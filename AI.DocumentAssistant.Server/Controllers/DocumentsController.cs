@@ -6,6 +6,7 @@ using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
+using AI.DocumentAssistant.Server.Ocr;
 using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Storage;
 using AI.DocumentAssistant.Server.TechnicalAnalysis;
@@ -216,6 +217,17 @@ public sealed class DocumentsController : ControllerBase
                     ? null
                     : now
             };
+            document.OcrAnalysis = new DocumentOcrAnalysis
+            {
+                DocumentId = document.Id,
+                Status = OcrArchitecture.IsPdf(document.ContentType)
+                    ? DocumentOcrStatus.NotAnalyzed
+                    : DocumentOcrStatus.Skipped,
+                RoutingVersion = OcrArchitecture.RoutingVersion,
+                ProcessedAtUtc = OcrArchitecture.IsPdf(document.ContentType)
+                    ? null
+                    : now
+            };
 
             _dbContext.Documents.Add(document);
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -402,7 +414,8 @@ public sealed class DocumentsController : ControllerBase
                 section.NormalizedContent == null ? null : section.NormalizedContent.Length,
                 section.RemovedCharacterCount,
                 section.NormalizationChanged,
-                section.NormalizedAtUtc))
+                section.NormalizedAtUtc,
+                section.ExtractionMethod))
             .ToListAsync(cancellationToken);
 
         return Ok(sections);

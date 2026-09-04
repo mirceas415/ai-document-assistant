@@ -4,6 +4,7 @@ using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
+using AI.DocumentAssistant.Server.Ocr;
 using AI.DocumentAssistant.Server.Storage;
 using AI.DocumentAssistant.Server.TechnicalAnalysis;
 using AI.DocumentAssistant.Server.Understanding;
@@ -25,6 +26,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
     private readonly ITextEmbeddingService _embeddingService;
     private readonly IDocumentUnderstandingService _understandingService;
     private readonly IDocumentTechnicalAnalysisService _technicalAnalysisService;
+    private readonly IDocumentOcrExtractionService _ocrExtractionService;
     private readonly OpenAIEmbeddingOptions _embeddingOptions;
     private readonly ILogger<DocumentProcessingService> _logger;
 
@@ -37,6 +39,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         ITextEmbeddingService embeddingService,
         IDocumentUnderstandingService understandingService,
         IDocumentTechnicalAnalysisService technicalAnalysisService,
+        IDocumentOcrExtractionService ocrExtractionService,
         IOptions<OpenAIEmbeddingOptions> embeddingOptions,
         ILogger<DocumentProcessingService> logger)
     {
@@ -48,11 +51,30 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         _embeddingService = embeddingService;
         _understandingService = understandingService;
         _technicalAnalysisService = technicalAnalysisService;
+        _ocrExtractionService = ocrExtractionService;
         _embeddingOptions = embeddingOptions.Value;
         _logger = logger;
     }
 
-    public async Task ProcessAsync(Guid documentId, CancellationToken cancellationToken)
+    public Task ProcessAsync(Guid documentId, CancellationToken cancellationToken) =>
+        ProcessCoreAsync(
+            documentId,
+            forceOcr: false,
+            isManualOcrRebuild: false,
+            cancellationToken);
+
+    public Task RebuildOcrAsync(Guid documentId, CancellationToken cancellationToken) =>
+        ProcessCoreAsync(
+            documentId,
+            forceOcr: true,
+            isManualOcrRebuild: true,
+            cancellationToken);
+
+    private async Task ProcessCoreAsync(
+        Guid documentId,
+        bool forceOcr,
+        bool isManualOcrRebuild,
+        CancellationToken cancellationToken)
     {
         var document = await _dbContext.Documents
             .SingleOrDefaultAsync(item => item.Id == documentId, cancellationToken);
@@ -65,8 +87,19 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
             return;
         }
 
-        if (document.Status is not (DocumentStatus.Uploaded or DocumentStatus.Failed))
+        var preserveExistingOnFailure =
+            isManualOcrRebuild && document.Status == DocumentStatus.Ready;
+        var canProcess = isManualOcrRebuild
+            ? document.Status is DocumentStatus.Ready or DocumentStatus.Failed
+            : document.Status is DocumentStatus.Uploaded or DocumentStatus.Failed;
+        if (!canProcess)
         {
+            if (isManualOcrRebuild)
+            {
+                throw new DocumentExtractionException(
+                    "OCR can be rebuilt only when document processing is not active.");
+            }
+
             _logger.LogInformation(
                 "Skipping document {DocumentId} in status {DocumentStatus}.",
                 document.Id,
@@ -78,17 +111,22 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
         document.ProcessingStartedAtUtc = DateTime.UtcNow;
         document.ProcessedAtUtc = null;
         document.ProcessingError = null;
-        document.ExtractedCharacterCount = 0;
-        document.ExtractedSectionCount = 0;
-        document.NormalizedCharacterCount = 0;
-        document.NormalizationRemovedCharacterCount = 0;
-        document.NormalizationChangedSectionCount = 0;
-        document.NormalizedAtUtc = null;
+        if (!preserveExistingOnFailure)
+        {
+            document.ExtractedCharacterCount = 0;
+            document.ExtractedSectionCount = 0;
+            document.NormalizedCharacterCount = 0;
+            document.NormalizationRemovedCharacterCount = 0;
+            document.NormalizationChangedSectionCount = 0;
+            document.NormalizedAtUtc = null;
+            document.ChunkCount = 0;
+            document.ChunkedAtUtc = null;
+            EmbeddingPersistence.ClearDocumentMetadata(document);
+        }
+
         document.NormalizationError = null;
-        document.ChunkCount = 0;
-        document.ChunkedAtUtc = null;
         document.ChunkingError = null;
-        EmbeddingPersistence.ClearDocumentMetadata(document);
+        document.EmbeddingError = null;
         document.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -135,10 +173,20 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                 documentStream,
                 cancellationToken);
 
+            if (OcrArchitecture.IsPdf(document.ContentType))
+            {
+                extractedSections = await _ocrExtractionService.ApplyAsync(
+                    document.Id,
+                    documentStream,
+                    extractedSections,
+                    forceOcr,
+                    cancellationToken);
+            }
+
             if (extractedSections.Count == 0)
             {
                 throw new DocumentExtractionException(
-                    "No extractable text was found. OCR is not supported yet.");
+                    "No extractable text was found. Local OCR may be unavailable or may not have recognized usable text.");
             }
 
             var normalizationStopwatch = Stopwatch.StartNew();
@@ -179,18 +227,23 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                 normalizationResult.OriginalCharacterCount,
                 normalizationResult.NormalizedCharacterCount);
 
+            var understandingSources = normalizationResult.Sections.Select(section =>
+                new DocumentUnderstandingSourceSection(
+                    section.SectionIndex,
+                    section.Content,
+                    section.PageNumber,
+                    section.SectionTitle)).ToArray();
+
             try
             {
-                await _understandingService.AnalyzeAsync(
-                    document.Id,
-                    normalizationResult.Sections.Select(section =>
-                        new DocumentUnderstandingSourceSection(
-                            section.SectionIndex,
-                            section.Content,
-                            section.PageNumber,
-                            section.SectionTitle)).ToArray(),
-                    force: false,
-                    cancellationToken);
+                if (!isManualOcrRebuild)
+                {
+                    await _understandingService.AnalyzeAsync(
+                        document.Id,
+                        understandingSources,
+                        force: false,
+                        cancellationToken);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -234,6 +287,14 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
             await using var transaction = await BeginTransactionIfSupportedAsync(
                 cancellationToken);
 
+            if (isManualOcrRebuild)
+            {
+                await _understandingService.StagePendingIfStaleAsync(
+                    document.Id,
+                    understandingSources,
+                    cancellationToken);
+            }
+
             await DeleteExistingSectionsAsync(document.Id, cancellationToken);
             await DeleteExistingChunksAsync(document.Id, cancellationToken);
 
@@ -254,6 +315,7 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                     NormalizedAtUtc = completedAtUtc,
                     PageNumber = section.PageNumber,
                     SectionTitle = Truncate(section.SectionTitle, 500),
+                    ExtractionMethod = section.ExtractionMethod,
                     CreatedAtUtc = completedAtUtc
                 })
                 .ToArray();
@@ -314,6 +376,28 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
                 await transaction.CommitAsync(cancellationToken);
             }
 
+            if (isManualOcrRebuild)
+            {
+                try
+                {
+                    await _understandingService.AnalyzePersistedAsync(
+                        document.Id,
+                        force: false,
+                        cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception understandingException)
+                {
+                    _logger.LogWarning(
+                        "Document understanding did not complete after OCR rebuild for document {DocumentId}; rebuilt extraction, normalization, chunks, embeddings, and Ready status were preserved. Exception type: {ExceptionType}.",
+                        document.Id,
+                        understandingException.GetType().FullName);
+                }
+            }
+
             stopwatch.Stop();
             _logger.LogInformation(
                 "Document {DocumentId} processing completed with status Ready using {ExtractorType} in {ElapsedMilliseconds} ms. Extracted {SectionCount} sections and {CharacterCount} characters, normalized to {NormalizedCharacterCount} characters, generated {ChunkCount} chunks, and persisted {EmbeddedChunkCount} embeddings using model {EmbeddingModel} with {EmbeddingDimensions} dimensions.",
@@ -363,12 +447,24 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
 
             try
             {
-                await MarkProcessingFailedAsync(
-                    document.Id,
-                    safeMessage,
-                    exception is DocumentNormalizationException,
-                    exception is DocumentChunkingException,
-                    exception is DocumentEmbeddingException);
+                if (preserveExistingOnFailure)
+                {
+                    await RestoreReadyAfterRebuildFailureAsync(
+                        document.Id,
+                        safeMessage,
+                        exception is DocumentNormalizationException,
+                        exception is DocumentChunkingException,
+                        exception is DocumentEmbeddingException);
+                }
+                else
+                {
+                    await MarkProcessingFailedAsync(
+                        document.Id,
+                        safeMessage,
+                        exception is DocumentNormalizationException,
+                        exception is DocumentChunkingException,
+                        exception is DocumentEmbeddingException);
+                }
             }
             catch (Exception failureUpdateException)
             {
@@ -388,6 +484,38 @@ public sealed class DocumentProcessingService : IDocumentProcessingService
 
             throw;
         }
+    }
+
+    private async Task RestoreReadyAfterRebuildFailureAsync(
+        Guid documentId,
+        string safeMessage,
+        bool normalizationFailed,
+        bool chunkingFailed,
+        bool embeddingFailed)
+    {
+        _dbContext.ChangeTracker.Clear();
+        var document = await _dbContext.Documents
+            .SingleOrDefaultAsync(item => item.Id == documentId);
+        if (document is null)
+        {
+            return;
+        }
+
+        document.Status = DocumentStatus.Ready;
+        document.ProcessingError = normalizationFailed || chunkingFailed || embeddingFailed
+            ? null
+            : Truncate(safeMessage, MaximumErrorLength);
+        document.NormalizationError = normalizationFailed
+            ? Truncate(safeMessage, MaximumErrorLength)
+            : null;
+        document.ChunkingError = chunkingFailed
+            ? Truncate(safeMessage, MaximumErrorLength)
+            : null;
+        document.EmbeddingError = embeddingFailed
+            ? Truncate(safeMessage, MaximumErrorLength)
+            : null;
+        document.UpdatedAtUtc = DateTime.UtcNow;
+        await _dbContext.SaveChangesAsync();
     }
 
     private async Task MarkProcessingFailedAsync(

@@ -1191,7 +1191,8 @@ button:disabled {
   color: #3538cd;
 }
 
-.status-processing {
+.status-processing,
+.status-partial {
   background: #fffaeb;
   color: #b54708;
 }

@@ -5,6 +5,7 @@ using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
 using AI.DocumentAssistant.Server.Normalization;
+using AI.DocumentAssistant.Server.Ocr;
 using AI.DocumentAssistant.Server.Processing;
 using AI.DocumentAssistant.Server.Retrieval;
 using AI.DocumentAssistant.Server.Rag;
@@ -34,6 +35,8 @@ builder.Services.AddSingleton<IDocumentProcessingQueue, DocumentProcessingQueue>
 builder.Services.AddSingleton<IDocumentTextExtractor, PdfDocumentTextExtractor>();
 builder.Services.AddSingleton<IDocumentTextExtractor, DocxDocumentTextExtractor>();
 builder.Services.AddSingleton<IPdfTechnicalAnalyzer, PdfPigPdfTechnicalAnalyzer>();
+builder.Services.AddSingleton<IPdfPageRenderer, PdfiumPdfPageRenderer>();
+builder.Services.AddSingleton<OcrRoutingPolicy>();
 builder.Services.AddSingleton<IDocumentTokenizer, Cl100kDocumentTokenizer>();
 builder.Services.AddSingleton<IDocumentChunkGenerator, DocumentChunkGenerator>();
 builder.Services.AddSingleton<IDocumentTextNormalizer, DocumentTextNormalizer>();
@@ -52,6 +55,8 @@ builder.Services.AddScoped<IDocumentNormalizationService, DocumentNormalizationS
 builder.Services.AddScoped<IDocumentEmbeddingService, DocumentEmbeddingService>();
 builder.Services.AddScoped<IDocumentUnderstandingService, DocumentUnderstandingService>();
 builder.Services.AddScoped<IDocumentTechnicalAnalysisService, DocumentTechnicalAnalysisService>();
+builder.Services.AddScoped<IOcrService, TesseractOcrService>();
+builder.Services.AddScoped<IDocumentOcrExtractionService, DocumentOcrExtractionService>();
 builder.Services.AddScoped<IDocumentProcessingService, DocumentProcessingService>();
 builder.Services.AddScoped<ISemanticChunkSearch, PgvectorSemanticChunkSearch>();
 builder.Services.AddScoped<ISemanticRetrievalService, SemanticRetrievalService>();
@@ -110,6 +115,12 @@ builder.Services.AddOptions<OpenAIDocumentUnderstandingOptions>()
     .Bind(builder.Configuration.GetSection(OpenAIDocumentUnderstandingOptions.SectionName))
     .ValidateDataAnnotations()
     .ValidateOnStart();
+
+// Tessdata and native OCR availability are deliberately checked only when a
+// scanned page is routed to OCR, so missing OCR prerequisites never prevent
+// normal PDF/DOCX processing or application startup.
+builder.Services.AddOptions<OcrOptions>()
+    .Bind(builder.Configuration.GetSection(OcrOptions.SectionName));
 
 builder.Services
     .AddIdentity<ApplicationUser, IdentityRole<Guid>>(options =>

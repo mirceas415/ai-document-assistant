@@ -17,6 +17,8 @@ import type {
     CurrentUser,
     DocumentChunk,
     DocumentDetails,
+    DocumentOcrAnalysis,
+    DocumentOcrStatus,
     DocumentTechnicalAnalysis,
     DocumentTechnicalAnalysisStatus,
     DocumentSummary,
@@ -554,12 +556,16 @@ function DocumentsSection({
     const [embeddingId, setEmbeddingId] = useState<string | null>(null);
     const [understandingId, setUnderstandingId] = useState<string | null>(null);
     const [technicalAnalysisId, setTechnicalAnalysisId] = useState<string | null>(null);
+    const [ocrId, setOcrId] = useState<string | null>(null);
     const [understandings, setUnderstandings] = useState<Record<string, DocumentUnderstanding>>({});
     const [understandingLoading, setUnderstandingLoading] = useState<Record<string, boolean>>({});
     const [understandingErrors, setUnderstandingErrors] = useState<Record<string, string>>({});
     const [technicalAnalyses, setTechnicalAnalyses] = useState<Record<string, DocumentTechnicalAnalysis>>({});
     const [technicalAnalysisLoading, setTechnicalAnalysisLoading] = useState<Record<string, boolean>>({});
     const [technicalAnalysisErrors, setTechnicalAnalysisErrors] = useState<Record<string, string>>({});
+    const [ocrAnalyses, setOcrAnalyses] = useState<Record<string, DocumentOcrAnalysis>>({});
+    const [ocrLoading, setOcrLoading] = useState<Record<string, boolean>>({});
+    const [ocrErrors, setOcrErrors] = useState<Record<string, string>>({});
     const [chunkViewerRefreshKey, setChunkViewerRefreshKey] = useState(0);
     const [textViewerDocument, setTextViewerDocument] = useState<DocumentSummary | null>(null);
     const [chunkViewerDocument, setChunkViewerDocument] = useState<DocumentSummary | null>(null);
@@ -570,6 +576,8 @@ function DocumentsSection({
     const understandingRequestIdsRef = useRef(new Set<string>());
     const technicalAnalysisCacheRef = useRef<Record<string, DocumentTechnicalAnalysis>>({});
     const technicalAnalysisRequestIdsRef = useRef(new Set<string>());
+    const ocrCacheRef = useRef<Record<string, DocumentOcrAnalysis>>({});
+    const ocrRequestIdsRef = useRef(new Set<string>());
     const showToast = useToast();
 
     const cacheUnderstanding = useCallback((documentId: string, understanding: DocumentUnderstanding) => {
@@ -601,6 +609,20 @@ function DocumentsSection({
         delete next[documentId];
         technicalAnalysisCacheRef.current = next;
         setTechnicalAnalyses(next);
+    }, []);
+
+    const cacheOcrAnalysis = useCallback((documentId: string, analysis: DocumentOcrAnalysis) => {
+        const next = { ...ocrCacheRef.current, [documentId]: analysis };
+        ocrCacheRef.current = next;
+        setOcrAnalyses(next);
+    }, []);
+
+    const discardCachedOcrAnalysis = useCallback((documentId: string) => {
+        if (!ocrCacheRef.current[documentId]) return;
+        const next = { ...ocrCacheRef.current };
+        delete next[documentId];
+        ocrCacheRef.current = next;
+        setOcrAnalyses(next);
     }, []);
 
     const applyDocumentResponse = useCallback((response: DocumentSummary[]) => {
@@ -727,6 +749,45 @@ function DocumentsSection({
         }
     }, [cacheTechnicalAnalysis, onDocumentsChanged, projectId]);
 
+    const loadOcrAnalysis = useCallback(async (
+        documentId: string,
+        force = false,
+    ): Promise<DocumentOcrAnalysis | null> => {
+        const cached = ocrCacheRef.current[documentId];
+        if (!force && cached) return cached;
+        if (ocrRequestIdsRef.current.has(documentId)) return cached ?? null;
+
+        ocrRequestIdsRef.current.add(documentId);
+        setOcrLoading((current) => ({ ...current, [documentId]: true }));
+        setOcrErrors((current) => {
+            if (!current[documentId]) return current;
+            const next = { ...current };
+            delete next[documentId];
+            return next;
+        });
+
+        try {
+            const response = await apiRequest<DocumentOcrAnalysis>(
+                `/api/projects/${projectId}/documents/${documentId}/ocr`,
+            );
+            cacheOcrAnalysis(documentId, response);
+            return response;
+        } catch (requestError) {
+            setOcrErrors((current) => ({
+                ...current,
+                [documentId]: getErrorMessage(requestError),
+            }));
+            return null;
+        } finally {
+            ocrRequestIdsRef.current.delete(documentId);
+            setOcrLoading((current) => {
+                const next = { ...current };
+                delete next[documentId];
+                return next;
+            });
+        }
+    }, [cacheOcrAnalysis, projectId]);
+
     const shouldPoll = documents.some(
         (document) => document.status === 'Uploaded' ||
             document.status === 'Processing' ||
@@ -849,12 +910,18 @@ function DocumentsSection({
                 currentDocuments.filter((item) => item.id !== document.id));
             discardCachedUnderstanding(document.id);
             discardCachedTechnicalAnalysis(document.id);
+            discardCachedOcrAnalysis(document.id);
             setUnderstandingErrors((current) => {
                 const next = { ...current };
                 delete next[document.id];
                 return next;
             });
             setTechnicalAnalysisErrors((current) => {
+                const next = { ...current };
+                delete next[document.id];
+                return next;
+            });
+            setOcrErrors((current) => {
                 const next = { ...current };
                 delete next[document.id];
                 return next;
@@ -871,6 +938,7 @@ function DocumentsSection({
     const retryProcessing = async (document: DocumentSummary) => {
         setError('');
         setRetryingId(document.id);
+        discardCachedOcrAnalysis(document.id);
 
         try {
             await apiRequest<void>(
@@ -1057,6 +1125,7 @@ function DocumentsSection({
                 { method: 'POST' },
             );
             cacheTechnicalAnalysis(document.id, response);
+            discardCachedOcrAnalysis(document.id);
             onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
                 item.id === document.id
                     ? { ...item, technicalAnalysisStatus: response.status }
@@ -1086,6 +1155,62 @@ function DocumentsSection({
         }
     };
 
+    const rebuildOcr = async (document: DocumentSummary) => {
+        setError('');
+        setOcrId(document.id);
+        discardCachedUnderstanding(document.id);
+
+        const cached = ocrCacheRef.current[document.id];
+        if (cached) {
+            cacheOcrAnalysis(document.id, {
+                ...cached,
+                status: 'Processing',
+                lastError: null,
+                pages: [],
+            });
+        }
+        onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
+            item.id === document.id
+                ? { ...item, status: 'Processing', understandingStatus: 'Pending' }
+                : item));
+
+        try {
+            const response = await apiRequest<DocumentOcrAnalysis>(
+                `/api/projects/${projectId}/documents/${document.id}/ocr/rebuild`,
+                { method: 'POST' },
+            );
+            cacheOcrAnalysis(document.id, response);
+            await refreshDocuments();
+            setTextViewerDocument(null);
+            setChunkViewerDocument(null);
+            setChunkViewerRefreshKey((value) => value + 1);
+            setOcrErrors((current) => {
+                if (!current[document.id]) return current;
+                const next = { ...current };
+                delete next[document.id];
+                return next;
+            });
+            setError('');
+            showToast({
+                message: response.status === 'Ready'
+                    ? 'Local OCR rebuilt.'
+                    : `Local OCR rebuild completed with ${formatOcrStatus(response.status).toLocaleLowerCase()} status.`,
+                tone: response.status === 'Ready' || response.status === 'Skipped' ? 'success' : 'info',
+            });
+        } catch (requestError) {
+            const actionError = getErrorMessage(requestError);
+            await loadOcrAnalysis(document.id, true);
+            try {
+                await refreshDocuments();
+            } catch {
+                // Keep the action-specific OCR error when refresh is unavailable.
+            }
+            setError(actionError);
+        } finally {
+            setOcrId(null);
+        }
+    };
+
     const isDocumentActionBusy = (documentId: string) =>
         deletingId === documentId ||
         retryingId === documentId ||
@@ -1094,8 +1219,10 @@ function DocumentsSection({
         embeddingId === documentId ||
         understandingId === documentId ||
         technicalAnalysisId === documentId ||
+        ocrId === documentId ||
         Boolean(understandingLoading[documentId]) ||
-        Boolean(technicalAnalysisLoading[documentId]);
+        Boolean(technicalAnalysisLoading[documentId]) ||
+        Boolean(ocrLoading[documentId]);
 
     const runConfirmedAction = async () => {
         if (!confirmation) return;
@@ -1107,6 +1234,7 @@ function DocumentsSection({
             if (action === 'embeddings') await rebuildEmbeddings(document);
             if (action === 'understanding') await rebuildUnderstanding(document);
             if (action === 'technical-analysis') await rebuildTechnicalAnalysis(document);
+            if (action === 'ocr') await rebuildOcr(document);
         } finally {
             setConfirmation(null);
         }
@@ -1261,6 +1389,16 @@ function DocumentsSection({
                                 onLoad={loadTechnicalAnalysis}
                                 onRebuild={() => setConfirmation({ action: 'technical-analysis', document })}
                             />
+                            <DocumentOcrSection
+                                document={document}
+                                analysis={ocrAnalyses[document.id]}
+                                isLoading={Boolean(ocrLoading[document.id])}
+                                error={ocrErrors[document.id]}
+                                isRebuilding={ocrId === document.id}
+                                isBusy={isDocumentActionBusy(document.id)}
+                                onLoad={loadOcrAnalysis}
+                                onRebuild={() => setConfirmation({ action: 'ocr', document })}
+                            />
                             <DocumentIntelligenceSection
                                 document={document}
                                 understanding={understandings[document.id]}
@@ -1279,6 +1417,7 @@ function DocumentsSection({
                                             onToggle={(event) => {
                                                 if (event.currentTarget.open) {
                                                     void loadTechnicalAnalysis(document.id);
+                                                    void loadOcrAnalysis(document.id);
                                                     if (document.status === 'Ready') {
                                                         void loadUnderstanding(document.id);
                                                     }
@@ -1292,6 +1431,12 @@ function DocumentsSection({
                                                     analysis={technicalAnalyses[document.id]}
                                                     isLoading={Boolean(technicalAnalysisLoading[document.id])}
                                                     error={technicalAnalysisErrors[document.id]}
+                                                />
+                                                <DocumentOcrAudit
+                                                    document={document}
+                                                    analysis={ocrAnalyses[document.id]}
+                                                    isLoading={Boolean(ocrLoading[document.id])}
+                                                    error={ocrErrors[document.id]}
                                                 />
                                                 {document.status === 'Ready' && (
                                                     <>
@@ -1360,16 +1505,26 @@ function DocumentsSection({
                                                     </>
                                                 )}
                                                 {isPdfDocument(document) && (
-                                                    <button
-                                                        className="secondary-button compact-button"
-                                                        type="button"
-                                                        disabled={isDocumentActionBusy(document.id)}
-                                                        onClick={() => setConfirmation({ action: 'technical-analysis', document })}
-                                                    >
+                                                    <>
+                                                        <button
+                                                            className="secondary-button compact-button"
+                                                            type="button"
+                                                            disabled={isDocumentActionBusy(document.id)}
+                                                            onClick={() => setConfirmation({ action: 'ocr', document })}
+                                                        >
+                                                            {ocrId === document.id ? 'Rebuilding OCR…' : 'Rebuild OCR'}
+                                                        </button>
+                                                        <button
+                                                            className="secondary-button compact-button"
+                                                            type="button"
+                                                            disabled={isDocumentActionBusy(document.id)}
+                                                            onClick={() => setConfirmation({ action: 'technical-analysis', document })}
+                                                        >
                                                         {technicalAnalysisId === document.id
                                                             ? 'Analyzing PDF…'
                                                             : 'Rebuild technical analysis'}
-                                                    </button>
+                                                        </button>
+                                                    </>
                                                 )}
                                             </div>
                                         </details>
@@ -1571,6 +1726,166 @@ function TechnicalAnalysisStatusBadge({
         <span className={`status-pill understanding-status status-${getTechnicalAnalysisStatusClass(status)}`}>
             <span className="status-dot" aria-hidden="true" />
             {technicalType ? formatUnderstandingValue(technicalType) : formatTechnicalAnalysisStatus(status)}
+        </span>
+    );
+}
+
+interface DocumentOcrSectionProps {
+    document: DocumentSummary;
+    analysis: DocumentOcrAnalysis | undefined;
+    isLoading: boolean;
+    error: string | undefined;
+    isRebuilding: boolean;
+    isBusy: boolean;
+    onLoad: (documentId: string, force?: boolean) => Promise<DocumentOcrAnalysis | null>;
+    onRebuild: () => void;
+}
+
+function DocumentOcrSection({
+    document,
+    analysis,
+    isLoading,
+    error,
+    isRebuilding,
+    isBusy,
+    onLoad,
+    onRebuild,
+}: DocumentOcrSectionProps) {
+    const [isOpen, setIsOpen] = useState(false);
+    const status = getOcrStatus(document, analysis);
+    const canRebuild = isPdfDocument(document) && document.status !== 'Processing';
+
+    useEffect(() => {
+        if (isOpen && !analysis && !isLoading && !error) {
+            void onLoad(document.id);
+        }
+    }, [analysis, document.id, error, isLoading, isOpen, onLoad]);
+
+    return (
+        <details
+            className="document-intelligence ocr-analysis"
+            onToggle={(event) => setIsOpen(event.currentTarget.open)}
+        >
+            <summary>
+                <span className="document-intelligence-heading">
+                    <Icon name="document" size={16} />
+                    OCR
+                </span>
+                <OcrStatusBadge
+                    status={status}
+                    analysis={analysis}
+                    notApplicable={!isPdfDocument(document)}
+                />
+                <Icon name="chevron-down" size={15} />
+            </summary>
+            <div className="document-intelligence-body">
+                {isLoading && !analysis ? (
+                    <div className="document-intelligence-state" role="status">
+                        <span className="spinner intelligence-spinner" aria-hidden="true" />
+                        Loading OCR details…
+                    </div>
+                ) : error && !analysis ? (
+                    <div className="document-intelligence-state intelligence-error" role="alert">
+                        <span>{error}</span>
+                        <button
+                            className="secondary-button compact-button"
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void onLoad(document.id, true)}
+                        >
+                            Try again
+                        </button>
+                    </div>
+                ) : status === 'NotAnalyzed' ? (
+                    <div className="document-intelligence-state">
+                        <span>Local OCR has not been run for the current PDF analysis.</span>
+                        {canRebuild && (
+                            <button
+                                className="secondary-button compact-button"
+                                type="button"
+                                disabled={isBusy}
+                                onClick={onRebuild}
+                            >
+                                Rebuild OCR
+                            </button>
+                        )}
+                    </div>
+                ) : status === 'Processing' ? (
+                    <div className="document-intelligence-state" role="status">
+                        <span className="spinner intelligence-spinner" aria-hidden="true" />
+                        Rendering scanned pages and recognizing text locally…
+                    </div>
+                ) : status === 'Skipped' ? (
+                    <div className="document-intelligence-state">
+                        {isPdfDocument(document)
+                            ? 'Not required — no scanned pages were selected.'
+                            : 'Not applicable to DOCX.'}
+                    </div>
+                ) : status === 'Failed' ? (
+                    <div className="document-intelligence-state intelligence-error" role="alert">
+                        <span>{analysis?.lastError || 'Local OCR could not recover text from the selected pages.'}</span>
+                        {canRebuild && (
+                            <button
+                                className="secondary-button compact-button"
+                                type="button"
+                                disabled={isBusy}
+                                onClick={onRebuild}
+                            >
+                                {isRebuilding ? 'Retrying…' : 'Retry OCR'}
+                            </button>
+                        )}
+                    </div>
+                ) : analysis ? (
+                    <div className="document-intelligence-ready technical-analysis-ready">
+                        <div>
+                            <span>Pages processed</span>
+                            <strong>{formatOcrProcessedPages(analysis)}</strong>
+                        </div>
+                        <div>
+                            <span>Engine</span>
+                            <strong>{analysis.engineName || 'Local OCR'}</strong>
+                        </div>
+                        <div>
+                            <span>Languages</span>
+                            <strong>{formatOcrLanguages(analysis.languages)}</strong>
+                        </div>
+                        {analysis.renderDpi && (
+                            <div><span>Target DPI</span><strong>{analysis.renderDpi}</strong></div>
+                        )}
+                        {analysis.lastError && (
+                            <p className="document-intelligence-refresh-error" role="alert">{analysis.lastError}</p>
+                        )}
+                        {error && <p className="document-intelligence-refresh-error" role="alert">{error}</p>}
+                    </div>
+                ) : (
+                    <div className="document-intelligence-state" role="status">
+                        <span className="spinner intelligence-spinner" aria-hidden="true" />
+                        Loading OCR details…
+                    </div>
+                )}
+            </div>
+        </details>
+    );
+}
+
+function OcrStatusBadge({
+    status,
+    analysis,
+    notApplicable,
+}: {
+    status: DocumentOcrStatus;
+    analysis: DocumentOcrAnalysis | undefined;
+    notApplicable: boolean;
+}) {
+    const label = status === 'Skipped' && notApplicable
+        ? 'Not applicable'
+        : analysis && (status === 'Ready' || status === 'Partial')
+            ? `${formatOcrStatus(status)} · ${formatOcrProcessedPages(analysis)}`
+            : formatOcrStatus(status);
+    return (
+        <span className={`status-pill understanding-status status-${getOcrStatusClass(status)}`}>
+            <span className="status-dot" aria-hidden="true" />
+            {label}
         </span>
     );
 }
@@ -1886,6 +2201,92 @@ function DocumentTechnicalAnalysisAudit({
     );
 }
 
+interface DocumentOcrAuditProps {
+    document: DocumentSummary;
+    analysis: DocumentOcrAnalysis | undefined;
+    isLoading: boolean;
+    error: string | undefined;
+}
+
+function DocumentOcrAudit({
+    document,
+    analysis,
+    isLoading,
+    error,
+}: DocumentOcrAuditProps) {
+    if (isLoading && !analysis) {
+        return <p className="document-understanding-audit-state">Loading OCR diagnostics…</p>;
+    }
+
+    if (error && !analysis) {
+        return <p className="document-understanding-audit-state audit-error">{error}</p>;
+    }
+
+    const status = getOcrStatus(document, analysis);
+    return (
+        <div className="document-understanding-audit ocr-analysis-audit">
+            <p>Local OCR</p>
+            <dl>
+                <div><dt>Status</dt><dd>{formatOcrStatus(status)}</dd></div>
+                {analysis && (
+                    <div><dt>Pages</dt><dd>{formatOcrProcessedPages(analysis)}</dd></div>
+                )}
+                {analysis?.engineName && (
+                    <div>
+                        <dt>Engine</dt>
+                        <dd>{analysis.engineName}{analysis.engineVersion ? ` ${analysis.engineVersion}` : ''}</dd>
+                    </div>
+                )}
+                {analysis?.languages && (
+                    <div><dt>Languages</dt><dd>{formatOcrLanguages(analysis.languages)}</dd></div>
+                )}
+                {analysis?.renderDpi && (
+                    <div><dt>Target DPI</dt><dd>{analysis.renderDpi}</dd></div>
+                )}
+                {analysis?.routingVersion && (
+                    <div><dt>Routing</dt><dd><code>{analysis.routingVersion}</code></dd></div>
+                )}
+                {analysis?.processedAtUtc && (
+                    <div><dt>Processed</dt><dd>{formatDate(analysis.processedAtUtc)}</dd></div>
+                )}
+            </dl>
+            {analysis && analysis.pages.length > 0 && (
+                <div className="technical-page-diagnostics">
+                    <p>Candidate page diagnostics</p>
+                    <div className="technical-page-table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Page</th>
+                                    <th>OCR status</th>
+                                    <th>Characters</th>
+                                    <th>Confidence</th>
+                                    <th>Source</th>
+                                    <th>DPI</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {analysis.pages.map((page) => (
+                                    <tr key={page.pageNumber}>
+                                        <td>{page.pageNumber}</td>
+                                        <td>{formatOcrPageStatus(page.status)}</td>
+                                        <td>{page.recognizedCharacterCount > 0
+                                            ? page.recognizedCharacterCount.toLocaleString()
+                                            : '—'}</td>
+                                        <td>{formatConfidence(page.meanConfidence) || '—'}</td>
+                                        <td>{formatUnderstandingValue(page.sourceTechnicalType)}</td>
+                                        <td>{page.effectiveRenderDpi ?? '—'}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 interface ExtractedTextViewerProps {
     projectId: string;
     document: DocumentSummary;
@@ -2000,6 +2401,7 @@ function ExtractedTextViewer({
                                 <div className="extracted-section-meta">
                                     <span>Section {section.sectionIndex + 1}</span>
                                     {section.pageNumber && <span>Page {section.pageNumber}</span>}
+                                    <span>{formatExtractionMethod(section.extractionMethod)}</span>
                                     <span>{section.rawCharacterCount.toLocaleString()} raw</span>
                                     {section.normalizedCharacterCount !== null && (
                                         <span>{section.normalizedCharacterCount.toLocaleString()} normalized</span>
@@ -2324,7 +2726,7 @@ function ProjectDetailsSkeleton() {
 }
 
 type DocumentConfirmation = {
-    action: 'delete' | 'chunks' | 'normalization' | 'embeddings' | 'understanding' | 'technical-analysis';
+    action: 'delete' | 'chunks' | 'normalization' | 'embeddings' | 'understanding' | 'technical-analysis' | 'ocr';
     document: DocumentSummary;
 };
 
@@ -2335,6 +2737,7 @@ function getDocumentConfirmationTitle(action?: DocumentConfirmation['action']) {
     if (action === 'embeddings') return 'Rebuild embeddings?';
     if (action === 'understanding') return 'Rebuild document understanding?';
     if (action === 'technical-analysis') return 'Rebuild technical PDF analysis?';
+    if (action === 'ocr') return 'Rebuild local OCR?';
     return 'Confirm action';
 }
 
@@ -2345,6 +2748,7 @@ function getDocumentConfirmationLabel(action?: DocumentConfirmation['action']) {
     if (action === 'embeddings') return 'Continue';
     if (action === 'understanding') return 'Rebuild understanding';
     if (action === 'technical-analysis') return 'Rebuild technical analysis';
+    if (action === 'ocr') return 'Rebuild OCR';
     return 'Continue';
 }
 
@@ -2352,7 +2756,7 @@ function getDocumentConfirmationDescription(confirmation: DocumentConfirmation |
     if (!confirmation) return '';
     const name = <strong>{confirmation.document.originalFileName}</strong>;
     if (confirmation.action === 'delete') {
-        return <>This permanently removes {name}, its extracted content, technical diagnostics, document intelligence, chunks, and embeddings.</>;
+        return <>This permanently removes {name}, its extracted content, technical and OCR diagnostics, document intelligence, chunks, and embeddings.</>;
     }
     if (confirmation.action === 'chunks') {
         return <>Rebuild chunks for {name} from its stored extracted text?</>;
@@ -2365,6 +2769,9 @@ function getDocumentConfirmationDescription(confirmation: DocumentConfirmation |
     }
     if (confirmation.action === 'technical-analysis') {
         return <>Reinspect the original PDF for text and raster-image structure? This is local and does not perform OCR or use OpenAI.</>;
+    }
+    if (confirmation.action === 'ocr') {
+        return <>Re-run local OCR for scanned pages in {name}? Extracted and normalized text, document understanding, chunks, and embeddings will be regenerated. OCR itself is local; the existing understanding and embedding stages may use OpenAI API credits.</>;
     }
     return confirmation.document.embeddedChunkCount > 0
         ? <>Replace the current embedding set for {name}? This uses OpenAI API credits.</>
@@ -2400,6 +2807,54 @@ function formatTechnicalAnalysisStatus(status: DocumentTechnicalAnalysisStatus) 
 
 function getTechnicalAnalysisStatusClass(status: DocumentTechnicalAnalysisStatus) {
     return status === 'NotAnalyzed' ? 'not-analyzed' : status.toLocaleLowerCase();
+}
+
+function getOcrStatus(
+    document: DocumentSummary,
+    analysis: DocumentOcrAnalysis | undefined,
+): DocumentOcrStatus {
+    return analysis?.status ?? (isPdfDocument(document) ? 'NotAnalyzed' : 'Skipped');
+}
+
+function formatOcrStatus(status: DocumentOcrStatus) {
+    if (status === 'NotAnalyzed') return 'Not analyzed';
+    if (status === 'Skipped') return 'Not required';
+    return status;
+}
+
+function getOcrStatusClass(status: DocumentOcrStatus) {
+    return status === 'NotAnalyzed' ? 'not-analyzed' : status.toLocaleLowerCase();
+}
+
+function formatOcrProcessedPages(analysis: DocumentOcrAnalysis) {
+    if (analysis.status === 'Skipped') return 'No pages required OCR';
+    if (analysis.status === 'Ready') {
+        const noun = analysis.successfulPageCount === 1 ? 'page' : 'pages';
+        return `${analysis.successfulPageCount.toLocaleString()} ${noun} processed`;
+    }
+    return `${analysis.successfulPageCount.toLocaleString()} of ${analysis.candidatePageCount.toLocaleString()} pages processed`;
+}
+
+function formatOcrLanguages(languages: string | null) {
+    if (!languages) return 'Not recorded';
+    const names: Record<string, string> = { ron: 'Romanian', eng: 'English' };
+    return languages
+        .split('+')
+        .map((language) => names[language.toLocaleLowerCase()] ?? language)
+        .join(' + ');
+}
+
+function formatOcrPageStatus(status: DocumentOcrAnalysis['pages'][number]['status']) {
+    if (status === 'SkippedLimit') return 'Skipped (limit)';
+    if (status === 'Empty') return 'Empty result';
+    return status;
+}
+
+function formatExtractionMethod(method: ExtractedTextSection['extractionMethod']) {
+    if (method === 'NativePdf') return 'Native PDF';
+    if (method === 'Ocr') return 'OCR';
+    if (method === 'Docx') return 'DOCX';
+    return 'Unknown source';
 }
 
 function formatTechnicalPageCounts(analysis: DocumentTechnicalAnalysis) {

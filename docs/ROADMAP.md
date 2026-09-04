@@ -207,21 +207,34 @@ Status: Complete
 - DOCX Skipped/not-applicable behavior, legacy document compatibility, cascade deletion, safe failures, migration, and offline tests
 - No OCR, computer vision, rasterization pipeline, OpenAI call, extraction change, Document Understanding change, or retrieval/RAG change
 
-## Milestone 12 — Metadata-aware Hybrid Retrieval
+## Milestone 12 — Local OCR-assisted Document Ingestion
+
+Status: Complete
+
+- M11 page diagnostics are the routing authority: only `Scanned` pages are automatic OCR candidates
+- In-memory, one-page-at-a-time PDFium rendering behind `IPdfPageRenderer`, with proportional DPI reduction under a configurable pixel budget
+- Local Tesseract recognition behind `IOcrService`; no cloud OCR, vision request, external process, or runtime model download
+- Unified ordered raw extraction with `NativePdf`, `Ocr`, `Docx`, and legacy `Unknown` provenance
+- Independent aggregate/page status and bounded diagnostics, plus source/configuration/routing fingerprints and forced manual rebuild
+- Page-aware Partial/Failed behavior, empty-result safety, candidate-page limits, DOCX not-applicable behavior, and legacy compatibility
+- Ownership-protected read/rebuild APIs, downstream normalization/M10/chunk/embedding regeneration, compact UI, migration, fake-based automated tests, and manual setup guide
+- No retrieval, RAG prompt, citation, metadata-search, hybrid-search, reranking, or M11 classification change
+
+## Milestone 13 — Metadata-aware Hybrid Retrieval
 
 Status: Planned
 
 - Consume validated document intelligence for metadata-aware retrieval
-- Evaluate lexical/vector hybrid search without changing Milestone 11 production semantics
+- Evaluate lexical/vector hybrid search without changing Milestone 12 production semantics
 
-## Milestone 13 — Reranking / Retrieval Quality
+## Milestone 14 — Reranking / Retrieval Quality
 
 Status: Planned
 
 - Evidence-based reranking and retrieval-quality measurement after hybrid retrieval
-- No reranker is present in Milestone 11
+- No reranker is present through Milestone 12
 
-## Operations — Deployment
+## Milestone 15 — Deployment / Production Hardening
 
 Status: Planned
 

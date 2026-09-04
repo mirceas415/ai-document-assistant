@@ -1,5 +1,6 @@
 using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
+using AI.DocumentAssistant.Server.Ocr;
 using AI.DocumentAssistant.Server.TechnicalAnalysis;
 using AI.DocumentAssistant.Server.Understanding;
 using Microsoft.AspNetCore.Identity;
@@ -35,6 +36,12 @@ public sealed class ApplicationDbContext
 
     public DbSet<DocumentPageTechnicalAnalysis> DocumentPageTechnicalAnalyses =>
         Set<DocumentPageTechnicalAnalysis>();
+
+    public DbSet<DocumentOcrAnalysis> DocumentOcrAnalyses =>
+        Set<DocumentOcrAnalysis>();
+
+    public DbSet<DocumentPageOcrResult> DocumentPageOcrResults =>
+        Set<DocumentPageOcrResult>();
 
     public DbSet<Conversation> Conversations => Set<Conversation>();
 
@@ -158,6 +165,12 @@ public sealed class ApplicationDbContext
 
             section.Property(value => value.SectionTitle)
                 .HasMaxLength(500);
+
+            section.Property(value => value.ExtractionMethod)
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .HasDefaultValue(DocumentTextExtractionMethod.Unknown)
+                .IsRequired();
 
             section.Property(value => value.CreatedAtUtc)
                 .IsRequired();
@@ -367,6 +380,78 @@ public sealed class ApplicationDbContext
             page.HasOne(value => value.DocumentTechnicalAnalysis)
                 .WithMany(analysis => analysis.Pages)
                 .HasForeignKey(value => value.DocumentTechnicalAnalysisId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<DocumentOcrAnalysis>(analysis =>
+        {
+            analysis.ToTable("DocumentOcrAnalyses");
+
+            analysis.HasKey(value => value.DocumentId);
+
+            analysis.Property(value => value.Status)
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            analysis.Property(value => value.EngineName)
+                .HasMaxLength(OcrArchitecture.MaximumEngineNameLength);
+
+            analysis.Property(value => value.EngineVersion)
+                .HasMaxLength(OcrArchitecture.MaximumEngineVersionLength);
+
+            analysis.Property(value => value.Languages)
+                .HasMaxLength(OcrArchitecture.MaximumLanguagesLength);
+
+            analysis.Property(value => value.SourceFileHash)
+                .HasMaxLength(OcrArchitecture.HashLength);
+
+            analysis.Property(value => value.RoutingVersion)
+                .HasMaxLength(OcrArchitecture.MaximumRoutingVersionLength);
+
+            analysis.Property(value => value.RoutingHash)
+                .HasMaxLength(OcrArchitecture.HashLength);
+
+            analysis.Property(value => value.ConfigurationHash)
+                .HasMaxLength(OcrArchitecture.HashLength);
+
+            analysis.Property(value => value.LastError)
+                .HasMaxLength(OcrArchitecture.MaximumErrorLength);
+
+            analysis.HasOne(value => value.Document)
+                .WithOne(document => document.OcrAnalysis)
+                .HasForeignKey<DocumentOcrAnalysis>(value => value.DocumentId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<DocumentPageOcrResult>(page =>
+        {
+            page.ToTable("DocumentPageOcrResults", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_DocumentPageOcrResults_MeanConfidence",
+                    "\"MeanConfidence\" IS NULL OR (\"MeanConfidence\" >= 0 AND \"MeanConfidence\" <= 1)");
+            });
+
+            page.HasKey(value => new
+                { value.DocumentOcrAnalysisId, value.PageNumber });
+
+            page.Property(value => value.Status)
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            page.Property(value => value.SourceTechnicalType)
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            page.Property(value => value.LastError)
+                .HasMaxLength(OcrArchitecture.MaximumErrorLength);
+
+            page.HasOne(value => value.DocumentOcrAnalysis)
+                .WithMany(analysis => analysis.Pages)
+                .HasForeignKey(value => value.DocumentOcrAnalysisId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

@@ -25,6 +25,7 @@ secrets.json
 
 # User files
 Uploads/
+AI.DocumentAssistant.Server/tessdata/*.traineddata
 
 # OS
 .DS_Store

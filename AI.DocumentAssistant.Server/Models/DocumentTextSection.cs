@@ -24,5 +24,7 @@ public sealed class DocumentTextSection
 
     public string? SectionTitle { get; set; }
 
+    public DocumentTextExtractionMethod ExtractionMethod { get; set; }
+
     public DateTime CreatedAtUtc { get; set; }
 }

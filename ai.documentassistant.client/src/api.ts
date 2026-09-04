@@ -32,6 +32,18 @@ export type DocumentTechnicalAnalysisStatus =
     | 'Failed'
     | 'Skipped';
 
+export type DocumentOcrStatus =
+    | 'NotAnalyzed'
+    | 'Processing'
+    | 'Ready'
+    | 'Partial'
+    | 'Failed'
+    | 'Skipped';
+
+export type DocumentPageOcrStatus = 'Ready' | 'Empty' | 'Failed' | 'SkippedLimit';
+
+export type DocumentTextExtractionMethod = 'Unknown' | 'NativePdf' | 'Ocr' | 'Docx';
+
 export type TechnicalType =
     | 'Unknown'
     | 'TextBased'
@@ -155,6 +167,41 @@ export interface DocumentTechnicalAnalysis {
     pages: DocumentPageTechnicalAnalysis[];
 }
 
+export interface DocumentPageOcrResult {
+    pageNumber: number;
+    status: DocumentPageOcrStatus;
+    sourceTechnicalType: TechnicalType;
+    recognizedCharacterCount: number;
+    recognizedWordCount: number;
+    meanConfidence: number | null;
+    effectiveRenderDpi: number | null;
+    renderedWidthPixels: number | null;
+    renderedHeightPixels: number | null;
+    processingDurationMs: number | null;
+    usedInExtraction: boolean;
+    lastError: string | null;
+}
+
+export interface DocumentOcrAnalysis {
+    status: DocumentOcrStatus;
+    candidatePageCount: number;
+    successfulPageCount: number;
+    failedPageCount: number;
+    engineName: string | null;
+    engineVersion: string | null;
+    languages: string | null;
+    renderDpi: number | null;
+    maxCandidatePages: number | null;
+    maxRenderedPixels: number | null;
+    sourceFileHash: string | null;
+    routingVersion: string | null;
+    routingHash: string | null;
+    configurationHash: string | null;
+    processedAtUtc: string | null;
+    lastError: string | null;
+    pages: DocumentPageOcrResult[];
+}
+
 export interface ExtractedTextSection {
     sectionIndex: number;
     pageNumber: number | null;
@@ -165,6 +212,7 @@ export interface ExtractedTextSection {
     removedCharacterCount: number;
     normalizationChanged: boolean;
     normalizedAtUtc: string | null;
+    extractionMethod: DocumentTextExtractionMethod;
 }
 
 export interface DocumentChunk {
