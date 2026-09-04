@@ -1,0 +1,17 @@
+\chapter*{Rezumatul proiectului}
+\addcontentsline{toc}{chapter}{Rezumatul proiectului}
+
+Acest proiect de diplomă prezintă un asistent inteligent pentru analiza și interogarea colecției de documente a unui utilizator autentificat. Problema abordată este dificultatea localizării unor informații precise și verificabile în fișiere PDF și DOCX eterogene, inclusiv în pagini PDF generate digital, scanate sau mixte. O soluție utilă trebuie să facă mai mult decât să trimită un fișier unui model lingvistic: trebuie să extragă dovezi care pot fi căutate, să păstreze proveniența, să aplice dreptul de proprietate asupra spațiului de lucru și să lege răspunsurile generate de surse reale.
+
+Aplicația implementată integrează două fluxuri complete. În etapa de ingestie, fișierele încărcate sunt validate și stocate local folosind nume generate. Documentele PDF sunt supuse unei analize tehnice deterministe la nivel de pagină înainte de recunoașterea optică a caracterelor (OCR). Textul nativ din PDF și conținutul structurat din DOCX sunt extrase în ordinea sursei, iar numai paginile clasificate ca scanate sunt randate printr-un flux bazat pe PDFium și recunoscute local cu Tesseract. Textul brut este păstrat, iar o etapă conservatoare de normalizare produce reprezentarea utilizată pentru regăsire. Componenta Document Understanding, cu intrare limitată, furnizează tipul controlat al documentului, limba, titlul, subiectul și metadate generice validate. Un algoritm determinist, bazat pe tokenizatorul \texttt{cl100k\_base}, creează fragmente suprapuse care păstrează pagina, titlul secțiunii și proveniența. Fiecare fragment este transformat într-un vector și stocat în PostgreSQL prin pgvector.
+
+Pentru o întrebare, serverul combină regăsirea semantică, filtrată după proprietar și spațiu de lucru, cu regăsirea full-text din PostgreSQL și cu un semnal mai slab bazat pe metadatele documentului. Fuziunea ponderată a rangurilor reciproce combină pozițiile ordinale fără a aduna scoruri brute incompatibile. Un model de rerangare, cu limite explicite, poate reordona cei mai buni candidați; în caz de eroare sau rezultat invalid se păstrează ordinea hibridă. Fragmentele finale formează un context limitat pentru generarea asistată de regăsire, sub identificatori de sursă atribuiți de server. Modelul de răspuns primește instrucțiuni să trateze documentele drept date nesigure și să utilizeze numai dovezile furnizate. Identificatorii de citare necunoscuți sunt eliminați, iar metadatele surselor validate provin din fragmentele regăsite. Conversațiile persistente includ un istoric recent limitat, neautoritar, și instantanee istorice ale surselor.
+
+Contribuția personală constă în proiectarea, implementarea, integrarea și testarea acestui flux complet, de la extragere la citare, inclusiv izolarea erorilor și interfețele de diagnostic. O execuție verificată a testelor de backend a trecut toate cele 345 de teste, fără erori și fără teste omise. Măsurătorile experimentale finale privind regăsirea, OCR, clasificarea, fundamentarea răspunsurilor și cazurile de injecție de instrucțiuni sunt încă în așteptare și nu sunt deduse din succesul testelor automate.
+
+\begin{flushleft}
+\textbf{Cuvinte-cheie:} analiza documentelor, regăsirea informației, recunoașterea optică a caracterelor, vectori de text, regăsire hibridă, generare asistată de regăsire, răspunsuri fundamentate, proveniența surselor.
+\end{flushleft}
+
+\todocomplete{Revizuire lingvistică manuală finală a rezumatului în limba română.}
+

@@ -1,0 +1,74 @@
+\documentclass[a4paper]{ace-thesis}
+\makeindex[columns=2, title=Index alfabetic, intoc]
+
+% Thesis-local editorial helpers. The official faculty class remains unchanged.
+\newcommand{\citationneeded}[1]{\textbf{[CITATION NEEDED: #1]}}
+\newcommand{\todocomplete}[1]{\textbf{[TO COMPLETE: #1]}}
+\newcommand{\thesisfigureplaceholder}[3]{%
+	\begin{figure}[!htbp]
+		\centering
+		\fbox{%
+			\begin{minipage}[c][0.17\textheight][c]{0.88\textwidth}
+				\centering
+				\textbf{FIGURE PLACEHOLDER}\\[8pt]
+				\texttt{#1}\\[6pt]
+				#2
+			\end{minipage}%
+		}
+		\caption{#2}
+		\label{#3}
+	\end{figure}%
+}
+
+\begin{document}
+	% set the numbering style to roman style
+	% for the first part of the documentation
+	\pagenumbering{roman}
+	\selectlanguage{romanian}
+	
+	\input{ace-coverpage}
+	\input{ace-firstpage}
+	\input{ace-dedication}
+	\input{ace-originality}
+	\input{ace-project-timetable}
+	\input{ace-supervisor-remarks}
+	\input{ace-summary}
+	\selectlanguage{english}
+	\input{ace-summary-alt}
+	\selectlanguage{romanian}
+	\input{ace-acknowledegment}
+	\input{ace-foreword}
+	
+	\selectlanguage{english}
+	\tableofcontents
+	\listoffigures
+	\addcontentsline{toc}{chapter}{\listfigurename}
+	\listoftables
+	\addcontentsline{toc}{chapter}{\listtablename}
+%	\addcontentsline{toc}{chapter}{\lstlistlistingname}
+	\listofalgorithms
+	\addcontentsline{toc}{chapter}{List of Algorithms}
+
+	% set the numbering style to arabic style
+	% for the rest of the documentation
+	\pagenumbering{arabic}
+	
+	\input{ace-chap01}
+	\input{ace-chap02}
+	\input{ace-chap03}
+	\input{ace-chap04}
+	\input{ace-chap05}
+	\input{ace-chap06}
+	\input{ace-chap07}
+	\input{ace-conclusions}
+	
+	%------------------------------------------------
+	\bibliographystyle{IEEEtran}
+	\bibliography{ace-bibtex}
+	\selectlanguage{romanian}
+	\input{ace-sourcecode}
+	\input{ace-proj-website}
+	\input{ace-media-support}
+	\printindex
+	\input{ace-lastpage}
+\end{document}

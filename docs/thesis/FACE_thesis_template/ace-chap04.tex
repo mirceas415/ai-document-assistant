@@ -1,0 +1,922 @@
+\chapter{Document Ingestion and Understanding}
+\label{chap:document-ingestion}
+
+The question-answering capabilities of the application depend on a reliable
+document representation. A language model cannot recover information that was
+never extracted, and a retrieval algorithm cannot provide a trustworthy page
+reference if source location was discarded during preprocessing. For this
+reason, ingestion is not treated as a preliminary file-conversion utility. It
+is an integrated pipeline that converts an authenticated upload into
+searchable, traceable knowledge while preserving enough diagnostic state to
+explain how that result was obtained.
+
+The implemented path proceeds from validation through extraction, technical
+PDF analysis, selective optical character recognition (OCR), normalization,
+document-level intelligence, token-bounded chunks, and vector embeddings.
+Extraction, normalization, chunking, and embedding are required for retrieval;
+technical analysis and Document Understanding are separately observable
+enrichments. This chapter follows the data in that order.
+
+\section{Upload and Validation}
+\label{sec:upload-validation}
+
+An upload is accepted only in the context of an authenticated project. The
+backend first derives the current user identity and verifies that the target
+project is owned by that user. A nonexistent project and a project belonging
+to another account are deliberately exposed through the same safe not-found
+response. Consequently, an unauthorized caller cannot use document endpoints
+to confirm whether another user's project or document exists. The ownership
+test occurs before file validation and storage, so rejected callers cannot
+cause files to be written outside their authorized workspace.
+
+The accepted input surface is intentionally narrow. Table~\ref{tab:upload-formats}
+summarizes the two supported formats and the checks applied by the server.
+The size limit is exactly 20~MiB, or $20 \times 1024^2$ bytes. The multipart
+request limit includes an additional 64~KiB allowance for form framing, but
+this allowance does not increase the permitted file size.
+
+\begin{table}[!htbp]
+	\centering
+	\small
+	\caption{Accepted upload formats and validation checks}
+	\label{tab:upload-formats}
+	\begin{tabular}{p{2.0cm}p{3.0cm}p{4.4cm}p{4.0cm}}
+		\toprule
+		Format & Extension & Expected media type & Content validation \\
+		\midrule
+		PDF & \texttt{.pdf} & \texttt{application/pdf} & The first bytes must contain the PDF signature \texttt{\%PDF-}. \\
+		DOCX & \texttt{.docx} & Open XML word-processing media type & The file must have a ZIP signature and contain both \texttt{[Content\_Types].xml} and \texttt{word/document.xml}. \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+Validation is not based on the extension alone. The basename is trimmed,
+limited to 255 characters, and rejected if it contains control characters.
+Extension, media type, and the format checks in Table~\ref{tab:upload-formats}
+must agree. The format-specific parser remains responsible for detecting
+deeper damage, password protection, or unsupported content.
+
+After validation, the stream is written to a local \texttt{Uploads} directory
+beneath the server content root. A random identifier and the validated
+lower-case extension form the storage name; the resolved path is checked to
+remain inside that directory. The original name is stored separately for
+display and citations. If database persistence fails, the controller attempts
+to remove the newly written file.
+
+The database record is initially marked \emph{Uploaded}. Related diagnostic
+records are created at the same time: Document Understanding is \emph{Pending};
+technical analysis and OCR are \emph{NotAnalyzed} for PDFs and \emph{Skipped}
+for DOCX files. The identifier is then offered to a bounded in-memory channel.
+The channel has capacity for 100 unique document identifiers, permits multiple
+writers, and is consumed by one hosted background worker. Suppressing duplicate
+identifiers prevents repeated button presses from scheduling the same document
+multiple times. The worker creates a fresh dependency-injection scope for each
+job and invokes the processing service outside the upload request.
+
+The queue keeps the request responsive, but it is process-local and
+non-durable. Pending items can be lost when the server stops, while persisted
+\emph{Uploaded} or \emph{Failed} records can be queued again. A durable broker
+and multi-worker coordination are future work.
+
+Figure~\ref{fig:ingestion-pipeline} reserves the complete flow diagram. It
+shows that validation and storage lead into one connected processing path,
+rather than a set of unrelated document utilities.
+
+\thesisfigureplaceholder{DIA-03}{Complete document-ingestion pipeline from validated upload to searchable persisted knowledge.}{fig:ingestion-pipeline}
+
+\section{PDF and DOCX Text Extraction}
+\label{sec:text-extraction}
+
+The processing worker selects an extractor from the validated media type and
+stored extension. PDF extraction is implemented with PdfPig, while DOCX
+extraction uses the Open XML SDK. \citationneeded{PdfPig project and PDF text extraction}
+\citationneeded{Open XML SDK and WordprocessingML specification}
+The result of either adapter is the same application-level structure: an
+ordered collection of text sections carrying optional page and heading
+provenance plus an extraction-method marker.
+
+\begin{table}[!htbp]
+	\centering
+	\small
+	\caption{Format-specific extraction characteristics}
+	\label{tab:extraction-comparison}
+	\begin{tabular}{p{2.2cm}p{4.0cm}p{4.0cm}p{3.5cm}}
+		\toprule
+		Aspect & PDF & DOCX & Persisted provenance \\
+		\midrule
+		Primary order & Physical page order & Body-child order & Sequential section index \\
+		Text unit & One non-empty native page & Heading-delimited group of paragraphs and tables & Raw text and extraction method \\
+		Location & One-based page number & No reconstructed page number & Page when available \\
+		Structure & Reading-order text supplied by PdfPig & Heading styles 1--3 and table row/cell separators & Section title when available \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+For a PDF, PdfPig opens the source stream and visits pages in their original
+order. Its content-order extractor reconstructs a text string from PDF text
+objects. Leading and trailing whitespace is removed, and a section is emitted
+only when the page contains non-empty native text. The section records the
+one-based page number and the \emph{NativePdf} extraction method. Skipping an
+empty native page is intentional: the subsequent OCR stage can add recognized
+text when technical analysis identifies the page as a scan. Parser errors are
+translated into a safe message explaining that the PDF may be damaged or
+password protected, without returning low-level parser details to the user.
+
+Because PDF text may consist of positioned glyphs rather than semantic
+paragraphs, unusual layouts, columns, or font maps can still produce imperfect
+reading order. Retained page provenance later allows chunks and answer sources
+to identify where evidence originated.
+
+For DOCX, the extractor opens the WordprocessingML package read-only and walks
+the direct children of the main document body. Paragraph text is assembled
+from its text descendants. A paragraph whose style identifier normalizes to
+\emph{Heading1}, \emph{Heading2}, or \emph{Heading3} starts a new logical
+section. The heading is kept in the content and is also stored as the section
+title, truncated to the database limit where necessary. This dual treatment
+is useful: the words remain searchable, while the title can also be displayed
+as provenance and used as a preferred chunk boundary.
+
+Tables are converted without inserting a large source-code-like representation.
+Paragraphs within a cell are joined with spaces, cells are separated by a
+vertical bar, and rows are separated by line endings. This preserves row order
+and makes relationships in modest tables readable to later retrieval stages.
+Paragraphs and tables remain in body order. The extractor does not reconstruct
+DOCX pagination or explicitly traverse headers, footers, comments, footnotes,
+drawings, or heading levels outside the recognized three. It therefore makes
+no claim of complete WordprocessingML coverage.
+
+Both extractors preserve their output as the raw representation; normalization
+does not overwrite it. A later full reprocessing may atomically replace both
+raw and normalized forms, so ``raw'' means the unaltered authoritative
+extraction, not a history of every run.
+
+\section{Raw and Normalized Text}
+\label{sec:text-normalization}
+
+Repeated page edges, divided words, and inconsistent whitespace consume chunk
+budgets and can become misleading retrieval signals. Conversely, aggressive
+cleanup can delete clauses or identifiers. The implementation therefore
+prefers retaining occasional boilerplate to silently removing valid evidence.
+\citationneeded{text normalization and conservative de-hyphenation}
+
+The first normalization pass is format-independent. Sections are ordered by
+their source index. Windows and classic Macintosh line endings are converted to
+a single newline convention. Horizontal whitespace on each line is collapsed
+to one space, line edges are trimmed, and consecutive empty lines are reduced
+to one paragraph break. This gives deterministic text without flattening all
+paragraph structure.
+
+PDF page-edge cleanup is activated only when at least three page-numbered
+sections exist. For each page, the first and last 15 non-empty lines form the
+header and footer candidate regions. Individual repeated lines are considered
+only near the physical edge, within the first or last three eligible positions.
+Multi-line candidates may extend farther into the 15-line region, but their
+boundary must begin or end no more than two lines away from the corresponding
+page edge. This restriction reduces the risk of removing repeated phrases from
+the body.
+
+Candidate comparison is deliberately tolerant of harmless representation
+differences. Text is normalized to Unicode compatibility form, whitespace is
+collapsed, spaces around common punctuation are standardized, and comparison
+is case-insensitive. Multi-line candidates are compared as logical blocks, so
+different physical wrapping does not necessarily prevent recognition. A block
+must contain at least 40 and at most 4,000 canonical characters. Normally it is
+removed only when it occurs on at least the ceiling of 60\% of the eligible
+pages. A long block of at least 160 characters can also be confirmed in a dense
+local sequence: at least three occurrences must occupy a page span whose
+density reaches the same 60\% threshold. The local rule handles, for example,
+a repeated legal footer that appears in one substantial section of a long
+combined document without lowering the global threshold.
+
+Standalone page numbers receive separate treatment. Recognized forms include
+a plain integer and forms using words such as ``page'', ``pagina'', ``of'', or
+``din''. When the physical PDF page is known, the displayed current number must
+equal it; a different number in the body is preserved. Patterns resembling
+numbered headings, such as ``4.2 Processing architecture'', are protected from
+repetition removal. These checks do not guarantee detection of every decorative
+pagination scheme, but they prevent a general numeric-removal rule from
+destroying meaningful quantities.
+
+Word-break repair is similarly bounded. A line must end in one hyphen rather
+than a double hyphen, the next line must begin with a lower-case letter, the
+alphabetic prefix before the hyphen must contain at least four letters, and the
+following alphabetic run must contain at least three. The next run must not
+immediately continue into another hyphenated form. Only then is the line-ending
+hyphen removed and the two parts joined. The rule repairs common PDF line-wrap
+hyphenation while preserving many compound words and numeric identifiers. It is
+language-independent at the character-class level and therefore works with
+Romanian diacritics and other Unicode letters, although no dictionary is used.
+
+\begin{table}[!htbp]
+	\centering
+	\small
+	\caption{Normalization operations, purpose, and conservative boundary}
+	\label{tab:normalization-operations}
+	\begin{tabular}{p{3.2cm}p{4.4cm}p{5.4cm}}
+		\toprule
+		Operation & Intended benefit & Conservative boundary \\
+		\midrule
+		Line-ending and whitespace normalization & Stable text and token counts & Paragraph separation is retained. \\
+		Repeated edge-line removal & Reduce common page headers and footers & Requires PDF pages, edge position, and 60\% repetition. \\
+		Logical block removal & Handle multi-line boilerplate with changed wrapping & Length, edge-offset, global, and dense-local thresholds apply. \\
+		Page-number removal & Remove isolated pagination noise & Restricted to page-edge regions and expected page number. \\
+		Word-break repair & Rejoin words divided by line wrapping & Requires a specific alphabetic lower-case pattern. \\
+		Whole-document fallback & Prevent destructive cleanup & Restores whitespace-normalized input if all meaningful text would vanish. \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+After edge cleanup and optional word repair, whitespace is normalized once
+more. The service records whether each section changed, its non-negative net
+character reduction, and the normalization time. Aggregate counts on the
+document support diagnostics. Most importantly, a whole-document guard checks
+whether every normalized section became empty even though the original
+contained meaningful non-page-number text. In that situation, the system
+falls back to whitespace-normalized original sections. The result may contain
+some unwanted repetition, but it does not lose the document's entire useful
+content because of a heuristic.
+
+The explicit rebuild reads stored raw sections and prepares normalization,
+chunks, and embeddings before replacement. Failure preserves the previous
+usable representation and records the appropriate error, making heuristic
+cleanup observable and recoverable.
+
+\section{Technical PDF Analysis}
+\label{sec:technical-pdf-analysis}
+
+PDFs may contain native text, scanned images, or a mixture. The application
+therefore performs deterministic structural analysis before OCR routing. The
+analysis describes page representation, not subject matter.
+\citationneeded{PDF text and raster-image representation}
+
+The controlled types are listed in Table~\ref{tab:technical-types}. Keeping the
+taxonomy small makes routing and diagnostics understandable. In particular,
+\emph{ImageBased} is not treated as a synonym for \emph{Scanned}: a page may
+contain images without a single page-sized raster that justifies scan OCR.
+
+\begin{table}[!htbp]
+	\centering
+	\small
+	\caption{Technical PDF page types}
+	\label{tab:technical-types}
+	\begin{tabular}{p{2.6cm}p{10.4cm}}
+		\toprule
+		Type & Interpretation \\
+		\midrule
+		TextBased & A meaningful native text layer is the primary useful representation. \\
+		Scanned & Little or no meaningful text exists and one raster placement covers at least 80\% of the visible page. \\
+		ImageBased & Little or no meaningful text exists and raster content is present, but no accepted image reaches the page-sized threshold. \\
+		Mixed & Meaningful text coexists with substantial raster coverage, or materially different known page types coexist at document level. \\
+		Unknown & Structural evidence is insufficient for a safe classification. \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+PdfPig supplies two groups of measurements for each page. The text scan counts
+Unicode letters and digits and also counts alphanumeric word runs containing at
+least two characters. Text is meaningful when either at least 40 alphanumeric
+characters or at least eight useful word runs are present. The logical
+disjunction is important: short tabular pages can have several meaningful
+words without reaching 40 characters, while a page containing a long compact
+identifier sequence can reach the character criterion.
+
+Image masks and invalid sample dimensions are ignored. Each remaining bounding
+box is intersected with the page crop box, and coverage is the largest visible
+single-image area divided by page area, clamped to $[0,1]$. Image areas are not
+summed, avoiding inflation from overlapping placements.
+
+\begin{table}[!htbp]
+	\centering
+	\small
+	\caption{Deterministic PDF-classification thresholds}
+	\label{tab:pdf-thresholds}
+	\begin{tabular}{p{7.8cm}r}
+		\toprule
+		Threshold & Configured value \\
+		\midrule
+		Minimum alphanumeric characters for meaningful text & 40 \\
+		Minimum useful word runs for meaningful text & 8 \\
+		Minimum alphanumeric length of a useful word run & 2 \\
+		Substantial raster coverage & 0.30 \\
+		Page-sized raster coverage & 0.80 \\
+		Strong document-level majority & 0.80 \\
+		Maximum tolerated unknown-page ratio & 0.20 \\
+		Minimum unknown-page tolerance & 1 page \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+Algorithm~\ref{alg:pdf-classification} expresses the actual decision order.
+Notice that meaningful text takes precedence over the scanned-page branch. A
+page with a page-sized image and a meaningful text layer is \emph{Mixed}, not
+\emph{Scanned}; it is therefore not sent to OCR by the current routing policy.
+
+\begin{algorithm}[!htbp]
+	\caption{Deterministic technical PDF classification}
+	\label{alg:pdf-classification}
+	\begin{algorithmic}[1]
+		\Require Ordered PDF pages with text and accepted raster placements
+		\Ensure A technical type for every page and for the document
+		\ForAll{pages in source order}
+			\State Count alphanumeric characters and word runs of length at least 2
+			\State $meaningful \gets (characters \geq 40) \lor (words \geq 8)$
+			\State $coverage \gets$ largest visible single-image coverage, clamped to $[0,1]$
+			\State $pageSized \gets (imageCount > 0) \land (coverage \geq 0.80)$
+			\If{$meaningful$}
+				\State $type \gets$ Mixed if $coverage \geq 0.30$, otherwise TextBased
+			\ElsIf{$pageSized$}
+				\State $type \gets$ Scanned
+			\ElsIf{$imageCount > 0$}
+				\State $type \gets$ ImageBased
+			\Else
+				\State $type \gets$ Unknown
+			\EndIf
+		\EndFor
+		\State $unknownTolerance \gets \max(1,\lfloor 0.20 \times pageCount \rfloor)$
+		\If{there are no known pages or unknown pages exceed the tolerance}
+			\State \Return Unknown
+		\EndIf
+		\State Group known pages by type and find the stable dominant group
+		\If{the dominant group represents at least 80\% of known pages}
+			\State \Return the dominant type
+		\EndIf
+		\State \Return Mixed when several known types remain; otherwise Unknown
+	\end{algorithmic}
+\end{algorithm}
+
+At document level, empty or all-unknown input is \emph{Unknown}. Unknown pages
+may not exceed the greater of one and the floor of 20\% of all pages. Among
+known pages, an inclusive 80\% majority wins; otherwise coexisting known types
+produce \emph{Mixed}. Stable ordering makes ties deterministic.
+
+The result stores page metrics and aggregate counts. Reuse requires the
+original-file SHA--256 hash and analyzer version
+\texttt{pdf-technical-analysis-v1} to match; a forced rebuild bypasses reuse.
+Failure is recorded separately and native extraction continues.
+
+The intended flow of these decisions is shown by the reserved
+Figure~\ref{fig:pdf-classification-flow}.
+
+\thesisfigureplaceholder{DIA-04}{Decision flow for deterministic page-level and document-level technical PDF classification.}{fig:pdf-classification-flow}
+
+\section{Selective Local OCR}
+\label{sec:selective-ocr}
+
+OCR is applied selectively, after technical analysis and native extraction.
+The routing policy chooses only pages whose technical type is exactly
+\emph{Scanned}. It does not currently OCR \emph{ImageBased}, \emph{Mixed},
+\emph{TextBased}, or \emph{Unknown} pages. This narrow rule avoids replacing a
+usable text layer with a less certain recognition result and prevents every
+decorative image from triggering expensive rasterization. It also makes the
+routing decision reproducible from persisted page diagnostics.
+
+Rendering is provided by PDFtoImage using its PDFium runtime assets, and
+recognition is performed by Tesseract through the TesseractOCR .NET wrapper.
+\citationneeded{PDFium and PDFtoImage project documentation}
+\citationneeded{Tesseract OCR official project documentation}
+Both operations execute on the application host; the OCR stage itself does not
+send page images to a cloud OCR service. This statement does not imply that all
+document data remains local. Later Document Understanding and embedding stages
+may transmit bounded text to the configured model provider.
+
+\begin{table}[!htbp]
+	\centering
+	\small
+	\caption{Selective OCR configuration}
+	\label{tab:ocr-configuration}
+	\begin{tabular}{p{6.8cm}p{6.0cm}}
+		\toprule
+		Setting & Current repository value \\
+		\midrule
+		OCR enabled & Yes \\
+		Tesseract language set & \texttt{ron+eng} \\
+		Requested render resolution & 300 DPI \\
+		Maximum scanned candidate pages & 200 \\
+		Maximum rendered pixels per page & 25,000,000 \\
+		Language-data directory & \texttt{tessdata} beneath the server content root \\
+		Routing policy/version & Scanned pages only, \texttt{ocr-routing-v1} \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+Before recognition, the service validates languages, limits, and the data path.
+A configuration hash covers trained-data fingerprints, engine identity,
+languages, DPI, and limits; a routing hash covers selected page-number/type
+pairs. With the source hash, these identities control safe reuse.
+
+For each selected page, pixel dimensions are calculated at 300 DPI. If they
+exceed 25 million pixels, DPI is scaled by the square root of the permitted area
+ratio and reduced further after rounding if needed. A white-background PNG is
+rendered in memory. This bounds CPU and memory use while retaining the highest
+resolution allowed by the rule.
+
+Tesseract processes the image with the Romanian and English models. Line
+endings are normalized, confidence is converted to the interval from zero to
+one, and leading/trailing whitespace is removed. Non-empty output becomes an
+extracted section with the original page number and \emph{Ocr} extraction
+method. Empty output is recorded as an \emph{Empty} page result and does not
+create artificial content. Render or recognition errors likewise create safe
+diagnostics without inserting text. If an error indicates that the OCR
+infrastructure itself is unavailable, remaining selected pages are marked
+failed without repeatedly attempting the same unavailable resource.
+
+Algorithm~\ref{alg:selective-ocr} summarizes routing, reuse, bounded execution,
+and unification with native extraction.
+
+\begin{algorithm}[!htbp]
+	\caption{Selective local OCR routing and extraction}
+	\label{alg:selective-ocr}
+	\begin{algorithmic}[1]
+		\Require PDF stream, native page sections, technical-analysis diagnostics, force flag
+		\Ensure Ordered unified sections and persisted OCR diagnostics
+		\If{technical analysis is not Ready}
+			\State Persist OCR as NotAnalyzed and \Return reindexed native sections
+		\EndIf
+		\State $candidates \gets$ Scanned pages ordered by page number
+		\If{$candidates$ is empty}
+			\State Persist OCR as Skipped and \Return native sections
+		\EndIf
+		\State Validate configuration and local language data
+		\If{configuration or infrastructure is unavailable}
+			\State Persist safe Failed diagnostics
+			\State \Return native sections excluding current scanned candidate pages
+		\EndIf
+		\State Compute source, routing, and configuration identities
+		\If{not forced and a complete matching Ready result plus stored OCR text exists}
+			\State \Return native and reused OCR sections in page order
+		\EndIf
+		\State Select at most the first 200 candidate pages
+		\ForAll{selected candidate pages}
+			\State Render at the highest DPI that satisfies the 25,000,000-pixel limit
+			\State Run local Tesseract with \texttt{ron+eng}
+			\State Persist Ready text, Empty, or safe Failed page diagnostics
+		\EndFor
+		\State Derive Ready, Partial, or Failed aggregate status
+		\State Remove native sections for all scanned candidate pages
+		\State Add successful OCR sections, sort by page, and assign new section indexes
+		\State \Return the unified sections
+	\end{algorithmic}
+\end{algorithm}
+
+The replacement step deserves clarification. Native sections from pages
+classified as scanned are excluded and only successful OCR output for those
+pages is inserted. This avoids combining a few noisy native glyphs with the
+recognized page, but it also means that a failed scanned page contributes no
+text. Native sections from non-candidate pages are kept. Thus a mixed PDF can
+still become \emph{Ready} when one scan fails but other native or recognized
+pages provide useful content; an all-scanned document for which every page
+fails OCR has no extractable text and the overall ingestion correctly fails.
+
+Zero candidates yields \emph{Skipped}; all successes yield \emph{Ready}; some
+successes yield \emph{Partial}; and none yields \emph{Failed}. Page states are
+\emph{Ready}, \emph{Empty}, \emph{Failed}, and \emph{SkippedLimit}. Only the
+first 200 candidates are processed, but all count in the aggregate. The first
+excess page receives \emph{SkippedLimit}; further excess pages do not each
+create a diagnostic row.
+
+Stored provenance includes all three hashes, engine/languages, limits,
+effective DPI and dimensions, duration, recognized counts, confidence, source
+type, and whether text entered extraction. Reuse requires a completely
+\emph{Ready} matching result and one stored OCR section per candidate. Partial
+or failed results are rerun, and force always bypasses reuse.
+
+The TesseractOCR wrapper dependency is version 5.5.2, while the service has a
+5.5.1 fallback engine label and can later record the native engine's value.
+Because package and native-engine versions differ conceptually, the thesis says
+Tesseract~5 through the wrapper until the submission runtime is verified.
+
+Figure~\ref{fig:selective-ocr-flow} will visualize the page-level route and the
+return to the unified extraction sequence.
+
+\thesisfigureplaceholder{DIA-05}{Selective OCR flow from Scanned-page diagnostics through bounded PDFium rendering and local Tesseract recognition.}{fig:selective-ocr-flow}
+
+\section{Document Understanding}
+\label{sec:document-understanding}
+
+Once normalized text exists, the application attempts a bounded
+document-level analysis. This stage does not answer a user's question and does
+not replace retrieval evidence. Its purpose is to produce a concise structured
+description that can support document diagnostics and later act as a soft
+ranking signal. The current configured model is \texttt{gpt-5.6-luna}; if a
+separate Understanding model is not configured, the service falls back to the
+answer model. Provider interaction uses structured output rather than parsing
+free-form prose. \citationneeded{OpenAI Responses API structured outputs}
+
+The output contains a controlled document type, optional subtype, confidence,
+primary language code and confidence, optional detected title and subject, and
+an ordered collection of generic metadata entries. The document-type allowlist
+is: Unknown, Contract, Invoice, Receipt, Report, Policy, Procedure, Manual,
+CourseMaterial, ResearchPaper, FinancialDocument, Form, Letter, Resume,
+TechnicalDocument, and Other. This taxonomy is intentionally broad enough for
+the project corpus without presenting an open-ended model-generated category
+as an authoritative database value.
+
+\begin{table}[!htbp]
+	\centering
+	\small
+	\caption{Controlled Document Understanding metadata kinds}
+	\label{tab:understanding-metadata}
+	\begin{tabular}{p{3.0cm}p{9.8cm}}
+		\toprule
+		Kind & Intended information \\
+		\midrule
+		Organization & Companies, institutions, public bodies, and other named organizations \\
+		Person & People explicitly named by the document \\
+		Identifier & Contract numbers, invoice identifiers, references, registration codes, and similar values \\
+		Date & Explicit relevant dates, conservatively normalized when unambiguous \\
+		MonetaryAmount & Amounts and currencies as supported by document text \\
+		Jurisdiction & Explicit territorial or legal jurisdiction \\
+		Topic & Concise subject keywords supported by the text \\
+		Other & Useful generic metadata that does not fit the preceding kinds \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+The model receives explicit higher-priority instructions that document
+contents are untrusted data, never instructions. It is told not to follow
+requests embedded in the document, reveal prompts or secrets, call tools,
+contact people, or invent facts. The user message surrounds document content
+with visible begin/end delimiters. The JSON schema prohibits additional fields,
+enumerates every accepted document and metadata kind, requires all principal
+fields, bounds confidence values, and limits metadata to 50 entries. Provider
+output storage is disabled for this request. These measures reduce the attack
+surface of indirect prompt injection, but they do not justify a claim that the
+general problem has been completely solved.
+
+Structured output is followed by local validation. Enum text must map to an
+allowlisted value. Required confidence scores and optional metadata confidence
+must be finite and between zero and one; invalid values fail the whole attempt
+rather than being silently clamped. Language tags are checked for a
+BCP-47-compatible shape and deterministically cased. Subtype, title, subject,
+label, and value lengths are bounded. Labels are collapsed into ASCII
+lower-snake-case form. Duplicate metadata entries are removed deterministically
+using kind, label, and normalized or original value. Dates are converted to
+\texttt{yyyy-mm-dd} only when a supported representation is unambiguous,
+including selected Romanian and English month-name forms. Ambiguous numeric
+dates remain without a normalized value. Monetary values are preserved as
+cleaned source strings; the local code does not invent a numeric/currency
+normalization.
+
+Sending every token of a very long document would be costly and would violate
+the bounded-input requirement. The input builder therefore orders non-empty
+normalized sections, joins their canonical content with paragraph breaks, and
+computes a SHA--256 hash over this entire canonical text. A separate annotated
+form adds page and heading markers for the model. An input is usable only when
+it contains at least 20 tokens and at least 40 letters or digits. Shorter input
+is deterministically marked \emph{Skipped} and no provider call is made.
+
+If the annotated form contains no more than 6,000 \texttt{cl100k\_base} tokens,
+it is used in full. Otherwise a deterministic representative sample is built.
+After accounting for the three sample markers and a 128-token safety reserve,
+one half of the available budget is assigned to the beginning, one quarter to
+a centered middle window, and the remaining quarter to the end. The middle
+window takes a suffix from the left side and a prefix from the right side of the
+central region. Token boundaries are clamped so a UTF-16 surrogate pair is not
+split. The sample therefore represents opening context, central body material,
+and conclusions while remaining reproducible. It is representative rather
+than exhaustive; facts located only outside these windows may not become
+metadata, even though they remain available to chunk retrieval.
+
+Idempotency uses the full canonical-content hash, configured model, and prompt
+version \texttt{document-understanding-v1}. A matching \emph{Ready} or
+\emph{Skipped} result is reused unless the caller explicitly forces analysis.
+Because the hash covers the full text rather than the sample, a change in an
+unsampled region still invalidates the previous result. Successful metadata
+replacement is transactional. Model or validation failure marks the attempt
+\emph{Failed} with a safe message and does not persist a partial provider
+response.
+
+Most importantly, Understanding failure is non-fatal to ordinary RAG
+ingestion. The processing service logs the safe failure and continues with the
+same normalized sections, chunking, and embedding. After normalization or OCR
+rebuild, a changed input is first staged as \emph{Pending}; the new searchable
+representation is committed, and Understanding is retried afterward. If that
+retry fails, the document remains \emph{Ready} for retrieval. This ordering
+reflects the role of Understanding as useful enrichment rather than the sole
+source of searchable content.
+
+\section{Token-Aware Document Chunking}
+\label{sec:document-chunking}
+
+The normalized document is usually too large and too heterogeneous to serve as
+one retrieval item. A single vector for an entire report would blend unrelated
+topics, while inserting the full document into every answer request would
+exceed bounded context and make provenance imprecise. At the opposite extreme,
+one vector per sentence can remove the surrounding definitions and conditions
+needed to interpret a passage. Chunking establishes an intermediate evidence
+unit: small enough to rank and cite, but large enough to preserve local meaning.
+Overlap carries limited context across boundaries. \citationneeded{document chunking for semantic retrieval}
+
+The implementation measures tokens with the \texttt{cl100k\_base} encoding
+provided through Microsoft.ML.Tokenizers. \citationneeded{cl100k base tokenizer and Microsoft ML Tokenizers}
+Character counts are retained for diagnostics, but all size decisions are made
+from actual tokenizer counts. This is important for multilingual material,
+punctuation, numbers, and Unicode because equal character lengths do not imply
+equal model-token lengths.
+
+\begin{table}[!htbp]
+	\centering
+	\small
+	\caption{Current chunking configuration and semantics}
+	\label{tab:chunking-configuration}
+	\begin{tabular}{p{3.4cm}r p{7.2cm}}
+		\toprule
+		Parameter & Tokens & Meaning \\
+		\midrule
+		Target & 700 & Preferred point for closing a base plan when a natural unit would take it over the target. \\
+		Hard maximum & 900 & Absolute limit checked against every emitted chunk, including overlap. \\
+		Overlap & 100 & Maximum suffix budget copied from the preceding base plan when space permits. \\
+		Minimum useful size & 100 & Preferred lower bound before heading/target closure and for final-tail rebalancing. \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+The target and minimum require careful interpretation. They are planning goals,
+not unconditional assertions about every possible output. A natural text unit
+that contains 800 tokens is retained because it is below the 900-token maximum,
+even though it exceeds the 700-token target. A very short document remains one
+short chunk. Likewise, the final chunk may remain below 100 tokens when moving
+or merging available units would violate another constraint. The 900-token
+maximum is the hard invariant.
+
+\subsection{Creating provenance-carrying text units}
+
+Source sections are sorted by their persisted index. Each section is split on
+line endings; empty entries are discarded and non-empty entries are trimmed.
+Every resulting unit carries its source-section index, optional page number,
+optional section title, and a flag indicating whether it is the first unit of a
+titled section. Separators are also explicit: ordinary source lines are joined
+as paragraphs, while sentences cut from one oversized line are rejoined with a
+space. These details mean that token counts are computed over the same text that
+will actually be persisted, including separators.
+
+A unit at or below 900 tokens is left intact. Only an oversized unit is divided
+into sentences. The sentence detector considers a full stop, exclamation mark,
+or question mark followed by whitespace or common closing punctuation. It does
+not split a decimal point between digits, and it protects a compact allowlist of
+common Romanian and English abbreviations such as \emph{art.}, \emph{nr.},
+\emph{dl.}, \emph{dna.}, \emph{dr.}, \emph{prof.}, \emph{etc.}, \emph{Mr.},
+\emph{e.g.}, and \emph{i.e.}. This is a conservative boundary heuristic, not a
+general linguistic sentence parser.
+
+If one sentence still exceeds 900 tokens, the tokenizer locates the largest
+prefix within the limit. The splitter moves backward to whitespace when doing
+so produces a non-empty prefix; otherwise it uses the exact token boundary. It
+also checks UTF-16 boundaries and moves away from the middle of a surrogate
+pair. Whitespace at the start of the remaining suffix is consumed, and the
+process repeats. Thus even an unusually long uninterrupted passage can be
+bounded without corrupting supplementary Unicode characters.
+
+\subsection{Building and rebalancing base plans}
+
+Base plans are constructed by scanning units once in source order. A new titled
+section closes the current plan only after that plan contains at least 100
+tokens. This preference avoids attaching a substantial previous section to a
+new heading while also preventing every tiny heading fragment from creating an
+undersized chunk. Before adding each unit, the generator calculates the exact
+candidate token count. If the candidate would exceed the 700-token target and
+the current plan is already at least 100 tokens, the current plan closes. If a
+candidate would exceed 900 tokens under any remaining circumstance, the current
+non-empty plan closes regardless of its size. Since every individual unit has
+already been bounded, the newly started plan remains within the hard maximum.
+
+The last plan receives one additional balancing pass. If it already contains
+at least 100 tokens, nothing changes. Otherwise, the generator first attempts
+to merge it with the preceding plan; this is accepted only if their exact joined
+content remains within 900 tokens. If they cannot be merged, complete units are
+moved from the end of the preceding plan to the beginning of the final plan.
+Each move must leave the preceding plan at or above 100 tokens and the final
+plan at or below 900. Moving whole units preserves natural boundaries. The pass
+stops when the tail reaches the desired minimum or no valid move exists.
+
+\subsection{Adding bounded overlap}
+
+Overlap is calculated after base planning, so it cannot recursively include
+content that was itself copied as overlap. For every plan after the first, the
+available overlap budget is the smaller of 100 tokens and the space remaining
+under 900 after counting the current base plan. The algorithm walks backward
+through the immediately preceding base plan and prepends complete trailing
+units while they fit. If the first considered unit is larger than the entire
+budget and no complete unit has been selected, it takes a tokenizer-bounded
+suffix of that unit and advances to a safe word start.
+
+The generator explicitly prevents the overlap from reproducing the entire
+previous base plan. If several selected units would do so, the earliest is
+removed. If the previous plan consists of one unit, only a reduced suffix is
+attempted. After overlap and base units are combined, leading overlap units are
+discarded if exact counting still exceeds 900. The base content itself is never
+removed to make room for overlap. As a result, overlap is beneficial but
+subordinate to the hard size bound and to preservation of the current evidence.
+
+Algorithm~\ref{alg:token-aware-chunking} presents these operations in a compact
+form while preserving the decisions made by the production implementation.
+
+\begin{algorithm}[!htbp]
+	\caption{Token-aware document chunking with bounded overlap}
+	\label{alg:token-aware-chunking}
+	\begin{algorithmic}[1]
+		\Require Ordered normalized sections with page and heading provenance
+		\Ensure Ordered non-empty chunks of at most 900 tokens
+		\State $units \gets$ empty list
+		\ForAll{sections ordered by source index}
+			\ForAll{non-empty trimmed lines in the section}
+				\If{the line contains at most 900 tokens}
+					\State Append one provenance-carrying unit
+				\Else
+					\State Split at protected sentence boundaries
+					\State Split any oversized sentence at a safe token/word/Unicode boundary
+				\EndIf
+			\EndFor
+		\EndFor
+		\If{$units$ is empty}
+			\State Fail with a safe no-text error
+		\EndIf
+		\State $plans \gets$ empty list; $current \gets$ empty plan
+		\ForAll{$unit$ in source order}
+			\If{$unit$ starts a titled section and $current \geq 100$ tokens}
+				\State Close $current$ and begin an empty plan
+			\EndIf
+			\If{$current + unit > 700$ tokens and $current \geq 100$ tokens}
+				\State Close $current$ and begin an empty plan
+			\EndIf
+			\If{$current$ is non-empty and $current + unit > 900$ tokens}
+				\State Close $current$ and begin an empty plan
+			\EndIf
+			\State Append $unit$ to $current$
+		\EndFor
+		\State Close the final non-empty plan
+		\If{the final plan is below 100 tokens and a previous plan exists}
+			\State Merge when the result is at most 900 tokens
+			\State Otherwise move valid whole trailing units from the previous plan
+		\EndIf
+		\For{$i \gets 1$ to number of plans}
+			\State $base \gets plans[i]$
+			\If{$i > 1$}
+				\State $budget \gets \min(100, 900 - \Call{TokenCount}{base})$
+				\State $overlap \gets$ largest safe, non-whole suffix of $plans[i-1]$ within $budget$
+			\Else
+				\State $overlap \gets$ empty
+			\EndIf
+			\State Remove leading overlap units while $overlap + base > 900$ tokens
+			\State Build exact content and count its tokens
+			\State Reject empty or over-limit output
+			\State Emit index, content, page range, title, and source-section range
+		\EndFor
+	\end{algorithmic}
+\end{algorithm}
+
+\subsection{Persisted provenance and trade-offs}
+
+For an emitted chunk, page start and end are derived from all combined units,
+including overlap. Source-section bounds likewise use the minimum and maximum
+source indexes represented in the chunk. The displayed section title is the
+first non-empty title in the current base plan, not a title copied only through
+overlap. This prevents an inherited suffix from misnaming the principal new
+content. Chunks may span source sections and PDF pages; page boundaries are not
+hard stops. Their page range therefore describes all evidence included in the
+text rather than pretending that every chunk belongs to one page.
+
+\begin{table}[!htbp]
+	\centering
+	\small
+	\caption{Chunk-size and overlap trade-offs}
+	\label{tab:chunking-tradeoffs}
+	\begin{tabular}{p{3.1cm}p{4.7cm}p{4.7cm}}
+		\toprule
+		Choice & Benefit & Cost or risk \\
+		\midrule
+		Very small chunks & Precise local matching and short context entries & Definitions and conditions can be separated; many vectors are required. \\
+		Very large chunks & More surrounding context remains together & Embeddings mix topics, ranking becomes less precise, and context is consumed quickly. \\
+		No overlap & Minimal duplication and storage & Relevant meaning can be split exactly at a boundary. \\
+		Bounded overlap & Carries nearby context into the next evidence unit & Repeated text can appear in adjacent results and consumes part of the hard limit. \\
+		Natural-unit preference & Preserves lines, sentences, and headings where possible & Output sizes vary around the preferred target. \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+The algorithm is deterministic for identical normalized sections, metadata,
+tokenizer, and options. It does not depend on random choices or a model call.
+Repeated rebuilds therefore produce the same ordered chunk contents and
+provenance, although database identifiers and timestamps can change when rows
+are replaced. Romanian and English text, diacritics, and supplementary Unicode
+characters are preserved. Determinism supports testing, reproducible retrieval
+experiments, and reliable invalidation of downstream embeddings.
+
+Figure~\ref{fig:chunk-overlap} will show two adjacent chunks, their shared
+suffix, and the page/source metadata that accompanies both representations.
+
+\thesisfigureplaceholder{DIA-06}{Conceptual token-bounded chunks with non-recursive overlap and preserved page, heading, and source-section provenance.}{fig:chunk-overlap}
+
+\section{Embedding Generation}
+\label{sec:embedding-generation}
+
+Each completed chunk is mapped to one numerical embedding in the same order in
+which the chunks were generated. The current provider model is
+\texttt{text-embedding-3-small}, configured to return 1,536 dimensions.
+Inputs are sent in sequential batches of at most 32. The adapter requests the
+configured dimension explicitly, restores provider results to input order by
+their response indexes, and rejects missing, duplicated, non-finite, or
+wrong-sized vectors. \citationneeded{OpenAI text embedding model and dimensions}
+
+The application persists vectors through the pgvector .NET type. PostgreSQL
+enables the \texttt{vector} extension and stores the value in a native
+\texttt{vector(1536)} column. \citationneeded{pgvector official documentation}
+The fixed dimension is part of the database schema, so startup validation
+rejects a different configured dimension rather than allowing a later database
+error. Alongside the vector, every chunk stores the model identifier,
+dimensions, generation time, and a SHA--256 hash of its exact content. The
+document stores matching aggregate model, dimension, timestamp, and embedded
+chunk count. These fields allow the API to distinguish a complete current
+embedding set from stale or partially populated data without exposing raw
+vectors to the frontend.
+
+Currency validation is deliberately strict. The document must be \emph{Ready};
+its embedded count must equal its chunk count; model and dimensions must match
+current configuration; and every chunk must contain a vector, share the
+document completion timestamp, and carry the correct hash for its present
+content. A changed chunk therefore invalidates the aggregate even if older
+document-level fields still look current.
+
+There is no embedding cache that suppresses an explicit rebuild. The rebuild
+operation intentionally regenerates vectors even when the existing set is
+current. It first snapshots chunk identifiers, indexes, and exact content,
+performs the provider call, reloads the rows, and verifies that the snapshot did
+not change while generation was in progress. Only then are all vectors replaced
+transactionally. If generation or validation fails, previous authoritative
+embeddings remain available, the document returns to \emph{Ready}, and a safe
+embedding error is recorded. Normalization and chunk rebuilds likewise prepare
+new embeddings before replacing existing derived data.
+
+The current schema does not define an HNSW or IVFFlat approximate-nearest-
+neighbour index. It uses native pgvector representation and database-side
+vector operations without claiming an approximate index that is not present.
+This is suitable for the present local project scale and keeps the first
+implementation straightforward. An approximate index, tuning process, and
+larger-scale benchmark belong to future work.
+
+Embedding is an external AI stage. Although OCR rendering and recognition are
+local, chunk text is transmitted to the configured OpenAI endpoint to generate
+vectors. API credentials are read from server configuration and are neither
+stored with document records nor returned through document contracts.
+
+\section{Status and Failure Isolation}
+\label{sec:ingestion-status-isolation}
+
+The pipeline separates overall usability from diagnostic enrichment. This
+prevents one status value from hiding which stage failed and avoids making
+optional analysis a prerequisite for all retrieval. Table~\ref{tab:processing-statuses}
+summarizes the persisted concerns.
+
+\begin{table}[!htbp]
+	\centering
+	\small
+	\caption{Separation of ingestion and analysis status}
+	\label{tab:processing-statuses}
+	\begin{tabular}{p{3.0cm}p{5.2cm}p{4.8cm}}
+		\toprule
+		Concern & States or diagnostic fields & Role in ordinary ingestion \\
+		\midrule
+		Document processing & Uploaded, Processing, Ready, Failed & Overall searchable usability \\
+		Technical PDF analysis & NotAnalyzed, Processing, Ready, Failed, Skipped & Non-fatal structural diagnostic and OCR prerequisite \\
+		OCR document & NotAnalyzed, Processing, Ready, Partial, Failed, Skipped & Page recovery; non-fatal only when useful text remains \\
+		OCR page & Ready, Empty, Failed, SkippedLimit & Per-page recognition and provenance \\
+		Document Understanding & NotAnalyzed, Pending, Processing, Ready, Failed, Skipped & Non-fatal structured enrichment \\
+		Normalization, chunks, embeddings & Counts, timestamps, and separate safe error fields & Required derived representation during initial ingestion \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+A representative mixed-PDF outcome illustrates this design. Suppose one page
+has native text, two pages are classified as scans, one scan is recognized, and
+the other OCR attempt fails. OCR is \emph{Partial}, yet the unified extraction
+contains the native page and one OCR page. If normalization, chunking, and
+embedding succeed, the document can be \emph{Ready}. Diagnostics still reveal
+the missing page, so readiness does not falsely imply perfect OCR coverage. If
+all pages were scans and none produced text, the no-text check would instead
+make document processing \emph{Failed}.
+
+Similarly, a model-provider or validation problem can leave Document
+Understanding \emph{Failed} while chunks and embeddings make the document
+searchable. Technical analysis can fail while native PDF extraction succeeds;
+in that case OCR cannot be safely routed and is reported as not analyzed, but
+the native text can still proceed. These outcomes are not swallowed errors.
+They are explicit, independently inspectable states.
+
+Required-stage failures have stricter semantics during initial ingestion.
+Extraction with no useful result, destructive-normalization prevention that
+cannot produce valid input, chunk-generation failure, or embedding failure
+prevents a new \emph{Ready} representation. Partial new text and chunks are
+removed, aggregate counts are cleared, the stored source file is retained for
+retry, and the error is assigned to the most specific field available. For
+manual rebuilds of an already ready document, new derived data is prepared
+before replacement; failure preserves the previous authoritative data and
+records the rebuild error. This distinction lets the application be strict
+when first establishing searchability and conservative when updating an
+already usable document.
+
+The final ingestion result is therefore more than extracted text. It is an
+ordered and normalized representation, page and heading provenance,
+independent technical and semantic diagnostics, deterministic bounded chunks,
+validated vectors, and explicit status information. Chapter~\ref{chap:retrieval-grounding} uses these
+persisted artifacts as the starting point for hybrid retrieval and grounded
+question answering.

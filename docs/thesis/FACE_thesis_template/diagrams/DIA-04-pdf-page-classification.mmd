@@ -1,0 +1,18 @@
+flowchart TD
+    A[Inspect PDF page locally] --> B[Count Unicode letters/digits and useful words]
+    A --> C[Measure non-mask raster placements]
+    B --> D{Meaningful text?}
+    C --> E[Largest single-image page coverage]
+    D -- Yes --> F{Coverage at least 0.30?}
+    F -- Yes --> G[Mixed]
+    F -- No --> H[TextBased]
+    D -- No --> I{Coverage at least 0.80?}
+    I -- Yes --> J[Scanned]
+    I -- No --> K{Any raster image?}
+    K -- Yes --> L[ImageBased]
+    K -- No --> M[Unknown]
+
+    N[Meaningful text: at least 40 alphanumeric characters OR at least 8 useful words]:::note
+    N -. versioned rule .-> D
+    classDef note fill:#fff8dc,stroke:#8a6d1d,color:#111;
+

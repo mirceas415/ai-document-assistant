@@ -1,0 +1,379 @@
+\chapter{Retrieval and Grounded Question Answering}
+\label{chap:retrieval-grounding}
+
+The document-processing path described in Chapter~\ref{chap:document-ingestion} transforms uploaded files into normalized, provenance-aware chunks and stores one embedding for each current chunk. That path prepares the knowledge base, but it does not by itself answer a user's question. The second half of the system must select useful evidence from all ready documents in the active workspace, fit that evidence into a bounded model request, generate an answer that remains within the supplied material, and preserve a source trail that the user can inspect later.
+
+This chapter describes that question-side path as one integrated process. The implementation first creates a broad candidate set through semantic, lexical, and metadata-aware retrieval. It then fuses rankings whose numerical scores are not directly comparable, optionally asks a model to rerank a bounded subset, and constructs a source-labelled Retrieval-Augmented Generation (RAG) context. Finally, it validates every cited source identifier against mappings created by the backend. The stages have different responsibilities: first-stage retrieval aims to avoid missing relevant evidence, reranking attempts to improve the ordering of the evidence already found, and answer generation turns the final evidence into readable prose. Keeping these responsibilities separate also permits bounded failure handling. In particular, a reranker failure does not make the underlying hybrid results unusable.
+
+\section{Baseline Semantic Retrieval}
+\label{sec:baseline-semantic-retrieval}
+
+Semantic retrieval is the baseline content-retrieval channel. Its purpose is to find passages that express a similar meaning to the question even when the wording is different. For example, a question about ``ending an agreement early'' may need to find a clause headed ``termination'', although the user's words do not occur verbatim in that clause. Embeddings provide the shared numerical representation needed for this comparison. The concepts of embeddings and cosine distance were introduced in Chapter~\ref{chap:background}; this section explains how they are applied in the implemented system. \citationneeded{vector embeddings and cosine retrieval}
+
+When a search begins, the backend first verifies that the requested project belongs to the authenticated user. This check occurs before an embedding request is sent to the external model provider. A missing or foreign project therefore produces no query embedding and does not reveal whether another user's documents contain matching text. The question is trimmed and checked against a maximum length of 2,000 characters. The embedding service then produces exactly one transient vector for the current question, using the same configured model and dimensionality as the stored chunk vectors. In the checked-in configuration, the model is \texttt{text-embedding-3-small} and each vector has 1,536 dimensions. The query vector is used for the database operation and is not persisted.
+
+The PostgreSQL query uses pgvector's cosine-distance operator to compare the question vector with chunk embeddings. Lower distance means greater similarity, so results are ordered by ascending cosine distance. Stable secondary keys---document identifier, chunk index, and chunk identifier---make an equal-distance result deterministic. The default question-answering request ultimately needs eight chunks, but the semantic channel retrieves up to 30 candidates so that later fusion and reranking have a broader set from which to choose. Public diagnostic search requests may select a Top-K value between 1 and 20; candidate pool sizes are clamped to centralized safety bounds. \citationneeded{pgvector cosine-distance search}
+
+Retrieval eligibility is more restrictive than merely checking that an embedding column is non-null. A candidate must satisfy all of the following conditions:
+
+\begin{itemize}
+	\item its project and project owner must match the authenticated request;
+	\item its document must have the \texttt{Ready} processing status and at least one chunk;
+	\item the document's embedded-chunk count must equal its current chunk count;
+	\item the document and chunk must use the configured embedding model and 1,536-dimensional representation;
+	\item the chunk embedding timestamp must correspond to the document's current embedding operation; and
+	\item the stored SHA-256 embedding-content hash must equal a database-side hash of the current chunk content.
+\end{itemize}
+
+These checks prevent a stale vector from ranking text that has since changed. They also exclude a partly rebuilt document whose aggregate fields might otherwise appear valid. The policy favors consistency over partial semantic availability: a document enters the semantic channel only when its complete current chunk set has current embeddings. By contrast, the lexical channel in Section~\ref{sec:lexical-retrieval} can still retrieve ready text without current vectors. This difference is intentional and gives the hybrid design a useful degradation path.
+
+The present database model does not define an HNSW or IVFFlat approximate-nearest-neighbour index. The query performs an exact cosine ordering over the eligible rows. Exact search is simple and appropriate for the current demonstration scale, but its cost grows with the number of eligible chunks. A future large deployment would need to evaluate an approximate vector index and its recall, build-time, and operational trade-offs rather than assuming that the current query plan scales without change.
+
+\section{PostgreSQL Lexical Retrieval}
+\label{sec:lexical-retrieval}
+
+Semantic similarity is valuable for paraphrases, but it is not uniformly strong for every query. Contract numbers, invoice identifiers, account codes, monetary values, and uncommon names often depend on exact character sequences. A semantically close paragraph may be less useful than the one paragraph containing the requested identifier. Lexical retrieval addresses this complementary need by ranking chunks according to matching terms in their actual text. \citationneeded{PostgreSQL full-text search}
+
+Each persisted chunk has a generated PostgreSQL \texttt{tsvector} column derived from its content. The vector uses the \texttt{simple} text-search configuration rather than a language-specific stemmer. This is a deliberate fit for a collection that may contain English, Romanian, identifiers, and mixed-language technical text: it avoids selecting a single linguistic configuration for all documents. A GIN index is defined over the generated search vector. PostgreSQL maintains the generated representation when chunk content changes, so application code does not have to synchronize a second manually computed field.
+
+The lexical query uses two forms. The original user text is passed to \texttt{websearch\_to\_tsquery}, which interprets familiar web-search syntax safely inside PostgreSQL. A second, relaxed form is built from deterministic search terms extracted by the local query analyzer. The analyzer applies Unicode compatibility normalization, collapses whitespace, lowercases text, removes a compact set of common English and Romanian query words, deduplicates terms, and retains at most twelve. The relaxed representation helps a natural-language question match its meaningful terms without interpolating user input into SQL.
+
+Both forms use the same \texttt{simple} configuration. A chunk qualifies when its generated search vector matches either form. Its lexical score is the sum of the two cover-density ranking values produced by \texttt{ts\_rank\_cd}. The query then orders scores from highest to lowest and applies document identifier, chunk index, and chunk identifier as deterministic tie-breakers. All query values, including the original and relaxed text, are database parameters. Punctuation, quotation marks, operator-like words, Unicode text, and identifier separators are consequently treated through PostgreSQL's query functions rather than assembled as executable SQL.
+
+Like semantic retrieval, lexical retrieval is scoped to the owner, project, and documents with \texttt{Ready} status. It does not require current embeddings. This distinction means that a lexical-only candidate can remain in the hybrid result when an older ready document has usable chunks but its embeddings need rebuilding. The default lexical pool contains up to 30 chunks, independently of the 30 semantic candidates. A chunk found by both channels is not duplicated later; it receives one contribution from each ranked list.
+
+Lexical retrieval is not described as an exact substring engine. Full-text tokenization and ranking still mediate the match, and a phrase may be affected by punctuation or token boundaries. Its engineering purpose is narrower: it contributes a ranking signal that responds strongly to shared terms and identifier-like wording, thereby covering failure modes different from those of the embedding channel.
+
+\section{Metadata-Aware Retrieval}
+\label{sec:metadata-aware-retrieval}
+
+Document Understanding produces structured information such as document type, title, subject, organizations, people, identifiers, dates, and monetary values. During retrieval, selected parts of this information become a third, document-level ranking signal. This signal is useful when a question refers to a document by what it is---for example, ``the invoice from an organization'' or ``contract CN-2026-00491''---rather than only by the wording of an individual paragraph. Metadata-aware retrieval techniques provide the general context for this design; the weights and safeguards described here are specific to this application. \citationneeded{metadata-aware information retrieval}
+
+The local query analyzer extracts a bounded set of clues before the metadata query is issued. In addition to the relaxed lexical terms, it recognizes controlled English and Romanian aliases for several document types, separator-based alphanumeric identifiers, supported numeric date forms, and monetary expressions with a recognized currency. At most eight identifiers, eight dates, and eight monetary values are retained. The metadata query itself considers only documents in the active, owned project that are \texttt{Ready} and whose Document Understanding record is also \texttt{Ready}. A failed or unavailable understanding result therefore cannot block ordinary content retrieval; it simply contributes no metadata rank.
+
+Table~\ref{tab:retrieval-metadata-signals} summarizes the actual fields used. Exact handling must not be generalized beyond what the code implements. In particular, an exact identifier receives special treatment, whereas organization and person values are term-matched through a language-neutral full-text expression.
+
+\begin{table}[!htbp]
+	\centering
+	\caption{Metadata-aware retrieval signals and their implemented role}
+	\label{tab:retrieval-metadata-signals}
+	\small
+	\begin{tabular}{p{3.2cm}p{5.2cm}p{6.1cm}}
+		\toprule
+		Signal & Matching behaviour & Role and limitation \\
+		\midrule
+		Document type & Controlled query aliases are compared with the classified type. & Adds a document-level score; it does not prove that a particular chunk answers the question. \\
+		Filename & Exact full-name or stem equality, plus term matches. & Useful when users identify a file by name; filenames are not inserted into answer evidence. \\
+		Detected title & Exact normalized equality or term matches. & Can prioritize a likely document while leaving content channels authoritative. \\
+		Subtype and subject & Bounded term matches. & Lower-weight descriptive signals. \\
+		Identifier & Exact normalized equality or term matches in label/value fields. & Exact equality receives the strongest raw metadata score and activates the RRF multiplier. \\
+		Date and monetary amount & Exact normalized forms or term matches. & Exact values improve metadata-document rank, but do not activate the identifier multiplier. \\
+		Organization, person, jurisdiction, topic, other & Terms matched against label, value, and normalized value. & Supports descriptive queries; no exact-organization multiplier is implemented. \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+The metadata query computes an internal match score and converts it into a ranked list of documents. An exact identifier contributes 12 points to that internal score; an exact date or monetary amount contributes 6. Term matches contribute 4 for organizations and identifiers, 3 for dates and amounts, and 2 for other metadata kinds. Document type, filename, title, subtype, and subject have separate bounded contributions. The sum of metadata-entry contributions is capped, and documents with equal scores are ordered by identifier. These point values determine the metadata document rank; the raw values are not added directly to the final chunk score.
+
+Only the three strongest distinct matched signals are retained for diagnostics. More importantly, metadata is implemented as a \emph{soft boost}. It cannot create a result by itself. The fusion stage builds its chunk universe exclusively from chunks returned by semantic or lexical retrieval, and then looks up an optional metadata rank for each chunk's document. A metadata-only document therefore never displaces all actual content evidence. This property prevents classification or extraction errors from becoming hard filters and preserves the possibility that a strong paragraph wins despite weak metadata.
+
+Metadata is also \emph{not answer evidence}. The RAG context contains the selected chunk's content and provenance, not the Document Understanding labels that boosted its document. The answer model must support its factual statements from retrieved text. Metadata affects where the system looks; it is not presented as proof of what the document says.
+
+\section{Hybrid Retrieval and Weighted Reciprocal Rank Fusion}
+\label{sec:hybrid-rrf}
+
+The three retrieval channels produce different kinds of numerical values. Cosine distance is lower when a semantic candidate is better. PostgreSQL full-text rank is higher when a lexical candidate is better. Metadata has a separately designed document-level match score. Adding these raw values would make the final ranking depend on arbitrary scale and distribution differences. A normalization rule could be introduced, but its behaviour would vary with the candidate set. Reciprocal Rank Fusion (RRF) avoids this problem by using each channel's ordinal rank rather than its raw score. RRF is an established information-retrieval technique; the student's contribution is its weighted, metadata-aware integration and deterministic implementation in this system. \citationneeded{original Reciprocal Rank Fusion publication}
+
+Figure~\ref{fig:hybrid-retrieval-pipeline} shows the complete first-stage path. Semantic and lexical searches supply chunk candidates, while metadata supplies document ranks that can boost only those existing candidates. The fused list is bounded before it crosses the reranking provider boundary.
+
+\thesisfigureplaceholder{DIA-07}{Hybrid retrieval pipeline combining semantic chunks, lexical chunks, and soft document-metadata signals before reranking.}{fig:hybrid-retrieval-pipeline}
+
+For a chunk $c$, the implemented weighted score is
+
+\begin{equation}
+	\label{eq:weighted-rrf}
+	\operatorname{RRF}(c) =
+	\frac{w_v}{k+r_v(c)}
+	+
+	\frac{w_l}{k+r_l(c)}
+	+
+	\begin{cases}
+	\dfrac{w_m\,q(c)}{k+r_m(d(c))}, & \text{if metadata matched document } d(c),\\[5pt]
+	0, & \text{otherwise.}
+	\end{cases}
+\end{equation}
+
+Here, $r_v(c)$ and $r_l(c)$ are the one-based vector and lexical ranks of chunk $c$. A missing chunk rank contributes zero rather than an arbitrarily poor score. The function $d(c)$ gives the chunk's document, and $r_m(d(c))$ is that document's one-based metadata rank. The constant $k$ reduces the difference between adjacent high ranks and prevents the first result from dominating the entire fusion. The channel weights are $w_v$, $w_l$, and $w_m$. Finally, $q(c)$ is 1.5 only when the matched document has an exact identifier match and is 1 otherwise. It does not multiply the semantic or lexical terms.
+
+The checked-in values are shown in Table~\ref{tab:rrf-configuration}. Startup validation additionally requires the largest possible metadata-channel weight, $0.35\times1.5=0.525$, not to exceed either content-evidence channel weight.
+
+\begin{table}[!htbp]
+	\centering
+	\caption{Checked-in hybrid retrieval and RRF configuration}
+	\label{tab:rrf-configuration}
+	\small
+	\begin{tabular}{p{5.2cm}p{2.6cm}p{6.5cm}}
+		\toprule
+		Parameter & Value & Interpretation \\
+		\midrule
+		Vector candidate count & 30 & Recall-oriented semantic pool before fusion. \\
+		Lexical candidate count & 30 & Independent full-text pool before fusion. \\
+		Metadata document count & 20 & Maximum ranked documents contributing soft boosts. \\
+		Reciprocal rank constant $k$ & 60 & Denominator offset shared by all channels. \\
+		Vector weight $w_v$ & 1.0 & Full-weight chunk-content channel. \\
+		Lexical weight $w_l$ & 1.0 & Full-weight chunk-content channel. \\
+		Metadata weight $w_m$ & 0.35 & Deliberately weaker document-level contribution. \\
+		Exact identifier multiplier & 1.5 & Applies only to $w_m$ for a document with an exact identifier match. \\
+		Fused candidates for default answer & up to 18 & Bounded list passed toward reranking before final Top-8. \\
+		Hard chunk-candidate bound & 100 & Defensive maximum for configured vector, lexical, or fused pools. \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+Before scoring, each input list is converted to a unique chunk-to-rank map; the first occurrence establishes the rank. Metadata records are similarly reduced to the best ranked record for each document. The candidate set is then the union of vector and lexical chunk identifiers. Algorithm~\ref{alg:weighted-rrf} states the process without reproducing production C\# code.
+
+\begin{algorithm}[!htbp]
+	\caption{Weighted RRF over content candidates with a soft metadata boost}
+	\label{alg:weighted-rrf}
+	\begin{algorithmic}[1]
+		\Require ordered vector chunks $V$, lexical chunks $L$, metadata documents $M$, result bound $n$
+		\Ensure at most $n$ unique fused chunks
+		\State $R_v \gets$ first one-based rank of each unique chunk in $V$
+		\State $R_l \gets$ first one-based rank of each unique chunk in $L$
+		\State $R_m \gets$ best one-based rank of each unique document in $M$
+		\State $U \gets \operatorname{keys}(R_v) \cup \operatorname{keys}(R_l)$
+		\ForAll{chunk $c$ in $U$}
+			\State $s \gets 0$
+			\If{$c$ occurs in $R_v$}
+				\State $s \gets s + w_v/(k+R_v[c])$
+			\EndIf
+			\If{$c$ occurs in $R_l$}
+				\State $s \gets s + w_l/(k+R_l[c])$
+			\EndIf
+			\If{document $d(c)$ occurs in $R_m$}
+				\State $q \gets 1.5$ if $d(c)$ has an exact identifier match, otherwise $1$
+				\State $s \gets s + w_m q/(k+R_m[d(c)])$
+			\EndIf
+			\State attach channel ranks, matched metadata summary, and score $s$ to $c$
+		\EndFor
+		\State sort by score descending, best individual rank, document ID, chunk index, then chunk ID
+		\State \Return the first $n$ chunks
+	\end{algorithmic}
+\end{algorithm}
+
+Figure~\ref{fig:rrf-fusion-concept} will visualize the same idea as contributions entering one rank-based score. It is deliberately a conceptual diagram rather than a graph of measured project quality.
+
+\thesisfigureplaceholder{DIA-08}{Weighted Reciprocal Rank Fusion contributions from vector rank, lexical rank, and an optional weaker metadata-document rank.}{fig:rrf-fusion-concept}
+
+Table~\ref{tab:rrf-worked-example} gives a small fictional example using the actual default formula. It is explanatory and is not an evaluation result. Chunk A is strongest semantically but fifth lexically and has no metadata match. Chunk B is first lexically, fourth semantically, and belongs to the first metadata-ranked document with an exact identifier match.
+
+\begin{table}[!htbp]
+	\centering
+	\caption{Fictional weighted-RRF calculation using the implemented defaults}
+	\label{tab:rrf-worked-example}
+	\small
+	\begin{tabular}{p{1.5cm}p{3.2cm}p{3.2cm}p{3.6cm}p{2.6cm}}
+		\toprule
+		Chunk & Vector contribution & Lexical contribution & Metadata contribution & Total \\
+		\midrule
+		A & $1/(60+1)=0.016393$ & $1/(60+5)=0.015385$ & $0$ & $0.031778$ \\
+		B & $1/(60+4)=0.015625$ & $1/(60+1)=0.016393$ & $0.35\times1.5/(60+1)=0.008607$ & $0.040625$ \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+Chunk B ranks first in this example because it has evidence in all three channels, including an exact identifier signal. The result does not imply that metadata can rescue a metadata-only document: B was already present in both content candidate lists. If its vector and lexical positions were much weaker, the deliberately bounded metadata contribution would not necessarily overcome stronger content evidence.
+
+After scoring, ties are resolved by the best individual rank across the available channels, followed by document identifier, chunk index, and chunk identifier. This ordering ensures reproducibility even when floating-point scores are equal. Diagnostic fields preserve vector rank, lexical rank, metadata-document rank, lexical score, fused score, and the short matched-metadata summary. These fields support development and evaluation, while the downstream answer receives actual chunk text rather than ranking diagnostics.
+
+\section{Model-Based Reranking}
+\label{sec:model-reranking}
+
+First-stage hybrid retrieval is designed to maximize the chance that useful evidence enters a bounded candidate set. Its signals remain relatively shallow: embedding similarity, term matching, and structured document hints. Model-based reranking performs a different task. It reads the strongest candidate passages in relation to the original question and attempts to order them by direct usefulness for a grounded answer. This is a precision-oriented second stage, not a replacement for candidate generation. The final evaluation will compare hybrid ordering with hybrid plus reranking; no improvement is assumed before those measurements exist. \citationneeded{model-based passage reranking}
+
+With the default configuration, RRF retains up to 18 candidates for this stage, while the eventual answer still uses Top-8. Eighteen is the configured candidate count and 30 is the hard maximum accepted by the reranking subsystem. Candidate construction follows the hybrid order and assigns stable opaque identifiers \texttt{C1}, \texttt{C2}, and so on. The provider receives the original question and, for each candidate, only its opaque identifier, bounded document name, page label, optional heading, and content. It does not receive embedding vectors, cosine distances, lexical scores, metadata values, channel ranks, or the fused score. Omitting those diagnostics makes the second-stage decision content-oriented and avoids encouraging the model simply to restate the deterministic ranking.
+
+The input builder applies several bounds before a network request is allowed. A document name is limited to 300 characters and a heading to 500. A serialized candidate may contain at most approximately 700 \texttt{cl100k\_base} tokens. If content exceeds the available space, it is truncated at a tokenizer-derived character boundary and marked as truncated. The complete constructed \emph{user payload} is limited to approximately 12,000 tokens. This number does not include the separate system instructions, so it should not be described as a complete provider-request token count. When the remaining budget cannot hold another candidate with the minimum 100-token candidate allowance, candidate collection stops. All truncation affects only the provider payload; persisted chunk text remains unchanged.
+
+The checked-in reranker settings appear in Table~\ref{tab:reranking-configuration}.
+
+\begin{table}[!htbp]
+	\centering
+	\caption{Checked-in model-reranking configuration}
+	\label{tab:reranking-configuration}
+	\small
+	\begin{tabular}{p{5.1cm}p{3.0cm}p{6.4cm}}
+		\toprule
+		Setting & Value & Meaning \\
+		\midrule
+		Enabled & true & Attempt reranking when the candidate/Top-K conditions require it. \\
+		Configured candidate count & 18 & Normal maximum candidates built from hybrid order. \\
+		Hard candidate maximum & 30 & Defensive schema and application limit. \\
+		User-payload token budget & 12,000 & Approximate tokens in the constructed user input; excludes system instructions. \\
+		Per-candidate token budget & 700 & Includes serialized candidate framing and bounded content. \\
+		Minimum candidate allowance & 100 & Below this amount, another candidate is not added. \\
+		Provider output budget & 800 & Maximum response tokens for structured ranking. \\
+		Relevance scale & 0--4 & Irrelevant through directly supporting evidence. \\
+		Timeout & 30 seconds & Linked application timeout; hard configurable maximum is 60 seconds. \\
+		Configured model & \texttt{gpt-5.6-sol} & Falls back to the answer model only if the reranker model is omitted. \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+The reranking system instruction defines candidate text, filenames, page labels, and headings as untrusted data. It forbids following commands contained in a candidate, calling tools, answering the user's question, creating citations, or producing explanatory prose. It asks only for comparative relevance. The response is constrained by a strict JSON schema: an object containing a ranking array, whose items contain only a candidate ID and an integer relevance grade from 0 to 4. Stored provider output is disabled and low reasoning effort is requested. \citationneeded{OpenAI Responses API structured outputs}
+
+Strict provider output is necessary but not sufficient. The backend validates the result against the exact request it created. Unknown IDs are ignored because they have no authoritative mapping. If an ID occurs repeatedly, only its first occurrence is retained. An omitted known candidate is not discarded; it is appended after the model-listed candidates in its original hybrid order. This policy permits a partially returned but otherwise valid ranking without allowing evidence to disappear unpredictably. Conversely, a null item, a null or out-of-range grade for a known candidate, an empty usable ranking, or a ranking longer than the supplied candidate set makes the response untrusted and triggers complete fallback.
+
+Algorithm~\ref{alg:reranking-validation} summarizes orchestration and local validation. ``Hybrid Top-K'' always means the first $K$ chunks from the deterministic RRF order.
+
+\begin{algorithm}[!htbp]
+	\caption{Bounded reranking validation with fail-open hybrid fallback}
+	\label{alg:reranking-validation}
+	\begin{algorithmic}[1]
+		\Require question $Q$, ordered hybrid candidates $H$, requested result count $K$
+		\Ensure a final list of at most $K$ candidates
+		\If{reranking is disabled, $|H|\leq1$, or $|H|\leq K$}
+			\State \Return first $K$ candidates from $H$
+		\EndIf
+		\State build bounded request $B$ with opaque IDs from $H$
+		\If{request construction fails}
+			\State \Return Hybrid Top-K and record fallback
+		\EndIf
+		\If{$|B|\leq K$}
+			\State \Return Hybrid Top-K without calling the provider
+		\EndIf
+		\State call the reranker under the configured timeout
+		\If{timeout, provider error, missing/empty ranking, or ranking longer than $B$}
+			\State \Return Hybrid Top-K and record fallback
+		\EndIf
+		\State $O\gets$ empty ordered list; $S\gets$ empty set of accepted IDs
+		\ForAll{item $x$ in provider order}
+			\If{$x$ is null}
+				\State \Return Hybrid Top-K and record fallback
+			\EndIf
+			\If{$x.\mathit{id}$ is unknown or already in $S$}
+				\State continue
+			\EndIf
+			\If{$x.\mathit{grade}$ is null or outside $[0,4]$}
+				\State \Return Hybrid Top-K and record fallback
+			\EndIf
+			\State append mapped candidate and grade to $O$; add ID to $S$
+		\EndFor
+		\If{$O$ is empty}
+			\State \Return Hybrid Top-K and record fallback
+		\EndIf
+		\State append every candidate omitted from $O$ in original hybrid order
+		\State assign rerank positions and \Return first $K$ candidates from $O$
+	\end{algorithmic}
+\end{algorithm}
+
+Reranking is deliberately skipped when disabled, when zero or one candidate exists, when the fused set is no larger than requested Top-K, or when token budgeting leaves no more than Top-K request candidates. These normal skip cases are distinct from fallback and do not report an error. During a real provider call, a linked 30-second timeout is applied. Caller cancellation still propagates, but timeout, provider exception, missing API configuration, malformed output, or failed input construction returns the original hybrid Top-K. The question-answering pipeline can therefore continue with deterministic evidence instead of failing solely because the optional precision stage is unavailable.
+
+Figure~\ref{fig:reranking-fallback} emphasizes this two-outcome design.
+
+\thesisfigureplaceholder{DIA-09}{Bounded model reranking with structured validation and fail-open return to the hybrid order.}{fig:reranking-fallback}
+
+The design has an explicit latency and cost trade-off. Candidate generation requires one query embedding and database retrieval; reranking adds a second model request before answer generation. Larger candidate sets may improve the chance of presenting useful passages to the reranker, but consume more tokens and response time. The selected bounds make that cost predictable for the current system. Whether the additional request produces a measurable ranking benefit is an empirical question reserved for Chapter~\ref{chap:testing-evaluation}.
+
+\section{RAG Context Construction}
+\label{sec:rag-context}
+
+The final retrieved chunks cannot be copied into an unbounded prompt. Context construction turns the ordered Top-K result into a compact evidence package whose size, labels, and provenance are controlled by the backend. This is the retrieval-to-generation boundary of the RAG process. \citationneeded{Retrieval-Augmented Generation}
+
+The builder traverses final chunks in rank order and removes duplicate chunk identifiers as well as byte-for-byte duplicate content. Each accepted chunk receives the next sequential source identifier, beginning with \texttt{S1}. Its block contains the original filename, page or page range when available, one-based chunk number, optional heading, and chunk content. The blocks are enclosed by explicit begin/end delimiters that label the entire region as untrusted document context. Ranking diagnostics and Document Understanding metadata are not included.
+
+The checked-in document-context limit is 6,000 approximate \texttt{cl100k\_base} tokens. The builder accounts for the begin/end delimiters, each source header, separators, and content. If an entire next chunk cannot fit, the content is truncated to the remaining token allowance and that source is included; construction then stops so that later, lower-ranked chunks cannot leapfrog it. A final defensive pass reduces content further if tokenizer boundary effects would exceed the limit. If even useful content cannot fit, no source is added.
+
+The normal answer path asks retrieval for Top-8, so no more than eight source blocks can be admitted before deduplication and budgeting reduce that number. The 6,000-token document budget is separate from both the system instructions and the 1,200-token conversation-history budget discussed in Section~\ref{sec:conversational-context}. It must therefore be described as a bounded \emph{document context}, not as the model request's total token count.
+
+Context construction preserves the relationship between a source label and the actual retrieved chunk. The source object retains the document and chunk identifiers, filename, position, pages, heading, and full persisted content. A displayed excerpt is produced later under its own 500-character limit. This separation permits a concise user interface while keeping the mapping itself authoritative.
+
+\section{Grounded Answer Generation}
+\label{sec:grounded-answer-generation}
+
+After context construction, the answer service sends three logically separate elements to the configured provider: higher-priority grounding instructions, the current user question, and a user-message payload containing bounded conversation context and delimited document evidence. The checked-in answer model is \texttt{gpt-5.6-luna}; output is limited to 700 tokens, low reasoning effort is requested, and provider-side stored output is disabled. The thesis describes this interaction at architectural level and does not expose credentials or configuration secrets. \citationneeded{OpenAI Responses API}
+
+The grounding instructions require factual claims to come only from the supplied document context. They explicitly state that recent conversation history is useful only for resolving wording and continuity, not as evidence. Document passages are labelled as untrusted data, and any role change, command, or instruction inside them must be ignored. The model is instructed not to use general world knowledge to fill gaps, to answer naturally in the language of the question, and to cite only supplied \texttt{S}-identifiers.
+
+There are two no-evidence paths. If hybrid retrieval returns no eligible chunks, the backend skips answer generation and returns a fixed decline. It does the same if no retrieved text fits the context budget. The decline is selected in English or Romanian through a small deterministic question-language heuristic. If chunks are supplied but do not contain enough relevant information, the model instruction requires an equivalent transparent statement rather than a guess. The latter remains a model behaviour that must be tested; it is not guaranteed merely by the prompt.
+
+Provider failures are converted into a safe application error without logging the question, context, prompt, answer, or provider payload. In a persistent conversation, the current user message is committed before network answer generation. A failure therefore leaves a retryable user message but does not create a fabricated assistant response or source list. This differs appropriately from reranker failure: the reranker can fall back to hybrid evidence, whereas an unavailable answer model cannot produce the requested natural-language answer.
+
+\section{Authoritative Citations}
+\label{sec:authoritative-citations}
+
+A language model can write a token that looks like a citation, but that token alone does not establish provenance. The application therefore separates citation presentation from citation authority. The backend creates the source identifiers while building context and keeps an in-memory map from each identifier to a real retrieved chunk. The model may reference those identifiers in prose; it cannot register another document or chunk as a valid source.
+
+After generation, the backend extracts citation markers matching \texttt{[S1]}, \texttt{[S2]}, and the same form with other positive integer suffixes. Identifiers are normalized to uppercase, checked against the context map, and deduplicated. Unknown markers are removed from the answer. The response source collection is built only from referenced identifiers that exist in the map. It contains document and chunk identifiers, filename, chunk index, page range, heading, and an excerpt of at most 500 characters taken from the authoritative persisted chunk.
+
+Figure~\ref{fig:grounded-citation-flow} shows the division of responsibility, and Table~\ref{tab:citation-authority} makes the trust boundary explicit.
+
+\thesisfigureplaceholder{DIA-10}{Grounded answer and citation flow from backend-assigned source identifiers to validated source snapshots.}{fig:grounded-citation-flow}
+
+\begin{table}[!htbp]
+	\centering
+	\caption{Responsibilities in authoritative citation handling}
+	\label{tab:citation-authority}
+	\small
+	\begin{tabular}{p{3.0cm}p{5.7cm}p{5.8cm}}
+		\toprule
+		Actor/stage & May do & May not establish \\
+		\midrule
+		Context builder & Assign \texttt{S1}, \texttt{S2}, and map them to retrieved chunks. & Whether the model will cite every supported statement. \\
+		Answer model & Refer to supplied identifiers while composing the answer. & A new valid source identifier or a new backend mapping. \\
+		Citation validator & Remove unknown IDs, deduplicate references, and return mapped provenance. & Semantic entailment between every claim and cited passage. \\
+		Conversation service & Persist answer text and bounded source snapshots in source order. & Continued existence of the original uploaded document. \\
+		User/evaluation process & Inspect the saved excerpt and document/page/chunk provenance. & Automatic correctness without reading and evaluating the evidence. \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+This design blocks a common structural error: an invented \texttt{S99} cannot cause the API to return a fabricated source. It does not, however, solve the harder semantic problem of determining whether a valid source truly supports the sentence beside it. The backend validates \emph{membership and provenance}, not logical entailment. Citation correctness is consequently included as a separate metric in Chapter~\ref{chap:testing-evaluation} rather than asserted as a guaranteed property. \citationneeded{grounded-answer citation correctness evaluation}
+
+For persistent conversations, each cited source is stored as a snapshot rather than as a required foreign-key relationship to the document or chunk. The snapshot includes the names and positions needed to understand historical provenance and the bounded excerpt shown with that answer. Deleting an original document therefore does not cascade into the historical source records. This is useful for conversational auditability: a past answer retains the evidence excerpt that was displayed when it was created, even if the current workspace collection later changes. The snapshot is intentionally bounded and is not a replacement for a complete archival copy of the deleted document.
+
+\section{Conversational Context}
+\label{sec:conversational-context}
+
+Documents belong to a workspace rather than to one chat, so their extraction, chunks, and embeddings can be reused across multiple conversations. Each conversation persists a title and an ordered series of user and assistant messages. A new conversation begins with the deterministic title ``New chat''; the first user question supplies a bounded generated title unless the title has already been changed. Assistant messages persist their validated source snapshots alongside their text.
+
+When the user submits a follow-up question, the current question alone drives query analysis, query embedding, hybrid retrieval, and reranking. Before the current user message is added to generation context, the conversation service selects at most the six most recent preceding messages. The history builder works backwards so that the newest turns survive when the 1,200-token history budget is tight, then restores chronological order for the final prompt. It includes role-labelled user and assistant text but no previous source mappings.
+
+The history is enclosed in a separate \texttt{NON\_AUTHORITATIVE\_CONVERSATION\_CONTEXT} region. Both the wrapper text and the higher-priority grounding instructions say that it may clarify references such as ``that clause'' or ``the second amount'', but may not support factual claims and may not be cited. In particular, a previous assistant response is generated context, not retrieved evidence. The new answer must be grounded in chunks retrieved for the current question.
+
+This separation reduces error propagation across turns. It does not prevent the conversation from feeling continuous, because wording and recent intent remain available. At the same time, an unsupported earlier assistant statement is not silently promoted into a source. Conversational RAG and history-selection strategies provide broader background for this design. \citationneeded{conversational retrieval-augmented generation}
+
+\section{Prompt-Injection Defense}
+\label{sec:prompt-injection-defense}
+
+Uploaded text may contain sentences that resemble model instructions. Some may be ordinary document prose, while others may intentionally attempt to redirect the model, reveal secrets, rank their own chunk first, or ignore source requirements. This is an indirect prompt-injection threat because untrusted document data enters a model request assembled by the application. No single prompt can prove complete prevention, so the implementation uses defense in depth and retains explicit residual risk. \citationneeded{authoritative indirect prompt-injection guidance}
+
+The first defensive layer is the application boundary. Authentication and project ownership determine which documents can enter retrieval. Queries are parameterized, and neither lexical text nor metadata values become executable SQL. Candidate pools, token counts, string lengths, output tokens, and time are bounded before provider calls. API keys remain in backend configuration and are neither exposed in browser contracts nor inserted into document context.
+
+The second layer is role and data separation at each model interaction. Document Understanding, described in Chapter~\ref{chap:document-ingestion}, encloses representative text as untrusted input, requests structured output from controlled taxonomies, and applies local allowlists and validation before persistence. Reranking states that candidate content and filename-like fields are data, forbids tool use and prose, and accepts only an opaque-ID/grade schema. Grounded answering places its policy in higher-priority instructions and encloses document and conversation data in differently named regions. No document-driven tool-execution mechanism is provided by either the reranking or answering client.
+
+The third layer is local authority after generation. A reranker cannot introduce a candidate because unknown IDs are ignored, invalid grades trigger fallback, and omitted candidates are appended deterministically. An answer cannot create an accepted source because citation IDs are checked against the backend-created context map. React renders answer content as text through a small controlled formatter rather than inserting model-produced HTML. Logs intentionally omit questions, document passages, prompts, vectors, provider bodies, and credentials from failure messages.
+
+Table~\ref{tab:prompt-injection-controls} relates representative threats to controls and remaining limitations.
+
+\begin{table}[!htbp]
+	\centering
+	\caption{Prompt-injection defense in depth and residual risk}
+	\label{tab:prompt-injection-controls}
+	\small
+	\begin{tabular}{p{3.7cm}p{6.1cm}p{4.8cm}}
+		\toprule
+		Threat & Implemented controls & Residual risk \\
+		\midrule
+		Document says ``ignore previous instructions'' & Higher-priority policy, explicit untrusted delimiters, no document tools. & Model instruction-following remains probabilistic and requires adversarial evaluation. \\
+		Chunk asks to rank itself first & Reranker-specific prohibition, opaque IDs, content-focused schema, local validation. & A passage may still influence relevance judgement through misleading content. \\
+		Candidate invents another source & Candidate text cannot modify backend mappings; reranker does not produce citations. & Retrieval may still select an irrelevant but plausible passage. \\
+		Answer invents \texttt{S99} & Membership validation removes unknown citation IDs. & A known ID can still be attached to an unsupported claim. \\
+		Document requests a secret or command execution & Secrets remain backend-only; clients configure no tools; prompts forbid disclosure/execution. & Provider and application dependencies still require secure configuration and updates. \\
+		Previous answer is treated as evidence & History is separately delimited and explicitly non-authoritative; current question reruns retrieval. & Ambiguous follow-ups can still lead to imperfect retrieval or generation. \\
+		Oversized adversarial content & Candidate, context, history, output, and timeout bounds. & Bounded malicious text can still consume part of the available evidence budget. \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+The security claim is therefore deliberately limited. The system establishes ownership boundaries, bounded requests, structured validation, fail-open reranking, evidence-only instructions, and authoritative citation membership. It does not claim to have solved prompt injection or to guarantee factual entailment. Chapter~\ref{chap:testing-evaluation} defines no-evidence, citation, and prompt-injection cases that must be measured against the final evaluation corpus. This honest boundary is important for a bachelor engineering project: the contribution lies in combining practical controls at several layers and testing their deterministic properties, not in presenting probabilistic model behaviour as formally secure.

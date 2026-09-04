@@ -1,0 +1,68 @@
+\chapter{Conclusions and Future Work}
+\label{chap:conclusions}
+
+\section{Conclusions}
+
+This diploma project addressed the practical problem of finding and verifying information across an owned collection of heterogeneous documents. The resulting application accepts PDF and DOCX files, derives a searchable representation, retrieves evidence for a natural-language question, and produces an answer linked to inspectable sources. Its principal outcome is not an isolated model call, but a connected path from uploaded bytes to a persistent, authorized citation.
+
+On the document side, the implementation validates type, signature, size, filename, and workspace ownership before storing an upload under a generated local name. A process-local background worker performs deterministic technical PDF analysis before optical character recognition (OCR). Native PDF pages and structured DOCX content are extracted in source order, while only pages classified as \texttt{Scanned} are routed through bounded PDFium rendering and local Tesseract recognition. Raw extraction remains available for inspection, and conservative normalization derives a cleaner representation without assuming that every repeated-looking line is disposable.
+
+Document Understanding adds a separately managed enrichment stage. It uses bounded representative input to produce controlled document type, language, title, subject, and generic metadata. Strict structured output, allowlisted categories, local validation, content hashing, model and prompt identity, and atomic replacement restrict what model output can enter persistence. A failure at this stage does not prevent otherwise valid normalized text from being chunked and embedded.
+
+The chunking design is a central engineering result. Ordered normalized sections become provenance-carrying units; oversized units are divided first at conservative sentence opportunities and then, only when necessary, at token-safe boundaries. Base chunks are accumulated toward a 700-token target, remain below the 900-token hard maximum, and aim for a 100-token useful minimum. A bounded suffix of at most 100 tokens from the immediately preceding base chunk provides continuity without recursively expanding overlap. Page ranges, source-section ranges, and headings are derived from the actual included units. The result is deterministic, multilingual-safe at string boundaries, and suitable for both embedding and citation display.
+
+On the question side, one transient query embedding supports owner- and workspace-filtered cosine retrieval over current chunk embeddings. PostgreSQL full-text search supplies a complementary lexical channel for exact language, identifiers, and amounts. Validated document information contributes a weaker metadata signal, but only to documents already represented by vector or lexical chunk evidence. Weighted Reciprocal Rank Fusion combines ordinal positions without adding incompatible raw scores. The bounded reranker then attempts to improve the final order among the strongest hybrid candidates. It cannot create evidence, and invalid output, timeout, configuration failure, or provider failure retains the deterministic hybrid order.
+
+Final chunks are serialized within a separate document-context token budget. The backend assigns source identifiers, the answer model is instructed to rely only on the delimited untrusted evidence, and locally accepted citations must belong to the context map. Conversation history is persistent and bounded, but it is explicitly non-authoritative and does not replace retrieval for the current question. Bounded source snapshots preserve the historical meaning of a citation even if its live document is later removed.
+
+The completed implementation is supported by 345 passing backend tests, with no failures or skipped cases in the single full run performed for this draft. The tests cover successful paths, ownership isolation, deterministic algorithms, malformed model output, prompt-like document content, provider failures, and fallback behavior. This is evidence that specified software behavior is implemented; it is not a substitute for the pending experimental evaluation. Accordingly, the results tables in Chapter~\ref{chap:testing-evaluation} remain visibly unpopulated, and this conclusion makes no claim that hybrid retrieval or reranking achieved an unmeasured accuracy improvement.
+
+\section{Personal Contribution and Lessons Learned}
+
+The personal contribution consists of designing and implementing how established techniques cooperate inside one application. The work includes the server domain and persistence model, authenticated workspace boundary, ingestion orchestration, extraction and normalization, technical analysis, selective OCR, Document Understanding validation, token-aware chunking, embedding currentness, semantic and lexical database retrieval, metadata-aware weighted RRF, bounded reranking, grounded answering, authoritative source mapping, conversation persistence, the React user experience, diagnostic views, and automated tests.
+
+Several design lessons emerged from this integration. First, provenance must be created at extraction time rather than reconstructed after an answer is generated. A page number or heading that is discarded before chunking cannot later be recovered reliably for a citation. Second, deterministic code should retain authority around probabilistic services. Model output is most useful when its purpose is narrow, its input and output are bounded, and local code validates identities and controlled fields.
+
+Third, failure states should reflect independent concerns. A document can be searchable even when optional understanding fails; OCR can be partial while useful native and recognized pages remain; and hybrid retrieval can continue when reranking is unavailable. At the same time, failure isolation must not hide lost evidence. A document with scan-only pages and no successful recognition cannot honestly become ready merely because an optional stage is defined as non-fatal.
+
+Fourth, a conversational surface benefits from exposing a limited diagnostic path. Most users need a question box, an answer, and sources. Development and evaluation require page types, OCR provenance, normalization views, chunk locations, channel ranks, fused rank, reranked rank, and fallback state. Keeping those details available but secondary allows the same application to remain usable and explainable.
+
+\section{Current Limitations}
+
+The implementation has practical limitations that define the scope of its conclusions:
+
+\begin{itemize}
+    \item Embeddings, Document Understanding, model reranking, and answer generation depend on the configured external model provider. Local OCR does not make the complete AI pipeline local, and provider availability, latency, model behavior, and usage cost affect these stages.
+    \item The reranker adds a second model request for applicable searches. Its candidate, token, and timeout limits control cost and latency, but can exclude useful evidence from joint comparison. Its relevance grades are ordinal diagnostics rather than calibrated probabilities.
+    \item Technical PDF classification is based on versioned deterministic thresholds for text and raster structure. Unusual layouts, hidden text layers, vector-only graphics, or images that do not meet the scan threshold can be classified imperfectly and therefore routed imperfectly.
+    \item OCR quality remains sensitive to resolution, skew, compression, typography, language data, and page layout. The current route does not implement image preprocessing such as deskewing, denoising, or adaptive contrast enhancement.
+    \item DOCX extraction covers body paragraphs, Heading 1--3 styles, and tables in order. It does not reconstruct printed pagination or explicitly extract every possible Office Open XML feature such as comments, footnotes, headers, footers, or drawing text.
+    \item Retrieval uses bounded vector, lexical, metadata, fusion, reranking, TopK, and context pools. A relevant passage outside those bounds cannot support the answer. The current schema does not define an HNSW or IVFFlat approximate vector index, so larger-scale vector-search performance has not been established.
+    \item The background queue is bounded, process-local, and non-durable. A process restart loses queued identifiers, and a full queue may require a document to be scheduled again. Local file storage likewise assumes one application environment rather than a distributed deployment.
+    \item One user owns each workspace; sharing and role-based collaboration are not implemented. The repository also does not define a production deployment, distributed monitoring, or durable object-storage architecture.
+    \item Backend behavior has extensive automated coverage, but the React client has no automated test suite and accessibility has not undergone a formal compliance audit or assistive-technology study.
+    \item The labelled final evaluation has not yet been performed. Retrieval quality, OCR content quality, classification accuracy, citation support, grounded-answer correctness, security cases, latency, and provider cost therefore remain to be measured.
+\end{itemize}
+
+These limitations do not negate the completed engineering flow. They identify where a local, feature-complete bachelor project ends and where deployment hardening or broader empirical study would begin.
+
+\section{Future Work}
+
+The first priority for future work is to execute the evaluation defined in Chapter~\ref{chap:testing-evaluation} and complete its tables, plots, and discussion. The corpus should then be expanded with longer documents, noisier scans, additional layouts, multilingual queries, ambiguous cases, and independently labelled relevance judgements. Measurements should guide changes to chunking, candidate pools, fusion weights, reranking prompts, and context limits rather than adjusting them from isolated demonstrations.
+
+For ingestion reliability, the process-local channel could be replaced by a durable job queue with retry policy, visibility, concurrency control, and recovery after restart. Uploaded content could move from one local directory to managed object storage, with checksum verification and retention policy. Production deployment would additionally require environment-specific secret management, transport and storage security, observability, rate limiting, backup, and operational testing.
+
+OCR could be extended with controlled image preprocessing, orientation detection, deskewing, denoising, and additional language packs. Any preprocessing route should be evaluated separately because a transformation that improves one scan can damage another. Technical classification could incorporate further structural signals while retaining a versioned, explainable decision record.
+
+At larger collection sizes, PostgreSQL vector search could be evaluated with an approximate nearest-neighbour index such as HNSW or IVFFlat. The choice should be based on measured latency, memory, ingestion cost, and recall under the actual workspace filters. Retrieval could also support explicit user-selected document scope or date/type filters, while preserving the present default in which metadata is a soft signal rather than a hidden exclusion rule.
+
+Alternative or locally hosted embedding, understanding, reranking, and answer models could reduce provider dependency or support deployments with stricter data constraints. Such substitution is not merely a configuration exercise: dimensions, tokenization, structured-output reliability, multilingual quality, context size, latency, and evaluation results would all need to be revalidated.
+
+Finally, the client would benefit from automated component and end-to-end tests, a formal keyboard and screen-reader review, and deployment-scale usability evaluation. These steps would extend the current accessibility considerations into measured evidence without overstating the present implementation.
+
+\section{Final Perspective}
+
+The project demonstrates how a document assistant can be built as an accountable engineering pipeline. Its usefulness depends on the connections between stages: page analysis determines OCR routing; extraction and normalization determine chunks; chunks and metadata determine retrieval; retrieval determines context; and backend source mappings determine which citations the interface can trust. Treating these connections as first-class design concerns distinguishes the system from a generic file-upload chat interface.
+
+The application is feature-complete for the stated project scope, while quantitative evaluation and bibliography verification remain explicit documentation tasks. The resulting first draft therefore offers a complete technical account without converting planned measurements, established methods, or future improvements into unsupported claims.
+

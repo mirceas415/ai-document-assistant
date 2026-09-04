@@ -1,0 +1,18 @@
+erDiagram
+    APPLICATION_USER ||--o{ PROJECT : owns
+    PROJECT ||--o{ DOCUMENT : contains
+    PROJECT ||--o{ CONVERSATION : contains
+    DOCUMENT ||--o{ DOCUMENT_TEXT_SECTION : yields
+    DOCUMENT ||--o{ DOCUMENT_CHUNK : yields
+    DOCUMENT ||--o| DOCUMENT_UNDERSTANDING : has
+    DOCUMENT_UNDERSTANDING ||--o{ DOCUMENT_METADATA_ENTRY : contains
+    DOCUMENT ||--o| DOCUMENT_TECHNICAL_ANALYSIS : has
+    DOCUMENT_TECHNICAL_ANALYSIS ||--o{ DOCUMENT_PAGE_TECHNICAL_ANALYSIS : contains
+    DOCUMENT ||--o| DOCUMENT_OCR_ANALYSIS : has
+    DOCUMENT_OCR_ANALYSIS ||--o{ DOCUMENT_PAGE_OCR_RESULT : contains
+    CONVERSATION ||--o{ CONVERSATION_MESSAGE : contains
+    CONVERSATION_MESSAGE ||--o{ CONVERSATION_MESSAGE_SOURCE : snapshots
+
+%% The UI calls PROJECT a Workspace. Source snapshots deliberately retain scalar
+%% document/chunk identifiers rather than foreign keys to live document rows.
+

@@ -1,0 +1,306 @@
+\chapter{Testing and Evaluation}
+\label{chap:testing-evaluation}
+
+Testing and experimental evaluation answer different questions. Automated tests determine whether specified implementation behavior is preserved: for example, whether an unauthorized project is rejected, a chunk stays below its hard token limit, or invalid reranker identifiers trigger the documented fallback. Experimental evaluation asks how well the complete system performs on representative documents and questions. Passing orchestration tests does not establish retrieval accuracy, OCR quality, or answer correctness. This chapter therefore reports the verified automated suite separately from a methodology and empty result structure for the final evaluation.
+
+\section{Automated Testing Strategy}
+\label{sec:automated-testing}
+
+The backend test project uses xUnit with controlled substitutes at external model boundaries and, where appropriate, Entity Framework Core's in-memory provider. Generated PDF and DOCX fixtures make extraction tests reproducible without private documents. Deterministic fake embedding, reranking, understanding, and answer services allow tests to control model responses without sending document content or consuming provider resources. SQL-shape tests complement in-memory service tests where PostgreSQL-specific vector and full-text behavior matters. \citationneeded{software testing principles for unit, integration, and boundary tests}
+
+On 4 September 2026, the complete solution test command was executed once from the repository root:
+
+\begin{center}
+\texttt{dotnet test AI.DocumentAssistant.slnx --verbosity minimal}
+\end{center}
+
+The run discovered and passed 345 tests, with zero failures and zero skipped tests. The reported execution duration for the test assembly was approximately two seconds, excluding restore and build time. Static inspection also found no skipped test attributes. These numbers describe the current backend test suite; the React client does not presently have an automated test script or frontend test files.
+
+Table~\ref{tab:automated-test-categories} organizes the suite by risk rather than by source filename. Several tests legitimately cover more than one category, so the table does not partition the 345 cases into disjoint totals.
+
+\begin{table}[!htbp]
+    \centering
+    \caption{Automated test categories and representative risks.}
+    \label{tab:automated-test-categories}
+    \small
+    \begin{tabular}{L{0.25\textwidth} L{0.34\textwidth} L{0.31\textwidth}}
+        \toprule
+        \textbf{Category} & \textbf{Representative behavior} & \textbf{Risk addressed} \\
+        \midrule
+        Authentication and ownership & Owner-scoped project/document/conversation access; cross-user and route mismatch rejection & Disclosure or mutation of another user's data \\
+        Extraction and validation & PDF/DOCX signatures, ordered pages/paragraphs/tables/headings, safe filenames & Invalid input, path misuse, missing or reordered text \\
+        Normalization & Repeated edge material, page numbers, whitespace, word-break repair, Unicode, safety fallback & Loss of valid source evidence or non-deterministic cleanup \\
+        Chunking and embeddings & Target/max/overlap behavior, short-tail rebalance, provenance, hashing, batch order, vector validation & Over-budget chunks, stale vectors, or incorrect source location \\
+        Document Understanding & Sampling, strict schema, allowlists, confidence/length bounds, normalization, idempotency, failure isolation & Unbounded or untrusted model output entering persisted metadata \\
+        Technical PDF analysis & Threshold boundaries, image coverage, page/document aggregation, hash/version reuse & Incorrect OCR routing and stale diagnostics \\
+        Selective OCR & Candidate selection, page/pixel limits, reuse, partial/failed results, extraction provenance & Excess resource use or replacement of useful native text \\
+        Hybrid retrieval and RRF & Candidate pools, deduplication, metadata soft boost, formula, deterministic tie-breaking & Unstable ranking or metadata becoming evidence \\
+        Reranking & Token/candidate bounds, structured output, unknown/duplicate/omitted IDs, timeout and fail-open behavior & Provider failure making retrieval unavailable or corrupting candidate identity \\
+        RAG and conversations & Context bounds, no-evidence behavior, injection delimiters, citation filtering, history and snapshots & Unsupported answers, fabricated sources, or history treated as evidence \\
+        PostgreSQL query shape & Parameterization, ownership predicates, current-vector filters, generated full-text vector and GIN index & Differences hidden by an in-memory database substitute \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Tests around model-dependent stages focus on contracts and local authority. For Document Understanding, they provide malformed categories, invalid confidences, duplicate metadata, oversized fields, adversarial document instructions, and changed source hashes. For reranking, they control the candidate identifiers and relevance grades and verify both accepted partial orderings and rejected output. For answering, they supply valid and invented \texttt{S}-identifiers and confirm that only mappings created from the selected context become structured sources.
+
+The suite also exercises failure isolation. A failed technical analysis must not prevent native extraction. A failed Document Understanding request must not prevent chunks and embeddings from making the document retrievable. An OCR failure may coexist with successful ingestion only when another page still provides useful text. If embedding generation fails before initial persistence, incomplete new chunks must not replace the prior authoritative state. These cases validate the lifecycle described in Section~\ref{sec:ingestion-status-isolation}.
+
+Automated success has limits. Provider substitutes cannot measure live model relevance, recognition quality, network latency, or cost. The in-memory database cannot execute PostgreSQL's cosine and full-text operators. Query-text assertions verify important filters, but the final evaluation must still run against the intended PostgreSQL configuration. Likewise, the absence of frontend automation means that the screenshot and manual interaction pass must verify the visible behavior described in Chapter~\ref{chap:application-ux}.
+
+\section{Evaluation Methodology}
+\label{sec:evaluation-methodology}
+
+The final evaluation will use the separately prepared synthetic corpus. No quantitative evaluation has yet been performed for this first draft. The method below is designed to make future measurements repeatable and to prevent attractive examples from being presented as a benchmark.
+
+\subsection{Controlled setup and ground truth}
+
+Before running cases, the evaluator should record the repository revision, database version, model identifiers, tokenizer, chunking parameters, candidate limits, RRF configuration, reranking configuration, OCR languages and rendering limits, and time of execution. The same ingested documents and current embeddings must be used when retrieval variants are compared. A configuration change requires a new recorded run rather than silently replacing an earlier result.
+
+Each synthetic document should have a manifest that identifies its intended document type, primary language, title/subject expectations, controlled metadata values, technical page types, exact source text, and the questions it is designed to answer. Retrieval questions should identify all acceptable relevant chunks before results are viewed. Security cases should contain fictional canary strings and no real credential. This produces a ground truth independent of the application's prediction.
+
+The corpus should cover at least:
+
+\begin{itemize}
+    \item born-digital PDF, scanned PDF, mixed PDF, image-based page, blank/unknown page, and structured DOCX;
+    \item Romanian, English, and mixed-language content with Romanian diacritics and additional Unicode characters;
+    \item paraphrased questions, exact identifiers, organization names, dates, monetary values, and exact phrases;
+    \item similar documents that require a type or metadata distinction;
+    \item questions with one known supporting chunk, questions with several acceptable chunks, and questions for which the collection contains no answer; and
+    \item benign facts placed near adversarial instructions that attempt to redirect understanding, reranking, or answer generation.
+\end{itemize}
+
+Project and user isolation should be part of the setup, not a separate informal check. A distinctive term can be repeated in a second workspace and another user's workspace with different facts. Neither source may appear in the evaluated workspace's results, model context, answer, citation, or diagnostics.
+
+\subsection{Document Understanding evaluation}
+
+For every document, compare the stored controlled type and primary language with the manifest. Type and language are exact-match classification tasks. Optional subtype, title, and subject require a written rubric because several phrasings can be acceptable. Metadata entries should be matched by kind and normalized value where normalization is defined; person and organization spelling should be compared conservatively without inventing aliases after seeing the prediction.
+
+Report accuracy for controlled type and language. For metadata, report precision and recall over labelled entries: precision measures the fraction of returned entries that are correct, while recall measures the fraction of expected entries that were returned. Title and subject can be scored as correct, partially correct, or incorrect by a reviewer, with the rubric recorded before scoring. Understanding marked \texttt{Skipped} or \texttt{Failed} must be counted explicitly rather than removed from the denominator.
+
+The representative-sampling path needs at least one document exceeding the 6,000-token input bound. Expected fields should be distributed across the beginning, middle, and end, while another expected value can be placed outside the selected sample. The latter case helps distinguish a designed sampling limit from a validation defect. Repeating the same build checks determinism and idempotent reuse, not semantic quality.
+
+\subsection{Technical PDF and OCR evaluation}
+
+Technical classification should be evaluated at page level and document level. The corpus manifest assigns one of \texttt{TextBased}, \texttt{Scanned}, \texttt{ImageBased}, \texttt{Mixed}, or \texttt{Unknown} to each page using independently inspected construction facts. Compare these labels with stored diagnostics and create a confusion matrix. Boundary fixtures should separately exercise 40 alphanumeric characters, eight useful words, 0.30 substantial image coverage, 0.80 page-sized coverage, the 80\% document majority, and the allowed unknown-page count.
+
+OCR evaluation has two components. \emph{Routing correctness} asks whether every intended scanned page was selected and every non-scanned page avoided unnecessary OCR. \emph{Content recovery} compares recognized text with a known transcription. Character Error Rate or a carefully defined exact-field score can be used, provided the chosen metric and normalization are fixed before the run. \citationneeded{OCR Character Error Rate definition and evaluation practice}
+
+The OCR record must also be checked for correct page order, source type, requested/effective DPI, pixel limit, status, recognition count, and \texttt{UsedInExtraction}. A mixed PDF should demonstrate that native pages remain native while selected scanned pages receive OCR provenance. Very poor or empty scans should be retained as failed/empty observations rather than discarded.
+
+\subsection{Retrieval comparison}
+
+Every labelled question will be evaluated under three variants:
+
+\begin{enumerate}
+    \item \textbf{Vector-only baseline}: order eligible chunks only by pgvector cosine distance.
+    \item \textbf{Hybrid retrieval}: combine semantic, lexical, and applicable metadata ranks through the implemented weighted RRF, without applying the model reranker.
+    \item \textbf{Hybrid + reranking}: use the same hybrid candidate generation and allow the bounded reranker to produce the final order.
+\end{enumerate}
+
+The comparison must keep the workspace, question text, chunks, embeddings, and TopK fixed. For the reranked variant, record whether reranking was actually applied. A timeout or unavailable provider is a successful availability fallback but is not evidence for or against ranking quality. Record vector, lexical, metadata, hybrid, rerank, and final positions through the advanced diagnostics so that individual changes can be explained after aggregate metrics are calculated.
+
+Query groups should be reported separately as well as together: semantic paraphrase, exact identifier, exact phrase/name, date/amount, document-type distinction, Romanian, English, and mixed Unicode. This prevents an overall average from hiding a regression in a practically important category. No weight or prompt should be tuned on the final test questions; if tuning becomes necessary, split the corpus into development and held-out evaluation sets.
+
+\subsection{Answers, citations, no-evidence, and security}
+
+After retrieval measurement, issue the corresponding question through the full conversational path. A reviewer should compare each factual statement with the source chunks returned by the backend. An answer is correct only when it addresses the question and its factual content is supported by the collection. Fluent but unsupported additions count against correctness.
+
+Citation evaluation has two levels. Mapping correctness confirms that the displayed identifier belongs to the source object returned by the backend and that its excerpt and provenance match the stored chunk. Support correctness asks whether that chunk actually supports the associated statement. The former is strongly constrained by implementation and tests; the latter still needs human or separately verified judgement.
+
+No-evidence questions should include an empty eligible collection and an unrelated question asked of a non-empty collection. The first should bypass answer generation and return the fixed no-information response. The second tests whether the answer model declines despite receiving weak nearest neighbours. Security cases should place instruction-like text in a document, retrieve it when relevant, and verify that understanding, reranking, and answering treat it as data. The evaluator must never place a real API key in the corpus or inspect a real secret to determine whether the test passed.
+
+\section{Evaluation Metrics}
+\label{sec:evaluation-metrics}
+
+Let $Q$ be the set of evaluated questions. For a question $q$, let $R_q$ be the set of chunks labelled relevant before execution, and let $L_{q,k}$ be the first $k$ returned chunks.
+
+Top-1 accuracy is
+
+\begin{equation}
+    \operatorname{Top1} = \frac{1}{|Q|}
+    \sum_{q\in Q}\mathbb{I}\!\left[L_{q,1}\cap R_q\neq\emptyset\right],
+    \label{eq:top1-accuracy}
+\end{equation}
+
+where $\mathbb{I}$ equals one when the first result is relevant and zero otherwise. Top-$k$ recall is
+
+\begin{equation}
+    \operatorname{Recall@}k = \frac{1}{|Q|}
+    \sum_{q\in Q}\frac{|L_{q,k}\cap R_q|}{|R_q|}.
+    \label{eq:recall-at-k}
+\end{equation}
+
+The final report will use $k=3$ and $k=8$. If every question has exactly one labelled relevant chunk, Recall@3 and Recall@8 reduce to the fraction of questions for which that chunk appears within the first three or eight results. When several chunks are acceptable, Equation~\ref{eq:recall-at-k} gives partial credit for retrieving some but not all of them. \citationneeded{standard information retrieval evaluation metrics}
+
+Table~\ref{tab:evaluation-metric-definitions} records the remaining application-level metrics. Their rubrics must be used consistently across all variants.
+
+\begin{table}[!htbp]
+    \centering
+    \caption{Evaluation metrics and their interpretation.}
+    \label{tab:evaluation-metric-definitions}
+    \small
+    \begin{tabular}{L{0.25\textwidth} L{0.42\textwidth} L{0.23\textwidth}}
+        \toprule
+        \textbf{Metric} & \textbf{Definition} & \textbf{Primary unit} \\
+        \midrule
+        Top-1 accuracy & Fraction of questions whose first returned chunk is labelled relevant & Query \\
+        Top-3 / Top-8 recall & Mean fraction of labelled relevant chunks present in the first 3 / 8 results & Query and relevant chunk \\
+        Type/language accuracy & Fraction of documents with the exact expected controlled label & Document \\
+        Metadata precision/recall & Correct returned metadata over returned entries / expected entries & Metadata entry \\
+        OCR routing correctness & Correct scanned-page selections and correct non-selections & Page \\
+        OCR content correctness & Agreement with a fixed known transcription under the selected metric & Character or labelled field \\
+        Citation mapping correctness & Displayed sources map to the backend-assigned stored chunks & Citation \\
+        Citation support correctness & Cited chunk supports the factual statement associated with it & Cited claim \\
+        Answer correctness & Answer addresses the question without facts unsupported by the corpus & Answer \\
+        No-evidence/security correctness & Expected refusal, isolation, and non-compliance behavior occurs & Test case \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Latency and provider usage should be recorded as descriptive engineering measurements even though they are not primary quality metrics. At minimum, record reranking applied/fallback status and end-to-end question time. Cost comparisons must use the provider's verified pricing at evaluation time and are therefore outside this first draft. \citationneeded{official model-provider pricing and usage accounting at final evaluation time}
+
+\section{Results Placeholders}
+\label{sec:results-placeholders}
+
+\begin{center}
+\Large\textbf{[RESULTS PENDING FINAL EVALUATION]}
+\end{center}
+
+The following tables are intentionally empty. ``PENDING'' is not a zero and does not imply that one variant is better than another.
+
+\begin{table}[!htbp]
+    \centering
+    \caption{Retrieval quality comparison (results pending final evaluation).}
+    \label{tab:retrieval-results}
+    \begin{tabular}{L{0.26\textwidth} C{0.19\textwidth} C{0.19\textwidth} C{0.25\textwidth}}
+        \toprule
+        \textbf{Metric} & \textbf{Vector} & \textbf{Hybrid} & \textbf{Hybrid + Reranking} \\
+        \midrule
+        Top-1 accuracy & PENDING & PENDING & PENDING \\
+        Top-3 recall & PENDING & PENDING & PENDING \\
+        Top-8 recall & PENDING & PENDING & PENDING \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[!htbp]
+    \centering
+    \caption{Document Understanding evaluation (results pending final evaluation).}
+    \label{tab:understanding-results}
+    \begin{tabular}{L{0.36\textwidth} L{0.34\textwidth} C{0.18\textwidth}}
+        \toprule
+        \textbf{Task} & \textbf{Metric} & \textbf{Result} \\
+        \midrule
+        Controlled document type & Exact-match accuracy & PENDING \\
+        Primary language & Exact-match accuracy & PENDING \\
+        Title and subject & Predefined review rubric & PENDING \\
+        Generic metadata & Precision / recall & PENDING \\
+        Failure/skip accounting & Count by status & PENDING \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[!htbp]
+    \centering
+    \caption{Technical PDF classification evaluation (results pending final evaluation).}
+    \label{tab:pdf-classification-results}
+    \begin{tabular}{L{0.39\textwidth} L{0.34\textwidth} C{0.16\textwidth}}
+        \toprule
+        \textbf{Scope} & \textbf{Metric} & \textbf{Result} \\
+        \midrule
+        Page classification & Accuracy and confusion matrix & PENDING \\
+        Document aggregation & Exact-match accuracy & PENDING \\
+        Threshold boundary fixtures & Correct cases / total cases & PENDING \\
+        Unknown-page handling & Correct cases / total cases & PENDING \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[!htbp]
+    \centering
+    \caption{Selective OCR evaluation (results pending final evaluation).}
+    \label{tab:ocr-results}
+    \begin{tabular}{L{0.39\textwidth} L{0.34\textwidth} C{0.16\textwidth}}
+        \toprule
+        \textbf{Aspect} & \textbf{Metric} & \textbf{Result} \\
+        \midrule
+        Scanned-page routing & Precision / recall & PENDING \\
+        Avoided non-scanned pages & Correct non-selections & PENDING \\
+        Recognized content & Chosen transcription metric & PENDING \\
+        Page order and provenance & Correct cases / total cases & PENDING \\
+        Partial/empty/failure behavior & Correct cases / total cases & PENDING \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[!htbp]
+    \centering
+    \caption{Grounding and citation evaluation (results pending final evaluation).}
+    \label{tab:grounding-results}
+    \begin{tabular}{L{0.42\textwidth} L{0.30\textwidth} C{0.16\textwidth}}
+        \toprule
+        \textbf{Aspect} & \textbf{Metric} & \textbf{Result} \\
+        \midrule
+        Backend source mapping & Correct citations / citations & PENDING \\
+        Claim support & Supported cited claims / cited claims & PENDING \\
+        Answer correctness & Correct answers / questions & PENDING \\
+        Unsupported additions & Count and severity & PENDING \\
+        Historical source snapshot & Correct cases / total cases & PENDING \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[!htbp]
+    \centering
+    \caption{Security and no-evidence evaluation (results pending final evaluation).}
+    \label{tab:security-results}
+    \begin{tabular}{L{0.46\textwidth} L{0.28\textwidth} C{0.15\textwidth}}
+        \toprule
+        \textbf{Case group} & \textbf{Metric} & \textbf{Result} \\
+        \midrule
+        Empty eligible collection & Correct response / cases & PENDING \\
+        Unrelated question with weak neighbours & Correct refusal / cases & PENDING \\
+        Cross-workspace and cross-user canary & Isolation pass / cases & PENDING \\
+        Document prompt injection & Robust response / cases & PENDING \\
+        Unknown/duplicate citation markers & Correct handling / cases & PENDING \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Results Figure Placeholders}
+\label{sec:results-figure-placeholders}
+
+The final plots must be generated from the completed result tables rather than drawn from illustrative values. Each reserved figure is marked accordingly.
+
+\thesisfigureplaceholder{EVAL-01 -- WAIT UNTIL FINAL EVALUATION}{Retrieval-quality comparison for vector-only, hybrid, and hybrid-plus-reranking variants.}{fig:eval-retrieval}
+
+Figure~\ref{fig:eval-retrieval} will compare Top-1 accuracy, Top-3 recall, and Top-8 recall after every labelled retrieval case has been run under identical conditions.
+
+\thesisfigureplaceholder{EVAL-02 -- WAIT UNTIL FINAL EVALUATION}{Selective OCR routing and recognized-content results.}{fig:eval-ocr}
+
+Figure~\ref{fig:eval-ocr} will separate routing correctness from transcription quality so that avoiding unnecessary OCR is not confused with recognizing selected pages accurately.
+
+\thesisfigureplaceholder{EVAL-03 -- WAIT UNTIL FINAL EVALUATION}{Document Understanding and technical PDF classification results.}{fig:eval-classification}
+
+Figure~\ref{fig:eval-classification} will show controlled classification outcomes without combining document-type, language, and PDF-technical labels into one unsupported aggregate.
+
+\section{Discussion Framework}
+\label{sec:discussion-framework}
+
+The discussion will be completed only after the result tables and plots contain verified observations. It should explain error patterns rather than repeat percentages. The following prompts define the intended analysis:
+
+\begin{itemize}
+    \item \todocomplete{After evaluation, discuss cases where hybrid retrieval changed exact-identifier, phrase, date, amount, or organization-name results relative to the vector baseline.}
+    \item \todocomplete{Determine whether reranking promoted relevant semantic evidence, preserved clear exact matches, or introduced regressions; report fallback runs separately.}
+    \item \todocomplete{Relate false PDF classifications to the meaningful-text and image-coverage heuristics, including borderline and mixed pages.}
+    \item \todocomplete{Separate OCR routing errors from recognition errors and identify scan properties associated with each.}
+    \item \todocomplete{Analyze Document Understanding errors by controlled type, language, sampled document region, and metadata kind.}
+    \item \todocomplete{Review every incorrect or partially correct answer for retrieval failure, context truncation, model interpretation, citation support, or missing source evidence.}
+    \item \todocomplete{Report prompt-injection and no-evidence cases conservatively; do not generalize a finite pass set into a claim of complete security.}
+    \item \todocomplete{Record latency and provider-use trade-offs for reranking and compare them with any measured quality difference.}
+\end{itemize}
+
+Threats to validity must also be addressed. A small synthetic corpus may not represent long, noisy, or domain-specific real collections. Carefully constructed identifiers can make exact retrieval easier than uncontrolled data. Model services may vary across time even when a model identifier is unchanged. Human scoring of title quality, answer correctness, and citation support can be subjective; a written rubric and, if possible, a second reviewer reduce this risk. Tests on a local demonstration database do not establish throughput at production scale.
+
+The final discussion should conclude with what the measurements support, not what the architecture was intended to achieve. Until those measurements exist, this chapter establishes verified implementation testing and a reproducible evaluation plan, while all quality result cells remain explicitly pending.

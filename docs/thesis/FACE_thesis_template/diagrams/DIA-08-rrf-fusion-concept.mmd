@@ -1,0 +1,12 @@
+flowchart TB
+    V[Vector ranking\nC1, C3, C2, ...] --> S[Rank contributions\nw_v / (K + rank)]
+    L[Lexical ranking\nC2, C1, C4, ...] --> S
+    M[Metadata document ranking\nD2, D1, ...] --> S
+    S --> X[Sum contributions per unique chunk]
+    X --> T[Stable descending fused score]
+    T --> O[Hybrid ordering]
+
+    N[Metadata changes priority only; chunk content remains the answer evidence]:::note
+    N -. constraint .-> X
+    classDef note fill:#fff8dc,stroke:#8a6d1d,color:#111;
+

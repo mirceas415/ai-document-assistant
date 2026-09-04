@@ -1,0 +1,607 @@
+\chapter[Requirements and System Architecture]{Requirements and System Architecture}
+\label{chap:requirements-architecture}
+
+This chapter translates the problem introduced in Chapter~\ref{chap:introduction} into concrete
+system requirements and presents the architecture used to satisfy them. The
+architecture is described before the detailed processing and retrieval
+algorithms because those algorithms depend on several system-wide decisions:
+documents are owned through workspaces, processing is asynchronous, provenance
+is retained from extraction to citation, and text obtained from a document is
+treated as untrusted input. The descriptions in this chapter are based on the
+implemented application rather than on a hypothetical target design.
+
+The application is organized as a modular monolith. A React single-page
+application communicates with an ASP.NET Core JavaScript Object Notation
+(JSON) application programming interface (API); the backend coordinates
+local document processing, PostgreSQL persistence, model-provider calls, and a
+background ingestion worker. This arrangement keeps deployment manageable for
+a diploma project while still separating responsibilities through explicit
+service and provider interfaces. The separation is important for testing and
+for failure isolation, even though the modules execute in one server process.
+
+\section{Functional requirements}
+\label{sec:functional-requirements}
+
+Functional requirements state what an authenticated user must be able to
+accomplish. They were derived from the central use case: a user creates a
+workspace, contributes documents to its reusable knowledge collection, and asks
+questions whose answers can be checked against those documents. The word
+\emph{workspace} is used in the interface, while \emph{Project} remains the
+backend and persistence term. Table~\ref{tab:functional-requirements} summarizes
+the resulting requirements and gives an observable acceptance condition for
+each one.
+
+{\small
+\begin{longtable}{@{}L{1.2cm}L{7.9cm}L{4.6cm}@{}}
+\caption[Functional requirements]{Functional requirements and observable acceptance conditions.}
+\label{tab:functional-requirements}\\
+\toprule
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance condition} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance condition} \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\textbf{FR-01} &
+The system shall support account registration, sign-in, session checking, and
+sign-out. &
+Protected API operations reject an unauthenticated request, while a valid
+session identifies one application user. \\
+
+\textbf{FR-02} &
+The user shall be able to create, list, edit, open, and delete owned workspaces. &
+A user sees and changes only projects whose owner identifier matches the
+authenticated identity. \\
+
+\textbf{FR-03} &
+The user shall be able to upload supported Portable Document Format (PDF) and
+Office Open XML word-processing (DOCX) documents to an owned workspace. The
+server shall validate the request before accepting the file. &
+An accepted file has an allowed extension, matching declared media type,
+recognizable file signature, safe original name, and size within the configured
+limit. \\
+
+\textbf{FR-04} &
+The system shall transform an accepted document into reusable searchable
+knowledge while preserving its source order and provenance. &
+Successful processing produces raw and normalized source sections, bounded
+chunks, embeddings, and aggregate processing metadata, and places the document
+in the \emph{Ready} state. \\
+
+\textbf{FR-05} &
+The system shall diagnose the technical representation of PDF pages and apply
+local optical character recognition (OCR) selectively when a page is classified
+as scanned. &
+Page diagnostics and OCR outcomes are inspectable, and successfully recognized
+text records OCR rather than native extraction as its provenance. \\
+
+\textbf{FR-06} &
+The user shall be able to inspect document processing results and request
+controlled rebuilds. &
+The interface exposes processing, normalization, chunking, embedding, technical
+analysis, OCR, and Document Understanding information; rebuild requests are
+accepted only in compatible states. \\
+
+\textbf{FR-07} &
+The system shall retrieve relevant evidence within one owned workspace by
+combining semantic, lexical, and document-metadata signals. &
+A search request returns only eligible chunks from \emph{Ready} documents in
+the selected project, together with the available rank diagnostics. \\
+
+\textbf{FR-08} &
+The system shall answer a question from bounded retrieved evidence and attach
+traceable citations. &
+An answer either refers to backend-validated source identifiers or states that
+the workspace documents do not provide sufficient evidence. \\
+
+\textbf{FR-09} &
+The user shall be able to maintain multiple persistent conversations inside a
+workspace. &
+Conversations can be created, opened, renamed, and deleted; messages retain a
+stable order and the first question produces a concise default title. \\
+
+\textbf{FR-10} &
+The system shall preserve enough source information to inspect a previously
+generated answer. &
+Each cited assistant message stores a bounded snapshot containing the source
+identifier, document name, chunk and page information, heading, and excerpt. \\
+\end{longtable}
+}
+
+These requirements deliberately place documents at workspace level rather than
+attaching them to a single conversation. Extraction, chunking, and embedding
+can therefore be performed once and reused by every conversation in that
+workspace. A conversation supplies interaction history, but it does not own or
+duplicate the underlying knowledge collection. The same distinction also
+supports direct search and diagnostics independently of answer generation.
+
+\section{Non-functional requirements}
+\label{sec:non-functional-requirements}
+
+For this application, correctness includes more than returning fluent text. A
+response that uses another user's document, loses the location of its evidence,
+or silently accepts a stale embedding is incorrect even if its wording appears
+plausible. The non-functional requirements in
+Table~\ref{tab:nonfunctional-requirements} therefore emphasize isolation,
+traceability, predictable resource use, and recoverability. They are
+project-specific engineering requirements rather than claims of compliance
+with an external certification standard.
+
+{\small
+\begin{longtable}{@{}L{1.2cm}L{5.2cm}L{7.3cm}@{}}
+\caption[Non-functional requirements]{Non-functional requirements and their architectural responses.}
+\label{tab:nonfunctional-requirements}\\
+\toprule
+\textbf{ID} & \textbf{Quality requirement} & \textbf{Architectural response} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{ID} & \textbf{Quality requirement} & \textbf{Architectural response} \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\textbf{NFR-01} &
+Ownership isolation &
+Every project-scoped read and mutation includes the authenticated owner in its
+database predicate. Retrieval repeats project and owner filtering in each
+evidence-producing query. \\
+
+\textbf{NFR-02} &
+Evidence traceability &
+Source sections retain page or heading information and extraction method;
+chunks carry source ranges; answers expose only source identifiers that the
+backend can map to retrieved chunks. \\
+
+\textbf{NFR-03} &
+Bounded resource use &
+Upload size, queue capacity, OCR pages and pixels, chunk size, provider inputs
+and outputs, retrieval pools, conversation history, and answer context all have
+explicit bounds. \\
+
+\textbf{NFR-04} &
+Repeatability and deterministic local stages &
+Normalization, PDF classification, OCR routing, chunk construction, query
+preparation, and rank fusion use versioned or deterministic rules. Content
+hashes identify the source used for derived results. \\
+
+\textbf{NFR-05} &
+Failure isolation and retryability &
+Main document processing, technical PDF analysis, OCR, and Document
+Understanding have distinct states. Optional enrichment failure does not
+automatically invalidate useful extracted text, while failed core processing
+can be queued again. \\
+
+\textbf{NFR-06} &
+Persistence consistency &
+New source sections, chunks, and validated embeddings are prepared before they
+replace the authoritative retrieval representation in a database transaction.
+Uniqueness and confidence constraints reinforce application validation. \\
+
+\textbf{NFR-07} &
+Maintainability and testability &
+Controllers, orchestration services, deterministic algorithms, storage, and
+external-model adapters have narrow responsibilities and are connected through
+dependency injection, allowing provider boundaries to be replaced by fakes in
+tests. \\
+
+\textbf{NFR-08} &
+Responsive interaction &
+Lengthy ingestion is delegated to a background worker. The API returns the
+document state promptly, and the client can refresh visible progress without
+holding the upload request open for the whole pipeline. \\
+
+\textbf{NFR-09} &
+Controlled information exposure &
+Physical storage paths, generated storage names, vectors, credentials, hidden
+prompts, and raw provider responses are excluded from public contracts. Public
+errors are bounded and phrased without internal details. \\
+\end{longtable}
+}
+
+The application does not define a formal throughput or response-time service
+level. Its resource limits are safety and usability controls for the current
+single-instance implementation, not evidence of large-scale performance.
+Likewise, deterministic processing means that identical inputs and
+configuration produce the same local transformations; it does not mean that an
+external generative model is mathematically deterministic.
+
+\section{High-level system architecture}
+\label{sec:high-level-architecture}
+
+Figure~\ref{fig:system-architecture} presents the system as four cooperating
+runtime areas. First, the browser executes the React and TypeScript client and
+holds only interaction state needed to render the current screen. Second, one
+ASP.NET Core host exposes the API, enforces identity and ownership, executes the
+application services, serves the published frontend, and runs the document
+worker. Third, PostgreSQL stores relational state, generated full-text vectors,
+and pgvector embeddings, while an application-controlled directory stores the
+original uploaded files under generated names. Fourth, the configured model
+provider supplies embeddings, structured document analysis, reranking, and
+grounded answer generation. PDF inspection, PDF rendering, OCR, normalization,
+and chunking remain local to the server.
+
+\thesisfigureplaceholder{DIA-01}{High-level architecture of the AI Document Assistant, showing the browser, modular backend, persistence, local processing, and configured model-provider boundary.}{fig:system-architecture}
+
+Two end-to-end flows cross these areas. On the document side, an authenticated
+upload is validated and stored, then a queued job converts it into an ordered,
+normalized, provenance-bearing set of chunks and vectors. On the question
+side, the current question is embedded and analyzed, several retrieval channels
+produce candidates, rank fusion and optional reranking select evidence, and a
+bounded context is submitted for answer generation. The backend then validates
+source references before returning or persisting them. These flows share the
+same project ownership boundary and the same persisted document representation;
+they are not independent subsystems joined only at the interface.
+
+Calling the architecture a modular monolith is significant. The design does
+not incur network boundaries between extraction, retrieval, and conversation
+modules, and a database transaction can protect related authoritative changes.
+At the same time, algorithmic and external dependencies are not embedded
+directly in controllers. Interfaces isolate text extraction, storage, OCR,
+model access, retrieval channels, and answer construction. The present design
+is consequently simpler to run locally than a distributed system, but its
+process-local queue and local upload directory also make the current deployment
+a single-instance design.
+
+\section{Backend architecture}
+\label{sec:backend-architecture}
+
+The backend follows a request--service--persistence structure. API controllers
+define authenticated JSON or multipart endpoints, validate request-level
+conditions, obtain the user identifier from the authenticated principal, and
+translate expected failures into bounded HTTP responses. Application services
+then coordinate use cases such as processing a document, searching a project,
+answering a question, or persisting a conversation. Entity Framework Core
+provides the unit-of-work boundary for domain persistence, while direct,
+parameterized PostgreSQL commands are used where vector and full-text search
+need database-specific operators. The framework mechanisms used for
+controllers, dependency injection, hosted services, and relational mapping
+require supporting technical references.
+\citationneeded{ASP.NET Core controllers, dependency injection, and hosted services}
+\citationneeded{Entity Framework Core and the Npgsql PostgreSQL provider}
+
+Provider adapters form deliberate narrow boundaries around facilities that are
+either external or implementation-specific. Examples include the local file
+store, PDF and DOCX extractors, the PDF structural analyzer, PDFium page
+rendering, Tesseract recognition, tokenization, and the four model-provider
+tasks. The orchestration code depends on their application interfaces rather
+than constructing these clients inside a use case. This is why tests can supply
+deterministic embeddings or no-operation analysis providers without changing
+the production workflow.
+
+Document jobs are passed through a bounded in-memory channel to one hosted
+worker. Duplicate scheduling of the same document identifier is suppressed
+while that identifier is pending or running. For each item, the worker creates
+a dependency-injection scope and invokes the processing service. The queue is
+explicitly process-local and non-durable: a server restart can discard pending
+identifiers, although the persisted \emph{Uploaded} or \emph{Failed} document
+can be submitted again. This limitation is preferable to describing the queue
+as if it provided durable delivery.
+
+Uploaded bytes are stored below a fixed \texttt{Uploads} root using a newly
+generated filename whose extension is restricted to PDF or DOCX. Path
+construction verifies that the requested storage name is a plain filename and
+that its resolved path remains under that root. Public document contracts
+return the safe original filename but never the generated storage name or
+physical path. Database state and file deletion are coordinated carefully for
+document and project deletion, including state checks that prevent deletion
+during active processing.
+
+Finally, a global exception handler logs unexpected server failures and returns
+a generic JSON message. Expected provider and processing failures are wrapped
+in exceptions with safe public messages. Logging statements generally record
+identifiers, counts, durations, status, and exception type while deliberately
+omitting document text, vectors, prompts, credentials, and provider payloads.
+This design supports diagnostics without making internal exception details part
+of the public API.
+
+\section{Frontend architecture}
+\label{sec:frontend-architecture}
+
+The client is a React single-page application written in TypeScript and built
+with Vite. \citationneeded{React and TypeScript official documentation} A small
+route parser maps browser paths to authentication, workspace dashboard,
+workspace chat, conversation, and document-management views. Navigation uses
+the browser history API and responds to back and forward events. At startup,
+the client asks the server for the current session; unauthenticated navigation
+is redirected to the login interface, while a valid session enters the
+workspace area.
+
+State is kept close to the screen that owns it. The chat workspace manages the
+current project, document readiness, conversation list, active messages,
+uploads, and composer state. The document screen manages document summaries and
+loads detailed understanding, technical-analysis, OCR, extracted-text, and
+chunk information when required. Shared UI elements provide confirmation
+dialogs, notifications, icons, and loading placeholders. This organization is
+more appropriate to the present application size than introducing a separate
+global state framework.
+
+A typed API module defines the response shapes and centralizes same-origin
+requests. It includes the browser cookie on every call, adds a JSON content
+type when appropriate, and converts structured server errors into safe messages
+for the interface. These TypeScript declarations improve consistency but do
+not create a security boundary: browser state and route checks are considered
+untrusted, and every authorization decision is repeated by the backend. In a
+published build, ASP.NET Core serves the static assets and falls back to the
+single application entry page for client routes.
+
+\section{Persistence and domain model}
+\label{sec:persistence-domain-model}
+
+The domain model separates user intent, source material, derived retrieval
+artifacts, and conversation records. Figure~\ref{fig:domain-model} shows the
+principal relationships without reproducing every database field.
+
+\thesisfigureplaceholder{DIA-02}{Compact domain model for workspace ownership, document-processing artifacts, and persistent conversations.}{fig:domain-model}
+
+An \emph{ApplicationUser} owns zero or more \emph{Project} records. Each
+Project is one user-facing workspace and is the common parent of its
+\emph{Document} and \emph{Conversation} collections. This placement is central
+to reuse: all conversations in the project can search the same ready documents,
+whereas content from a different project is outside both the retrieval and
+authorization scope. Deleting a user cascades to owned projects, and deleting a
+project cascades to its database-resident documents and conversations.
+
+A Document represents the uploaded source and the aggregate state of the main
+ingestion pipeline. It records the safe original name, generated storage name,
+media type, size, timestamps, current processing status, and summary counts or
+errors for extraction, normalization, chunking, and embedding. It does not
+contain all derived text in one large field. Instead,
+\emph{DocumentTextSection} stores the ordered source representation. A section
+contains immutable raw extracted text, an optional normalized derivative, its
+page number or structural heading where available, and the extraction method.
+Consequently, a reader can distinguish native PDF text, OCR text, and DOCX
+text, and a rebuild does not destroy the raw material needed for comparison.
+
+\emph{DocumentChunk} is the bounded retrieval unit derived from one or more
+normalized sections. Besides its content and stable order, it carries token and
+character counts, page range, heading, and the first and last contributing
+section indexes. Its embedding is stored in PostgreSQL through the native
+pgvector type, together with model, dimensions, content hash, and generation
+time. A generated PostgreSQL full-text vector for the same chunk supports the
+lexical retrieval channel. This co-location means that relational ownership
+filters, text retrieval, and vector retrieval can operate over the same
+document and chunk identifiers.
+\citationneeded{PostgreSQL generated full-text search columns and generalized inverted indexes}
+\citationneeded{pgvector data types and cosine-distance operators}
+
+Three nullable one-to-one aggregates attach distinct forms of document
+analysis. \emph{DocumentUnderstanding} contains the controlled document type,
+language and confidence information, detected title and subject, model and
+prompt identity, source hash, status, and completion information. Its ordered
+\emph{DocumentMetadataEntry} children represent bounded items such as
+organizations, people, identifiers, dates, and monetary values. In contrast,
+\emph{DocumentTechnicalAnalysis} records the structural classification of a
+PDF and owns ordered \emph{DocumentPageTechnicalAnalysis} diagnostics.
+\emph{DocumentOcrAnalysis} records OCR configuration, routing identity, and
+aggregate outcome, with \emph{DocumentPageOcrResult} children only for routed
+candidate pages. These aggregates are separate because their lifecycles and
+failure meanings differ; a single overloaded document status would lose that
+distinction.
+
+The conversation branch has a different purpose. A Conversation belongs to one
+Project and orders its \emph{ConversationMessage} children by sequence.
+Messages use only the User and Assistant roles. Sources belong only to
+assistant messages. Each \emph{ConversationMessageSource} stores a bounded
+snapshot of the validated citation display: source identifier, safe document
+name, optional document and chunk identifiers, chunk index, page range,
+heading, and excerpt. The optional identifiers are scalar historical values,
+not foreign keys to the live Document or DocumentChunk rows. Deleting an
+individual source document therefore removes its sections, chunks, full-text
+index data, and vector values, but does not erase the provenance shown with an
+older answer. Deleting the conversation still cascades normally to its
+messages and their snapshots.
+
+Several database constraints support these concepts without attempting to
+replace application validation. Source-section and chunk indexes are unique
+within a document; message sequences are unique within a conversation; source
+indexes are unique within an assistant message; and page diagnostic keys
+combine their parent analysis with the page number. Confidence and coverage
+ratios have database checks that keep them within their valid interval. These
+constraints protect ordering and basic integrity while the services enforce
+richer currentness rules, such as matching an embedding hash to the exact
+current chunk content.
+
+\section{Authentication and workspace ownership}
+\label{sec:authentication-ownership}
+
+Authentication uses ASP.NET Core Identity with globally unique user
+identifiers and an application cookie.
+\citationneeded{ASP.NET Core Identity and cookie authentication}
+The cookie is HTTP-only, uses the \emph{Lax} same-site policy, has a sliding
+expiration, and follows the security of the current request; HTTPS redirection
+is enabled by the host. API authentication and access-denied events return JSON
+status responses rather than redirects to HTML pages. Registration also
+requires a unique email, while repeated failed sign-in attempts participate in
+the configured lockout policy.
+
+Authorization is primarily an ownership rule. A Project contains the
+authenticated user's identifier, and each subordinate resource is reached
+through that Project. A typical document query therefore requires all three
+conditions: the requested document identifier, the project identifier supplied
+by the route, and the owning user identifier reached through the Project.
+Conversation operations apply the equivalent
+Conversation--Project--Owner predicate. A caller cannot combine a conversation
+identifier from one workspace with the route of another. Missing resources,
+cross-user identifiers, and project/resource mismatches normally produce the
+same not-found response, reducing unnecessary disclosure about their
+existence.
+
+Retrieval applies the boundary more than once because it is the path that
+selects text for external processing. Before generating a query embedding, the
+service verifies that the project belongs to the current user. The vector,
+lexical, and metadata database queries also include both project and owner
+parameters, together with document readiness conditions. Thus a programming
+mistake in candidate combination cannot legitimately turn an unfiltered global
+chunk into answer context: the evidence-producing queries themselves are
+scoped. Parameterized commands are used for database-specific search rather
+than interpolating user query text into SQL.
+
+The frontend's current-workspace display and route guards improve navigation
+but are not trusted authorization checks. Likewise, resource identifiers are
+not treated as secrets. The server assumes that a caller may discover or alter
+an identifier and still requires the ownership predicate. The current model
+does not implement workspace sharing or cross-user collaboration; each project
+has exactly one owner.
+
+\section{Document-processing architecture}
+\label{sec:document-processing-architecture}
+
+The upload request performs only the synchronous work required to accept a
+document safely. After validating ownership and the file, it stores the bytes,
+creates the Document and its initial independent analysis records, and offers
+the document identifier to the background queue. A PDF begins with technical
+analysis and OCR marked as not yet analyzed, while those concerns are marked
+not applicable for DOCX. Document Understanding begins pending. If the bounded
+queue cannot accept the item, the persisted document remains visible and can
+be manually queued; the API does not pretend that processing was scheduled
+durably.
+
+The worker changes an eligible document from \emph{Uploaded} or \emph{Failed}
+to \emph{Processing} and executes one coherent pipeline. Technical PDF analysis
+runs before extraction so its page classifications can guide OCR. The relevant
+extractor produces ordered raw sections; scanned PDF candidates may have
+ineffective native text replaced by locally recognized text. Normalization
+creates the conservative retrieval representation. Document Understanding
+receives a bounded selection of normalized material, then chunking and
+embedding produce the searchable units. Chapter~\ref{chap:document-ingestion} explains each transformation
+and its provenance rules in detail.
+
+The final source sections, normalized values, chunks, and validated vectors are
+constructed before authoritative replacement. The persistence transaction
+removes any previous section and chunk representation, inserts the complete new
+one, updates aggregate counts and embedding identity, and marks the document
+\emph{Ready}. A failure in extraction, normalization, chunking, or embedding
+during ordinary processing clears incomplete authoritative retrieval data and
+marks the main document \emph{Failed}. Technical analysis and Document
+Understanding, however, persist through their own boundaries. Their failure is
+recorded without preventing useful normalized text from being chunked and
+retrieved. OCR can similarly be partial when some selected pages fail but
+usable native or recognized text remains. This status separation is both a
+domain-model decision and a resilience mechanism.
+
+\section{Retrieval and question-answering architecture}
+\label{sec:retrieval-answering-architecture}
+
+Question answering begins with the current user question, not with a previous
+assistant response. The service verifies project ownership, normalizes and
+analyzes the question, and generates one embedding in the same configured space
+as the document chunks. PostgreSQL then returns bounded vector candidates and
+language-neutral lexical candidates, while ready Document Understanding data
+may contribute a document-level metadata signal. Only ready documents in the
+owned project are eligible. Weighted Reciprocal Rank Fusion deduplicates and
+orders the candidate chunks without directly adding incompatible vector and
+lexical score scales. A bounded model-based reranker may reorder the strongest
+fused candidates; if that stage times out or returns an invalid result, the
+hybrid order remains the fallback.
+\citationneeded{Retrieval-Augmented Generation}
+\citationneeded{Reciprocal Rank Fusion}
+\citationneeded{model-based retrieval reranking}
+
+The final chunks are converted into a token-bounded context. The backend assigns
+source labels such as \texttt{S1} and includes the document name, page range,
+chunk number, heading, and content under explicit untrusted-data delimiters.
+The answer provider is instructed to use only this evidence. After generation,
+the backend accepts only citation labels that exist in the supplied context and
+removes unknown labels. The model can propose the textual marker
+\texttt{[S1]}, but it cannot create the authoritative mapping from that marker
+to a document.
+
+Persistent conversations add a second, explicitly non-authoritative context.
+A bounded set of recent user and assistant messages may help resolve wording,
+but it is separated from document evidence and cannot support a citation. The
+new question still drives retrieval. The user message is committed before the
+provider call, so a temporary answer failure leaves a visible question that can
+be retried rather than a fabricated assistant response. On success, the
+assistant text and its validated source snapshots are stored together. The
+direct search endpoint exposes vector, lexical, metadata, fused, and reranked
+diagnostics for evaluation and debugging, while ordinary answer generation
+uses the same retrieval service internally.
+
+\section{Security boundaries}
+\label{sec:security-boundaries}
+
+The architecture crosses several trust boundaries, summarized in
+Table~\ref{tab:security-boundaries}. Security is consequently implemented as a
+set of reinforcing controls rather than as a claim that one prompt or one
+authentication attribute solves every risk.
+
+{\small
+\begin{longtable}{@{}L{3.1cm}L{6.3cm}L{4.6cm}@{}}
+\caption[Security boundaries]{Principal trust boundaries, implemented controls, and residual considerations.}
+\label{tab:security-boundaries}\\
+\toprule
+\textbf{Boundary} & \textbf{Implemented controls} & \textbf{Residual consideration} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Boundary} & \textbf{Implemented controls} & \textbf{Residual consideration} \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+Browser to API &
+Cookie authentication, server-side validation, owner-scoped database
+predicates, bounded contracts, and JSON error handling. &
+Client-side routing is not authorization; production transport, cross-site
+request protection, and rate limits require deployment review. \\
+
+Uploaded file to local processing &
+Size, filename, extension, media-type, and signature checks; generated storage
+names; path-containment validation; format-specific parsers. &
+The current validation is not a malware scanner, and document parsers still
+receive untrusted bytes. \\
+
+Extracted document text to model tasks &
+Explicit untrusted-data delimiters, higher-priority task instructions, no
+document-driven tool execution, bounded input, structured schemas where
+applicable, allowlists, and local output validation. &
+Prompt injection is mitigated but not claimed to be completely solved.
+Provider behavior and adversarial inputs remain subjects for evaluation. \\
+
+Server to configured model provider &
+Provider calls are made only by server-side adapters; keys remain in server
+configuration; response payloads and secrets are omitted from public errors and
+diagnostic logs. &
+Selected document text leaves the local process for embeddings, understanding,
+reranking, and answers. Local OCR does not make the complete pipeline local. \\
+
+Generated answer to authoritative citation &
+Source identifiers originate in the bounded backend context; unknown model
+citations are discarded; persisted sources are validated snapshots. &
+A valid identifier establishes provenance, but answer correctness and whether
+the cited passage supports every claim still require evaluation. \\
+\end{longtable}
+}
+
+Prompt-injection controls are applied at three different model boundaries.
+Document Understanding asks only for a strict controlled schema and validates
+types, metadata categories, lengths, confidence values, and counts locally.
+Reranking assigns opaque candidate identifiers, requests only a structured
+ordering, rejects invalid relevance values, and fails open to deterministic
+hybrid ranking. Grounded answer generation separates retrieved text from
+instructions, denies document-driven commands or secret disclosure, and
+validates citations after generation. These controls reduce the authority
+available to malicious text, but they do not justify describing arbitrary
+document content as safe.
+\citationneeded{indirect prompt injection and defense-in-depth guidance for language-model applications}
+
+Resource bounds also serve a security role. The application limits accepted
+file size, processing queue capacity, OCR raster size and page count, chunk
+length, model input and output sizes, retrieval candidate counts, conversation
+history, and final context. Such limits constrain accidental and adversarial
+resource consumption, although they are not a substitute for deployment-level
+rate limiting and monitoring. Database search commands parameterize question
+content, while public API contracts exclude physical paths and vector values.
+
+The boundary analysis also clarifies what is not asserted. The current project
+does not claim formal multi-tenant certification, complete prompt-injection
+prevention, malware detection, encryption of application data at rest, or a
+production-scale durable job system. It does establish concrete ownership,
+provenance, validation, and failure-isolation rules within the implemented
+scope. The student's engineering contribution lies in making these rules hold
+across the complete extraction-to-citation path, rather than merely connecting
+a document upload control to a general-purpose language model.

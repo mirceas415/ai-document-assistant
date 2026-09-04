@@ -1,0 +1,22 @@
+flowchart LR
+    A[Authenticated upload] --> B[Validate type, signature, size, ownership]
+    B --> C[Store under generated local name]
+    C --> D[Enqueue document ID]
+    D --> E[Technical PDF analysis]
+    E --> F[Native PDF or DOCX extraction]
+    E --> G[Select scanned PDF pages]
+    G --> H[Local OCR]
+    F --> I[Ordered raw sections]
+    H --> I
+    I --> J[Conservative normalization]
+    J --> K[Document Understanding]
+    K --> L[Token-aware chunking]
+    J --> L
+    L --> M[Batch embedding generation]
+    M --> N[Transactional section, chunk, vector persistence]
+    N --> O[Document Ready]
+
+    E -. independent failure .-> F
+    K -. non-fatal failure .-> L
+    H -. partial OCR still yields usable pages .-> I
+

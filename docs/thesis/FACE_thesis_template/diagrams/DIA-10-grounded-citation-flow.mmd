@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant R as Retrieval service
+    participant B as Context builder
+    participant M as Answer model
+    participant V as Backend validator
+    participant C as Conversation store
+    participant U as User interface
+
+    R->>B: Final evidence chunks with provenance
+    B->>B: Assign S1, S2, ... and enforce context budget
+    B->>M: Untrusted labelled context + question
+    M-->>V: Answer text containing candidate markers such as [S1]
+    V->>V: Keep only identifiers assigned to supplied chunks
+    V->>C: Persist answer and bounded source snapshots
+    C-->>U: Answer plus authoritative source metadata
+    U->>U: Open source details by validated identifier
+

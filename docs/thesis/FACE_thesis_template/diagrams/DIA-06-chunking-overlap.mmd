@@ -1,0 +1,16 @@
+flowchart LR
+    S1[Section 0\npage 1\nheading A] --> T[Ordered normalized text units]
+    S2[Section 1\npage 2\nheading A] --> T
+    S3[Section 2\npage 3\nheading B] --> T
+    T --> C1[Chunk 0\ntoward target budget]
+    C1 --> O[Bounded trailing overlap]
+    O --> C2[Chunk 1\nnew content + overlap]
+    C2 --> C3[Chunk 2]
+
+    P1[Provenance: source-section range, page range, heading] -. attached .-> C1
+    P2[Provenance recomputed from included units] -. attached .-> C2
+    M[Hard token maximum is never exceeded]:::rule -. constrains .-> C1
+    M -. constrains .-> C2
+    M -. constrains .-> C3
+    classDef rule fill:#fff8dc,stroke:#8a6d1d,color:#111;
+

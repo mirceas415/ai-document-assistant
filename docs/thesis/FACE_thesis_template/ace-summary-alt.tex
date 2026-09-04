@@ -1,0 +1,15 @@
+\chapter*{Project Summary}
+\addcontentsline{toc}{chapter}{Project Summary}
+
+This diploma project presents an intelligent assistant for analysing and querying an authenticated user's document collection. The addressed problem is the difficulty of locating precise, verifiable information across heterogeneous PDF and DOCX files, including born-digital, scanned, and mixed PDF pages. A useful solution must do more than send a file to a language model: it must extract searchable evidence, preserve provenance, enforce workspace ownership, retrieve relevant passages, and connect generated answers to real sources.
+
+The implemented application integrates two end-to-end flows. During ingestion, uploads are validated and stored locally under generated names. PDFs receive deterministic page-level technical analysis before optical character recognition (OCR). Native PDF text and structured DOCX content are extracted in order, while only pages classified as scanned are rendered through a PDFium-based path and recognized locally with Tesseract. Raw extraction is retained, and a conservative normalization stage derives a retrieval-oriented representation. Bounded Document Understanding produces controlled document type, language, title, subject, and validated generic metadata. A deterministic \texttt{cl100k\_base}-aware algorithm creates overlapping chunks with page, heading, and source-section provenance. Each chunk is embedded and persisted in PostgreSQL using pgvector.
+
+For a question, the backend combines owner- and workspace-filtered semantic retrieval with PostgreSQL full-text retrieval and a weaker document-metadata signal. Weighted Reciprocal Rank Fusion merges ordinal ranks without adding incompatible raw scores. A bounded model-based reranker may reorder the strongest candidates; failure or invalid output preserves the hybrid order. The final chunks enter a finite Retrieval-Augmented Generation context under backend-assigned source identifiers. The answer model is instructed to treat documents as untrusted data and to use only supplied evidence. Unknown citation identifiers are removed, and validated source metadata is derived from the actual retrieved chunks. Persistent conversations include bounded non-authoritative history and historical source snapshots.
+
+The personal contribution is the design, implementation, integration, and testing of this complete extraction-to-citation pipeline, including failure isolation and diagnostic user interfaces. One verified backend test run passed all 345 tests with no failures or skips. Final experimental measurements for retrieval, OCR, classification, grounding, and prompt-injection cases remain pending and are not inferred from automated success.
+
+\begin{flushleft}
+\textbf{Keywords:} document analysis, information retrieval, optical character recognition, text embeddings, hybrid retrieval, Retrieval-Augmented Generation, grounded question answering, source provenance.
+\end{flushleft}
+

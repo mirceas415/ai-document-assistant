@@ -1,0 +1,20 @@
+flowchart LR
+    Q[Current user question] --> A[Deterministic query analysis]
+    Q --> E[One query embedding]
+    E --> V[Vector candidate search]
+    A --> L[Lexical candidate search]
+    A --> M[Metadata document search]
+    V --> F[Weighted reciprocal-rank fusion]
+    L --> F
+    M --> F
+    F --> D[Deduplicated hybrid candidates]
+    D --> R[Bounded model reranking]
+    R --> K[Final Top-K evidence chunks]
+    R -. failure or invalid output .-> H[Retain hybrid ordering]
+    H --> K
+
+    B[Owner + workspace + Ready + current embedding filters]:::guard -. applies .-> V
+    B -. applies .-> L
+    B -. applies .-> M
+    classDef guard fill:#eef7ee,stroke:#31733b,color:#111;
+

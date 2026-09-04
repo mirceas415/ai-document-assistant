@@ -1,0 +1,88 @@
+\chapter{Introduction}
+\label{chap:introduction}
+
+\section{Context}
+\label{sec:introduction-context}
+
+Many academic, administrative, legal, and technical activities produce information as documents rather than as structured database records. A single project may combine reports exported as PDF, editable DOCX files, scanned forms, contracts, invoices, procedures, and course material. These files are convenient to exchange and archive, but their contents become difficult to search as the collection grows. The user may remember a rule or identifier without remembering the filename, page, exact wording, or even the language in which it appeared.
+
+The difficulty is not limited to the number of files. Document representation is heterogeneous. A born-digital PDF can expose a useful text layer, while a scanned PDF page may contain only pixels. A DOCX file has paragraphs, heading styles, and table cells, but does not provide stable page numbers in the same way as a PDF. Repeated headers, footers, page numbers, broken words, and reading-order artifacts can interfere with search. Even after text has been extracted, a long document must be divided into evidence units that can be ranked and shown to a language model within finite input limits.
+
+At the same time, users increasingly expect to ask questions in natural language rather than formulate exact search expressions. Semantic retrieval and language models can support that interaction, but an answer is useful only when the user can verify where it came from. A document assistant must therefore connect generation to real, authorized source passages instead of producing an answer whose origin is unclear. \citationneeded{information retrieval over heterogeneous digital documents and grounded language-model applications}
+
+\section{Motivation}
+\label{sec:introduction-motivation}
+
+Manual browsing remains effective for a small, familiar folder, but it scales poorly. The user must open files, inspect tables of contents or scroll through pages, and repeat the process whenever the required fact is located elsewhere than expected. Filename search helps only when the name reveals the subject. It cannot find a clause in an ambiguously named attachment or recover a fact from a scanned page.
+
+Keyword search improves content access but depends on wording. A question such as ``What happens when a customer ends the agreement early?'' may need to retrieve a clause written in terms of ``termination before the minimum period.'' Conversely, semantic similarity can be weaker for an opaque identifier such as \texttt{CN-2026-00491}, an exact amount, or a specific organization name. This complementarity suggests that neither a purely semantic nor a purely lexical mechanism is sufficient for the intended range of questions.
+
+Sending an entire file directly to a general-purpose language model creates different problems. Large files can exceed practical context limits or consume unnecessary resources. A model may answer using general knowledge, overlook the relevant location, follow instruction-like text embedded in an uploaded document, or produce a citation marker with no authoritative source behind it. A conversational interface alone does not resolve extraction quality, ownership, provenance, retrieval precision, failure handling, or evaluation.
+
+These limitations motivated an integrated engineering solution. Documents should be processed once at workspace level and then reused across conversations. Native text should be preserved when available, OCR should be applied selectively, and every retrieval unit should retain its source location. Search should combine evidence channels with different strengths, while final answers should be constrained to bounded retrieved context and linked to backend-validated sources.
+
+\section{Problem Statement}
+\label{sec:introduction-problem}
+
+The project addresses the following problem:
+
+\begin{quote}
+How can an authenticated user ingest a heterogeneous collection of PDF and DOCX documents, including scan-like PDF pages, and query that collection conversationally while retaining ownership isolation, bounded processing, traceable evidence, and graceful failure behavior?
+\end{quote}
+
+Solving this problem requires more than selecting a language model. On the document side, the system must validate uploads, determine how PDF pages are represented, extract or recognize their text, normalize it without destroying valid content, derive controlled document information, create token-bounded chunks, generate embeddings, and persist a searchable representation. On the question side, it must interpret the current query, retrieve candidates through complementary channels, combine and optionally rerank them, construct a finite evidence context, generate an answer, and map citations back to real source chunks.
+
+The scope is deliberately practical. The project does not attempt to train a new foundation model, invent OCR or Reciprocal Rank Fusion (RRF), or provide a universal solution to prompt injection. It designs and implements a coherent document-assistance application from established components and evaluates the resulting behavior at system boundaries. Final quantitative evaluation is pending and is therefore separated from verified automated testing in Chapter~\ref{chap:testing-evaluation}.
+
+\section{Objectives}
+\label{sec:introduction-objectives}
+
+The main objective is to produce a usable assistant that turns an owned workspace of documents into a persistent, queryable evidence base. This objective is decomposed into the following engineering goals:
+
+\begin{enumerate}
+    \item accept and validate the implemented document formats while preventing unsafe filenames, type mismatches, oversized uploads, and cross-owner access;
+    \item extract ordered content from PDF pages and DOCX paragraphs, headings, and tables, while retaining raw text and source provenance;
+    \item identify text-based, scanned, image-based, mixed, and unknown PDF pages before OCR, then route only scan-like pages through bounded local recognition;
+    \item derive a conservative normalized representation and structured, validated document classification and metadata without making optional understanding a prerequisite for search;
+    \item create deterministic token-aware chunks with a hard maximum, contextual overlap, and page, heading, and source-section provenance;
+    \item generate and persist one validated embedding per chunk in PostgreSQL using pgvector, with model, dimension, timestamp, and content-hash currentness information;
+    \item retrieve project-owned evidence through semantic vector search, PostgreSQL full-text search, and soft document-metadata signals, combining ranks through weighted RRF;
+    \item apply a bounded model-based reranking stage that can fail open to the deterministic hybrid order;
+    \item construct bounded Retrieval-Augmented Generation (RAG) context, generate evidence-only responses, and accept only citations mapped by the backend to supplied source chunks;
+    \item preserve conversations and historical source snapshots while ensuring that previous assistant messages provide continuity rather than factual evidence; and
+    \item expose useful processing and retrieval diagnostics and verify authorization, algorithms, fallback paths, and trust boundaries through automated tests.
+\end{enumerate}
+
+The objectives are intentionally observable. For example, ``support scanned documents'' is not treated as a label attached to an upload feature; it entails page classification, selective rendering, OCR status, recognized-text provenance, and fallback behavior. Similarly, ``provide citations'' entails a backend mapping and source snapshot rather than accepting any bracketed identifier produced by a model.
+
+\section{Proposed Solution}
+\label{sec:introduction-solution}
+
+The proposed system is a modular web application with an ASP.NET Core backend, a React and TypeScript client, PostgreSQL persistence, pgvector embeddings, local file storage, and narrow integrations for local OCR and configured model services. A \emph{Project} in the backend is presented as a \emph{Workspace} in the interface. It owns both documents and conversations, allowing a processed document collection to support several independent chats.
+
+The document flow begins with an authenticated upload. PDF files receive deterministic technical analysis before OCR routing; PDF and DOCX extractors then produce ordered raw sections. Selected scanned pages are rendered through a PDFium-based path and recognized locally with Tesseract, after which native and OCR text are merged in source order. Conservative normalization produces the retrieval-oriented representation. Document Understanding optionally derives controlled type, language, title, subject, and metadata. Token-aware chunking, batched embeddings, and transactional persistence complete the searchable knowledge representation. Figure~\ref{fig:ingestion-pipeline} presents this flow in Chapter~\ref{chap:document-ingestion}.
+
+The question flow begins with the current user question and one query embedding. Owner- and workspace-filtered semantic and lexical searches produce chunk candidates; validated document metadata may contribute a weaker ranking signal. Weighted RRF combines ranks without adding incompatible raw scores. A bounded model-based reranker may reorder the strongest hybrid candidates, but any timeout, provider problem, or invalid output leaves the hybrid order available. Figure~\ref{fig:hybrid-retrieval-pipeline} presents the complete retrieval path.
+
+The final chunks are serialized under a document-context token budget and labelled \texttt{S1}, \texttt{S2}, and so forth by the backend. Higher-priority answer instructions define the passages as untrusted data and require an evidence-only response. After generation, unknown citation identifiers are removed and structured sources are created only from the backend's context map. Recent conversation messages are supplied separately within their own smaller budget and are explicitly non-authoritative.
+
+This architecture joins ingestion and questioning through one persisted provenance chain. Extraction location becomes chunk location; chunk location becomes retrieval metadata; selected chunk metadata becomes an answer source; and a bounded snapshot remains attached to the historical assistant message. The reader can therefore understand an answer without inspecting repository code or trusting an untraceable model claim.
+
+\section{Personal Contribution}
+\label{sec:introduction-contribution}
+
+The personal contribution is the engineering design, implementation, integration, and testing of the complete application. The project is not merely a user interface that sends uploaded files to a language model. Its implementation includes secure workspace ownership, upload validation and local storage, asynchronous processing, PDF and DOCX extraction, raw-text preservation, conservative normalization, technical PDF classification, selective local OCR, structured Document Understanding, token-aware chunking, embedding generation, native pgvector persistence, PostgreSQL lexical search, metadata-aware ranking, weighted RRF, bounded model reranking, RAG context construction, citation validation, conversation persistence, diagnostics, and failure isolation.
+
+Each listed technique has existing foundations and should be credited through the bibliography pass identified by the visible citation markers in this draft. The contribution is not a claim that embeddings, OCR, RAG, RRF, or language-model reranking were scientifically invented by the student. It lies in choosing concrete boundaries and making them work together. Examples include classifying pages before OCR rather than recognizing every PDF; keeping raw extraction beside normalized text; treating metadata as a soft document signal rather than answer evidence; preserving hybrid ranking when reranking fails; and retaining historical source snapshots without keeping foreign-key dependencies on deleted chunks.
+
+The work also includes designing tests around failure and adversarial boundaries, not only successful demonstrations. The verified suite contains 345 passing backend tests and covers ownership, extraction, normalization, chunking, embeddings, understanding, PDF classification, OCR, hybrid retrieval, reranking, grounding, citations, conversations, and prompt-injection constraints. This count demonstrates implementation coverage, while Chapter~\ref{chap:testing-evaluation} correctly reserves quality claims for the pending labelled evaluation.
+
+\section{Thesis Organization}
+\label{sec:introduction-organization}
+
+Chapter~\ref{chap:background} introduces the information-retrieval, extraction, OCR, embedding, hybrid search, reranking, grounding, and security concepts required by the implementation. Chapter~\ref{chap:requirements-architecture} defines functional and non-functional requirements and presents the high-level, backend, frontend, persistence, ownership, and security architecture.
+
+Chapter~\ref{chap:document-ingestion} follows a document from validation to searchable persistence. It gives particular attention to technical PDF analysis, selective local OCR, Document Understanding, and the token-aware chunking algorithm. Chapter~\ref{chap:retrieval-grounding} follows a question from semantic and lexical candidate generation through metadata-aware weighted RRF, bounded reranking, RAG context, grounded generation, citation validation, conversation history, and prompt-injection defenses.
+
+Chapter~\ref{chap:application-ux} describes the technology stack and the visible workspace, chat, document, source, OCR, intelligence, and retrieval-diagnostic experiences. Chapter~\ref{chap:testing-evaluation} reports the automated test state, defines the final evaluation methodology and metrics, and contains clearly marked tables and figures awaiting measurement. Chapter~\ref{chap:conclusions} concludes the thesis by summarizing the integrated result, limitations, lessons learned, and possible future development.
+

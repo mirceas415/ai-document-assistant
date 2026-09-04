@@ -1,0 +1,18 @@
+flowchart LR
+    User[Authenticated user] --> UI[React + TypeScript client]
+    UI --> API[ASP.NET Core JSON API]
+    API --> App[Application services]
+    App --> Queue[Process-local document queue]
+    Queue --> Worker[Background ingestion worker]
+    App --> DB[(PostgreSQL + pgvector)]
+    Worker --> Files[(Local uploaded files)]
+    Worker --> DB
+    Worker --> OCR[Local PDFium + Tesseract OCR]
+    Worker --> Models[Configured model provider]
+    App --> Models
+
+    classDef boundary fill:#eef4ff,stroke:#325d88,color:#111;
+    classDef store fill:#f8f3e8,stroke:#826b31,color:#111;
+    class UI,API,App,Queue,Worker boundary;
+    class DB,Files store;
+

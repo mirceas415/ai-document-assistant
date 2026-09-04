@@ -1,0 +1,17 @@
+flowchart TD
+    A[M11 page diagnostics] --> B{Page type is Scanned?}
+    B -- No --> C[Keep native extraction path]
+    B -- Yes --> D{Within candidate-page limit?}
+    D -- No --> E[Record SkippedLimit]
+    D -- Yes --> F[Calculate pixel-safe render plan]
+    F --> G[Render page locally with PDFium]
+    G --> H[Recognize ron + eng with Tesseract]
+    H --> I{Usable recognized text?}
+    I -- Yes --> J[Record Ready and use OCR section]
+    I -- No --> K[Record Empty or Failed]
+    C --> L[Merge pages in original order]
+    E --> L
+    J --> L
+    K --> L
+    L --> M[Persist raw section provenance and OCR diagnostics]
+

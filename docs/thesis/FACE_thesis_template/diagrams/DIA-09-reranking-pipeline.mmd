@@ -1,0 +1,15 @@
+flowchart TD
+    A[Top hybrid candidates] --> B[Assign opaque candidate IDs]
+    B --> C[Add bounded filename, location, signals, and content]
+    C --> D{Request fits total token budget?}
+    D -- No --> E[Reduce/truncate bounded candidate content]
+    E --> D
+    D -- Yes --> F[Structured model relevance ranking]
+    F --> G{Locally valid IDs, scores, and uniqueness?}
+    G -- Yes --> H[Apply reranked order; append omitted candidates stably]
+    G -- No --> I[Fail open to hybrid order]
+    F -. timeout/provider failure .-> I
+    J[Skip when disabled, unnecessary, or too few bounded candidates] -.-> I
+    H --> K[Final Top-K]
+    I --> K
+
