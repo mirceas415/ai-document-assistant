@@ -243,6 +243,9 @@ export interface SemanticSearchResult {
     lexicalRankScore: number | null;
     fusedScore: number | null;
     matchedMetadata: MatchedMetadata[] | null;
+    hybridRank: number | null;
+    rerankRank: number | null;
+    rerankRelevance: number | null;
 }
 
 export interface MatchedMetadata {
@@ -254,6 +257,8 @@ export interface MatchedMetadata {
 export interface SemanticSearchResponse {
     topK: number;
     results: SemanticSearchResult[];
+    rerankingApplied: boolean;
+    rerankingFallback: boolean;
 }
 
 export interface AskSource {

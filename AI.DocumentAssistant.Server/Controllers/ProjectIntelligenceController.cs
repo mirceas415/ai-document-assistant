@@ -74,8 +74,13 @@ public sealed class ProjectIntelligenceController : ControllerBase
                                 match.Field,
                                 match.Value,
                                 match.IsExact))
-                            .ToArray()))
-                    .ToArray()));
+                            .ToArray(),
+                        chunk.HybridRank,
+                        chunk.RerankRank,
+                        chunk.RerankRelevance))
+                    .ToArray(),
+                retrieval.RerankingApplied,
+                retrieval.RerankingFallback));
         }
         catch (OperationCanceledException)
         {

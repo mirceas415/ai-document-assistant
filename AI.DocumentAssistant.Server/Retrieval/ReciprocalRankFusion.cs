@@ -15,15 +15,15 @@ public sealed class ReciprocalRankFusion : IHybridRetrievalFusion
         IReadOnlyList<RetrievedDocumentChunk> vectorCandidates,
         IReadOnlyList<RetrievedDocumentChunk> lexicalCandidates,
         IReadOnlyList<MetadataDocumentMatch> metadataDocuments,
-        int topK)
+        int candidateCount)
     {
         ArgumentNullException.ThrowIfNull(vectorCandidates);
         ArgumentNullException.ThrowIfNull(lexicalCandidates);
         ArgumentNullException.ThrowIfNull(metadataDocuments);
-        ArgumentOutOfRangeException.ThrowIfLessThan(topK, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(candidateCount, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(
-            topK,
-            SemanticRetrievalLimits.MaximumTopK);
+            candidateCount,
+            SemanticRetrievalLimits.MaximumCandidateCount);
 
         var vectorsByChunk = RankUniqueChunks(vectorCandidates);
         var lexicalByChunk = RankUniqueChunks(lexicalCandidates);
@@ -85,7 +85,7 @@ public sealed class ReciprocalRankFusion : IHybridRetrievalFusion
             .ThenBy(value => value.Chunk.DocumentId)
             .ThenBy(value => value.Chunk.ChunkIndex)
             .ThenBy(value => value.Chunk.ChunkId)
-            .Take(topK)
+            .Take(candidateCount)
             .Select(value => value.Chunk)
             .ToArray();
     }

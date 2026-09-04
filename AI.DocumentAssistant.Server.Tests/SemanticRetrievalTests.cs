@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using AI.DocumentAssistant.Server.Contracts;
 using AI.DocumentAssistant.Server.Controllers;
+using AI.DocumentAssistant.Server.Chunking;
 using AI.DocumentAssistant.Server.Data;
 using AI.DocumentAssistant.Server.Embeddings;
 using AI.DocumentAssistant.Server.Models;
@@ -145,6 +146,9 @@ public sealed class SemanticRetrievalTests
             MetadataDocumentRank = 1,
             LexicalRankScore = 0.81,
             FusedScore = 0.041,
+            HybridRank = 4,
+            RerankRank = 1,
+            RerankRelevance = 4,
             MatchedMetadata =
             [
                 new MatchedRetrievalMetadata("Organization", "Vodafone", false),
@@ -153,7 +157,7 @@ public sealed class SemanticRetrievalTests
         };
         var retrieval = new RecordingRetrievalService
         {
-            Result = new SemanticRetrievalResult(8, [chunk])
+            Result = new SemanticRetrievalResult(8, [chunk], true, false)
         };
         var controller = CreateController(retrieval, Guid.NewGuid());
 
@@ -171,7 +175,12 @@ public sealed class SemanticRetrievalTests
         Assert.Equal(1, result.MetadataDocumentRank);
         Assert.Equal(0.81, result.LexicalRankScore);
         Assert.Equal(0.041, result.FusedScore);
+        Assert.Equal(4, result.HybridRank);
+        Assert.Equal(1, result.RerankRank);
+        Assert.Equal(4, result.RerankRelevance);
         Assert.Equal(2, result.MatchedMetadata!.Count);
+        Assert.True(response.RerankingApplied);
+        Assert.False(response.RerankingFallback);
     }
 
     [Fact]
@@ -606,6 +615,8 @@ public sealed class SemanticRetrievalTests
             var metadataSearch = new RecordingMetadataSearch();
             var configuredHybridOptions = Options.Create(
                 hybridOptions ?? new HybridRetrievalOptions());
+            var configuredRerankingOptions = Options.Create(
+                new RetrievalRerankingOptions());
             var service = new SemanticRetrievalService(
                 context,
                 embeddingService,
@@ -614,6 +625,10 @@ public sealed class SemanticRetrievalTests
                 metadataSearch,
                 new DeterministicRetrievalQueryAnalyzer(),
                 new ReciprocalRankFusion(configuredHybridOptions),
+                new RetrievalRerankingInputBuilder(
+                    new Cl100kDocumentTokenizer(),
+                    configuredRerankingOptions),
+                new PassThroughRetrievalReranker(),
                 Options.Create(new OpenAIEmbeddingOptions
                 {
                     EmbeddingModel = EmbeddingArchitecture.DefaultModel,
@@ -621,6 +636,7 @@ public sealed class SemanticRetrievalTests
                     BatchSize = 32
                 }),
                 configuredHybridOptions,
+                configuredRerankingOptions,
                 NullLogger<SemanticRetrievalService>.Instance);
 
             return new RetrievalFixture(

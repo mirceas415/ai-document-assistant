@@ -465,11 +465,16 @@ export function SemanticSearchSection({ projectId }: SemanticSearchSectionProps)
                 <div>
                     <p className="eyebrow">Retrieval debug</p>
                     <h2 id="semantic-search-heading">Hybrid Search</h2>
-                    <p>Inspect semantic, lexical, and metadata-aware ranking across ready workspace documents.</p>
+                    <p>Inspect hybrid candidate ranking and bounded model reranking across ready workspace documents.</p>
                 </div>
             </div>
 
             {error && <div className="alert retrieval-alert" role="alert">{error}</div>}
+            {response?.rerankingFallback && (
+                <div className="alert retrieval-alert" role="status">
+                    Reranking unavailable — hybrid order used.
+                </div>
+            )}
 
             <form className="retrieval-form" onSubmit={search}>
                 <label htmlFor="semantic-search-query">Question or search phrase</label>
@@ -499,7 +504,7 @@ export function SemanticSearchSection({ projectId }: SemanticSearchSectionProps)
                     <div className="retrieval-results-heading">
                         <h3>Ranked results</h3>
                         <span>
-                            {response.results.length} of up to {response.topK} chunks · fused hybrid ranking
+                            {response.results.length} of up to {response.topK} chunks · {response.rerankingApplied ? 'model-reranked' : 'hybrid'} final order
                         </span>
                     </div>
 
@@ -513,7 +518,7 @@ export function SemanticSearchSection({ projectId }: SemanticSearchSectionProps)
                                 <li className="retrieval-result-card" key={result.chunkId}>
                                     <div className="retrieval-result-heading">
                                         <div>
-                                            <span className="retrieval-rank">#{index + 1}</span>
+                                            <span className="retrieval-rank">Final #{index + 1}</span>
                                             <h3>{result.documentName}</h3>
                                         </div>
                                         <span className="retrieval-distance">
@@ -523,6 +528,9 @@ export function SemanticSearchSection({ projectId }: SemanticSearchSectionProps)
                                     <div className="retrieval-result-meta">
                                         <span>Chunk {result.chunkIndex + 1}</span>
                                         <span>{formatPageRange(result.pageStart, result.pageEnd)}</span>
+                                        <span>Hybrid #{result.hybridRank ?? index + 1}</span>
+                                        {result.rerankRank !== null && <span>Reranked #{result.rerankRank}</span>}
+                                        {result.rerankRelevance !== null && <span>Relevance: {formatRerankRelevance(result.rerankRelevance)}</span>}
                                         {result.vectorRank !== null && <span>Vector #{result.vectorRank}</span>}
                                         {result.lexicalRank !== null && <span>Lexical #{result.lexicalRank}</span>}
                                         {result.metadataDocumentRank !== null && <span>Metadata doc #{result.metadataDocumentRank}</span>}
@@ -2939,6 +2947,16 @@ function formatPageRange(pageStart: number | null, pageEnd: number | null) {
     if (pageStart === pageEnd || pageEnd === null) return `Page ${pageStart}`;
     if (pageStart === null) return `Page ${pageEnd}`;
     return `Pages ${pageStart}–${pageEnd}`;
+}
+
+function formatRerankRelevance(relevance: number) {
+    switch (relevance) {
+        case 4: return 'Direct';
+        case 3: return 'High';
+        case 2: return 'Medium';
+        case 1: return 'Low';
+        default: return 'Irrelevant';
+    }
 }
 
 function getFileExtensionLabel(fileName: string) {

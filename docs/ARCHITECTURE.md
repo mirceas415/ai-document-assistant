@@ -330,14 +330,16 @@ Embedding calls occur only for a newly processed upload, explicit processing ret
 
 `ISemanticRetrievalService` remains the single shared orchestration boundary used by both Search and Ask. It first verifies `(Project.Id, Project.OwnerId)` in the database. Only after that succeeds does deterministic local query preparation run and `ITextEmbeddingService` get called exactly once with a one-item batch containing the trimmed original query. The returned model, count, 1,536 dimensions, and finite values are validated against current embedding configuration. Query embeddings are transient and are never saved, serialized, returned, or logged. M13 adds no query-classification, rewrite, entity-extraction, HyDE, or other LLM request.
 
-The bounded retrieval shape is:
+The bounded M13 candidate-generation and M14 selection shape is:
 
 ```text
 Question -> one query embedding -> exact pgvector candidates (default 30)
          -> original text -> PostgreSQL full-text candidates (default 30)
          -> deterministic hints -> Ready M10 document matches (default 20)
          -> weighted reciprocal-rank fusion and ChunkId deduplication
-         -> unique final TopK chunks (default 8, maximum 20)
+         -> best bounded hybrid candidates for reranking (default 18, maximum 30)
+         -> one optional model reranking request
+         -> validated unique final TopK chunks (default 8, maximum 20)
          -> existing RagContextBuilder and grounded answer generation
 ```
 
@@ -400,11 +402,37 @@ exactIdentifierMultiplier = 1.50 for an exact persisted Identifier match,
                             otherwise 1.00
 ```
 
-Missing channels contribute zero. The deliberately smaller ordinary metadata weight improves prioritization without hard-excluding stronger chunk evidence; the exact-Identifier multiplier remains smaller than an evidence channel. Candidates are deduplicated by `ChunkId` while retaining every channel rank. Ties are resolved by best individual rank, `DocumentId`, `ChunkIndex`, and `ChunkId`. Only the requested unique TopK enters RAG; the larger candidate pools do not increase the existing context budget.
+Missing channels contribute zero. The deliberately smaller ordinary metadata weight improves prioritization without hard-excluding stronger chunk evidence; the exact-Identifier multiplier remains smaller than an evidence channel. Candidates are deduplicated by `ChunkId` while retaining every channel rank. Ties are resolved by best individual rank, `DocumentId`, `ChunkIndex`, and `ChunkId`. M13 returns the best bounded unique candidates to M14 when reranking can change final selection; only the requested final TopK enters RAG, so neither candidate pool increases the existing context budget.
 
 ### Vector index decision
 
 Milestone 7 intentionally uses an exact filtered scan and adds no HNSW or IVFFlat index. The expected MVP data volume is modest, while owner/project/current-embedding predicates are selective and correctness is more important than approximate recall. With an approximate index, PostgreSQL can apply filters after the index scan and return fewer eligible neighbors unless deployment-specific tuning and iterative-scan behavior are evaluated. Deferring HNSW therefore avoids silently losing project-scoped results. If measured post-MVP volume justifies it, evaluate one `vector_cosine_ops` HNSW index against representative multi-project data and the deployed pgvector version before adding a migration. IVFFlat and HNSW must not be introduced together without evidence.
+
+## Model-based Reranking Flow
+
+M13 remains the recall-oriented candidate generator. M14 adds precision-oriented comparison only after vector/lexical/metadata fusion and `ChunkId` deduplication, and before final TopK selection. `SemanticRetrievalService` remains the single shared Search/Ask orchestration path; `RagContextBuilder`, answer prompting, citation validation, and source mapping are unchanged.
+
+```text
+M13 vector + lexical + metadata candidates
+  -> weighted RRF and deterministic unique hybrid order
+  -> best 18 candidates by default (hard/configurable maximum 30)
+  -> one IRetrievalReranker batch request when useful
+  -> locally validated model order
+  -> omitted candidates appended in original hybrid order
+  -> final requested TopK (default 8, maximum 20)
+  -> existing bounded RagContextBuilder
+  -> existing grounded answer request
+```
+
+`Retrieval:Reranking` controls `Enabled`, `CandidateCount` (18), `MaxCandidateCount` (30), `MaxInputTokens` (12,000), `MaxCandidateTokens` (700), and `TimeoutSeconds` (30). The existing tokenizer deterministically accounts for the actual reranking user input. Each candidate is represented by an opaque `C1`…`C30` ID, bounded filename, page label, optional heading, and a transient prefix-truncated copy of `DocumentChunk.Content`; persisted content is never modified. The original current question is sent separately in the same structured payload. Conversation history, assistant answers, vectors, embeddings, RRF scores, secrets, and provider configuration are not supplied.
+
+`IRetrievalReranker` is the provider-independent boundary. `OpenAIRetrievalReranker` uses the installed official OpenAI .NET SDK and Responses API. It resolves `OpenAI:RerankingModel`, falling back to `OpenAI:AnswerModel` only when the reranking model is omitted. The default configuration uses `gpt-5.6-sol`, low reasoning effort, a maximum output of 800 tokens, strict JSON Schema, no tools, and `StoredOutputEnabled = false`. The schema returns only an ordered list of candidate IDs with an integer relevance grade: 4 directly answering/strong support, 3 highly relevant, 2 somewhat relevant, 1 weak, and 0 irrelevant. No rationale, answer, summary, or citation is requested or persisted.
+
+Candidate text is explicitly delimited as untrusted data in a higher-priority instruction that forbids following embedded commands, changing the ranking task, revealing prompts/secrets/configuration, answering the question, or using tools. Provider output is also untrusted. Locally, IDs must map to supplied candidates, first occurrences win, relevance must be 0–4, and list size must remain bounded. Unknown IDs are discarded; omitted or unsent candidates append in original M13 order. An empty, null, overlong, out-of-range, or otherwise unusable result causes complete fallback to M13 ordering. A provider can reorder existing secure candidates but can never create a chunk.
+
+Reranking is skipped when disabled, when there are zero or one candidates, or when the candidate count cannot improve requested TopK selection. There is one logical provider attempt with a 30-second linked timeout and no application-level retry loop. Timeout, rate limit, outage, malformed output, missing configuration, or unexpected provider failure produces a bounded warning and fail-open hybrid results. An actual caller-request cancellation still propagates. Logs contain counts, approximate token use, applied/fallback flags, duration, model name, and exception type/status where available—not questions, chunks, prompts, raw responses, vectors, or secrets.
+
+Search diagnostics add final, hybrid, and reranked ranks, ordinal relevance, plus request-level `RerankingApplied`/`RerankingFallback`; existing vector, lexical, metadata, and fused-score details remain. These are diagnostics only. M10 metadata, filenames, headings, and reranker grades do not become answer evidence or citations. Only selected `DocumentChunk.Content` enters the unchanged RAG context. No M14 database migration or package was added.
 
 ## RAG / Ask Your Documents Flow
 
@@ -414,14 +442,15 @@ Milestone 7 intentionally uses an exact filtered scan and adds no HNSW or IVFFla
 authenticate and validate
   -> verify owned project and create one query embedding
   -> reuse ISemanticRetrievalService for bounded vector + lexical + metadata fusion
-  -> select unique TopK 8 authoritative chunks
+  -> optionally make one bounded batch reranking request over fused candidates
+  -> validate/fail open and select unique TopK 8 authoritative chunks
   -> build bounded context from retrieved chunks
   -> call IGroundedAnswerService once
   -> validate cited source IDs
   -> return answer and authoritative sources
 ```
 
-The existing configured answer model is `gpt-5.6-luna`, preserved for its economical multilingual grounded-answer use. `OpenAIResponsesAnswerClient` uses the already-installed official OpenAI .NET SDK's Responses API. Requests use low reasoning effort, cap answer output at 700 tokens, and set `StoredOutputEnabled = false`. The adapter is lazy, uses the API key only through backend configuration, and reduces provider failures to a safe application error. No unofficial SDK, Semantic Kernel, tool loop, hidden self-critique, reranker, or second answer call is used.
+The existing configured answer model is `gpt-5.6-luna`, preserved for its economical multilingual grounded-answer use. `OpenAIResponsesAnswerClient` uses the already-installed official OpenAI .NET SDK's Responses API. Requests use low reasoning effort, cap answer output at 700 tokens, and set `StoredOutputEnabled = false`. The adapter is lazy, uses the API key only through backend configuration, and reduces provider failures to a safe application error. No unofficial SDK, Semantic Kernel, tool loop, hidden self-critique, or second answer call is used. A normal reranked Ask now performs one query-embedding request, one bounded reranking request, and one unchanged answer-generation request; skipped or failed-open reranking does not add a replacement model call.
 
 ### Bounded context
 
@@ -565,6 +594,6 @@ Document management is intentionally separate from the focused chat workspace. T
 
 ## Core MVP Status and Limitations
 
-The core bachelor's-project MVP and ingestion-intelligence foundation are complete through Milestone 13. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, OCR limited to M11 `Scanned` pages and locally installed Romanian/English Tesseract models, no layout/table/image understanding, exact vector search sized for MVP data, deterministic rather than learned metadata matching, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no large formal retrieval/answer benchmark beyond the small deterministic/manual guides.
+The core bachelor's-project MVP and ingestion-intelligence foundation are complete through Milestone 14. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, OCR limited to M11 `Scanned` pages and locally installed Romanian/English Tesseract models, no layout/table/image understanding, exact vector search sized for MVP data, deterministic metadata matching, bounded request-time model reranking rather than a trained domain reranker, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no large formal retrieval/answer benchmark beyond the small deterministic/manual guides.
 
-Reranking, broader image/vision policies, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening remain future work. M11 still uses only deterministic structural heuristics; M12 consumes its `Scanned` page result without changing classification. Technical PDF intelligence asks “How is this PDF represented?”, local OCR asks “What text can be recovered from pages identified as scans?”, and M10 Document Understanding independently asks “What does this document mean?” M13 consumes only Ready M10 intelligence as a soft retrieval signal and changes no M10/M11/M12 ingestion semantics, answer prompt, citation semantics, or source mapping; see `ROADMAP.md`.
+Broader image/vision policies, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening remain future work. M11 still uses only deterministic structural heuristics; M12 consumes its `Scanned` page result without changing classification. Technical PDF intelligence asks “How is this PDF represented?”, local OCR asks “What text can be recovered from pages identified as scans?”, and M10 Document Understanding independently asks “What does this document mean?” M13 consumes only Ready M10 intelligence as a soft retrieval signal; M14 reorders only secure M13 chunk candidates. Neither milestone changes M10/M11/M12 ingestion semantics, the answer prompt, citation semantics, or source mapping; see `ROADMAP.md`.

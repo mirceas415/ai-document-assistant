@@ -63,6 +63,8 @@ builder.Services.AddScoped<ILexicalChunkSearch, PostgreSqlLexicalChunkSearch>();
 builder.Services.AddScoped<IMetadataDocumentSearch, PostgreSqlMetadataDocumentSearch>();
 builder.Services.AddSingleton<IRetrievalQueryAnalyzer, DeterministicRetrievalQueryAnalyzer>();
 builder.Services.AddSingleton<IHybridRetrievalFusion, ReciprocalRankFusion>();
+builder.Services.AddSingleton<IRetrievalRerankingInputBuilder, RetrievalRerankingInputBuilder>();
+builder.Services.AddSingleton<IRetrievalReranker, OpenAIRetrievalReranker>();
 builder.Services.AddScoped<ISemanticRetrievalService, SemanticRetrievalService>();
 builder.Services.AddScoped<IProjectQuestionAnsweringService, ProjectQuestionAnsweringService>();
 builder.Services.AddScoped<IConversationService, ConversationService>();
@@ -120,6 +122,15 @@ builder.Services.AddOptions<OpenAIDocumentUnderstandingOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+builder.Services.AddOptions<OpenAIRerankingOptions>()
+    .Bind(builder.Configuration.GetSection(OpenAIRerankingOptions.SectionName))
+    .ValidateDataAnnotations()
+    .Validate(
+        options => options.RerankingModel is null ||
+            !string.IsNullOrWhiteSpace(options.RerankingModel),
+        "OpenAI RerankingModel must either be omitted or contain a model name.")
+    .ValidateOnStart();
+
 builder.Services.AddOptions<HybridRetrievalOptions>()
     .Bind(builder.Configuration.GetSection(HybridRetrievalOptions.SectionName))
     .ValidateDataAnnotations()
@@ -127,6 +138,17 @@ builder.Services.AddOptions<HybridRetrievalOptions>()
         options => options.MetadataWeight * options.ExactIdentifierMultiplier <=
             Math.Min(options.VectorWeight, options.LexicalWeight),
         "HybridRetrieval metadata contribution must not outweigh either chunk-evidence channel.")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<RetrievalRerankingOptions>()
+    .Bind(builder.Configuration.GetSection(RetrievalRerankingOptions.SectionName))
+    .ValidateDataAnnotations()
+    .Validate(
+        options => options.CandidateCount <= options.MaxCandidateCount,
+        "Retrieval reranking CandidateCount must not exceed MaxCandidateCount.")
+    .Validate(
+        options => options.MaxCandidateTokens <= options.MaxInputTokens,
+        "Retrieval reranking MaxCandidateTokens must not exceed MaxInputTokens.")
     .ValidateOnStart();
 
 // Tessdata and native OCR availability are deliberately checked only when a

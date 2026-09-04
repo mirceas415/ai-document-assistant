@@ -12,4 +12,6 @@ public interface ISemanticRetrievalService
 
 public sealed record SemanticRetrievalResult(
     int TopK,
-    IReadOnlyList<RetrievedDocumentChunk> Chunks);
+    IReadOnlyList<RetrievedDocumentChunk> Chunks,
+    bool RerankingApplied = false,
+    bool RerankingFallback = false);

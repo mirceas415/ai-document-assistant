@@ -242,6 +242,7 @@ button.inline-citation:hover { color: #163fa2; background: #d9e7ff; }
 .retrieval-debug-panel li span { display: block; color: #7a8598; font-size: 9px; }
 .retrieval-debug-panel li p { max-height: 80px; margin: 5px 0 0; overflow: auto; color: #465268; }
 .retrieval-debug-error { margin-top: 7px; color: #b42318; }
+.retrieval-debug-notice { margin-top: 7px; color: #7a5b13; }
 
 .chat-empty-state,
 .conversation-empty { display: grid; max-width: 560px; place-items: center; margin: auto; padding: 40px; text-align: center; }

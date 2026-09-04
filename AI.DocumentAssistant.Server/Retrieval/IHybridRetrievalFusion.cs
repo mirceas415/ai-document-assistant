@@ -6,5 +6,5 @@ public interface IHybridRetrievalFusion
         IReadOnlyList<RetrievedDocumentChunk> vectorCandidates,
         IReadOnlyList<RetrievedDocumentChunk> lexicalCandidates,
         IReadOnlyList<MetadataDocumentMatch> metadataDocuments,
-        int topK);
+        int candidateCount);
 }

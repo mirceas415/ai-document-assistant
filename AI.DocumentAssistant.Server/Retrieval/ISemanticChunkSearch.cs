@@ -29,7 +29,10 @@ public sealed record RetrievedDocumentChunk(
     int? MetadataDocumentRank = null,
     double? LexicalRankScore = null,
     double? FusedScore = null,
-    IReadOnlyList<MatchedRetrievalMetadata>? MatchedMetadata = null);
+    IReadOnlyList<MatchedRetrievalMetadata>? MatchedMetadata = null,
+    int? HybridRank = null,
+    int? RerankRank = null,
+    int? RerankRelevance = null);
 
 public sealed record MatchedRetrievalMetadata(
     string Field,

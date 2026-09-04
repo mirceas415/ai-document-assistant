@@ -9,7 +9,9 @@ public sealed class SemanticSearchRequest
 
 public sealed record SemanticSearchResponse(
     int TopK,
-    IReadOnlyList<SemanticSearchResultResponse> Results);
+    IReadOnlyList<SemanticSearchResultResponse> Results,
+    bool RerankingApplied = false,
+    bool RerankingFallback = false);
 
 public sealed record SemanticSearchResultResponse(
     Guid DocumentId,
@@ -26,7 +28,10 @@ public sealed record SemanticSearchResultResponse(
     int? MetadataDocumentRank = null,
     double? LexicalRankScore = null,
     double? FusedScore = null,
-    IReadOnlyList<MatchedMetadataResponse>? MatchedMetadata = null);
+    IReadOnlyList<MatchedMetadataResponse>? MatchedMetadata = null,
+    int? HybridRank = null,
+    int? RerankRank = null,
+    int? RerankRelevance = null);
 
 public sealed record MatchedMetadataResponse(
     string Field,

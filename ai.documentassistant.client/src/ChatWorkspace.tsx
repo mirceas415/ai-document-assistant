@@ -1139,19 +1139,25 @@ function RetrievalDebug({ projectId }: { projectId: string }) {
 
     return (
         <div className="retrieval-debug-panel">
-            <p>Inspect ranked hybrid results without generating an answer.</p>
+            <p>Inspect hybrid and model-reranked results without generating an answer.</p>
             <form onSubmit={(event) => void search(event)}>
                 <input value={query} maxLength={2_000} placeholder="Search phrase" onChange={(event) => setQuery(event.target.value)} />
                 <button type="submit" disabled={loading}>{loading ? 'Searching…' : 'Search'}</button>
             </form>
             {error && <div className="retrieval-debug-error">{error}</div>}
+            {response?.rerankingFallback && (
+                <div className="retrieval-debug-notice">Reranking unavailable — hybrid order used.</div>
+            )}
             {response && (
                 <ol>
                     {response.results.map((result, index) => (
                         <li key={result.chunkId}>
                             <strong>{result.documentName}</strong>
                             <span>
-                                Hybrid rank #{index + 1}
+                                Final rank #{index + 1}
+                                {` · Hybrid #${result.hybridRank ?? index + 1}`}
+                                {result.rerankRank !== null ? ` · Reranked #${result.rerankRank}` : ''}
+                                {result.rerankRelevance !== null ? ` · Relevance: ${formatRerankRelevance(result.rerankRelevance)}` : ''}
                                 {result.fusedScore !== null ? ` · score ${result.fusedScore.toFixed(6)}` : ''}
                                 {result.vectorRank !== null ? ` · Vector #${result.vectorRank}` : ''}
                                 {result.lexicalRank !== null ? ` · Lexical #${result.lexicalRank}` : ''}
@@ -1169,6 +1175,16 @@ function RetrievalDebug({ projectId }: { projectId: string }) {
             )}
         </div>
     );
+}
+
+function formatRerankRelevance(relevance: number) {
+    switch (relevance) {
+        case 4: return 'Direct';
+        case 3: return 'High';
+        case 2: return 'Medium';
+        case 1: return 'Low';
+        default: return 'Irrelevant';
+    }
 }
 
 function groupConversations(items: ConversationSummary[]) {

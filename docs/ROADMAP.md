@@ -234,12 +234,20 @@ Status: Complete
 - Add focused fusion, behavior, query-safety, ownership-query, regression, and small synthetic evaluation tests
 - `AddHybridRetrievalIndexes` EF Core migration; no new package, reranker, ANN index, query-understanding model, or filter UI
 
-## Milestone 14 — Reranking / Retrieval Quality
+## Milestone 14 — Model-based Reranking & Retrieval Quality
 
-Status: Planned
+Status: Complete
 
-- Evidence-based reranking and retrieval-quality measurement after hybrid retrieval
-- No reranker is present through Milestone 13
+- Keep M13 as bounded recall-oriented candidate generation, then run one optional batch model rerank before final TopK/context selection
+- Provider-independent `IRetrievalReranker` with an official OpenAI Responses implementation and deterministic pass-through fake/no-op support
+- Strict bounded structured output containing only opaque candidate IDs and 0–4 relevance grades; no generated answers, citations, or free-text rationale
+- Reuse the existing tokenizer for an 18-candidate default/30-candidate maximum, 12,000-token total input budget, and 700-token per-candidate cap
+- Locally validate all model output, discard unknown IDs, keep first duplicates, append omissions in hybrid order, and prevent creation of new chunks
+- Fail open to M13 order on timeout, provider/configuration failure, or malformed output; skip calls that cannot affect selection
+- Preserve existing ownership filters, M13 weights, metadata-as-non-evidence semantics, bounded RAG context, answer prompt, and citation path
+- Extend Advanced Retrieval Details with final/hybrid/reranked ranks, relevance, and compact fallback state
+- Add fake-only orchestration, validation, token-budget, injection-boundary, failure-regression, and hybrid-versus-reranked evaluation tests
+- No database migration, package, additional embedding/query-understanding call, answer-generation change, or end-user retrieval controls
 
 ## Milestone 15 — Deployment / Production Hardening
 
