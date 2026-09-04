@@ -89,6 +89,7 @@ public sealed class DocumentsController : ControllerBase
             .AsNoTracking()
             .Include(document => document.Understanding)
             .Include(document => document.TechnicalAnalysis)
+            .Include(document => document.OcrAnalysis)
             .Where(document =>
                 document.ProjectId == projectId &&
                 document.Project.OwnerId == ownerId)
@@ -122,6 +123,7 @@ public sealed class DocumentsController : ControllerBase
             .AsNoTracking()
             .Include(document => document.Understanding)
             .Include(document => document.TechnicalAnalysis)
+            .Include(document => document.OcrAnalysis)
             .SingleOrDefaultAsync(
                 document =>
                     document.Id == documentId &&
@@ -484,6 +486,7 @@ public sealed class DocumentsController : ControllerBase
                 .AsNoTracking()
                 .Include(item => item.Understanding)
                 .Include(item => item.TechnicalAnalysis)
+                .Include(item => item.OcrAnalysis)
                 .SingleAsync(item => item.Id == documentId, cancellationToken);
 
             _logger.LogInformation(
@@ -636,6 +639,7 @@ public sealed class DocumentsController : ControllerBase
                 .AsNoTracking()
                 .Include(item => item.Understanding)
                 .Include(item => item.TechnicalAnalysis)
+                .Include(item => item.OcrAnalysis)
                 .SingleAsync(item => item.Id == documentId, cancellationToken);
 
             return Ok(ToDetails(refreshedDocument, embeddingsAreCurrent: true));
@@ -723,6 +727,7 @@ public sealed class DocumentsController : ControllerBase
                 .AsNoTracking()
                 .Include(item => item.Understanding)
                 .Include(item => item.TechnicalAnalysis)
+                .Include(item => item.OcrAnalysis)
                 .SingleAsync(item => item.Id == documentId, cancellationToken);
 
             _logger.LogInformation(
@@ -1148,7 +1153,8 @@ public sealed class DocumentsController : ControllerBase
             document.EmbeddingError,
             embeddingsAreCurrent,
             document.Understanding?.Status,
-            document.TechnicalAnalysis?.Status);
+            document.TechnicalAnalysis?.Status,
+            document.OcrAnalysis?.Status);
 
     private DocumentDetails ToDetails(
         Document document,
@@ -1182,7 +1188,8 @@ public sealed class DocumentsController : ControllerBase
             document.EmbeddingError,
             embeddingsAreCurrent,
             document.Understanding?.Status,
-            document.TechnicalAnalysis?.Status);
+            document.TechnicalAnalysis?.Status,
+            document.OcrAnalysis?.Status);
 
     private sealed record ValidatedFile(
         string OriginalFileName,

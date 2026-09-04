@@ -83,6 +83,8 @@ export function ProjectChatWorkspace({
     const [uploadError, setUploadError] = useState('');
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const composerRef = useRef<HTMLTextAreaElement>(null);
+    const composerDraftRef = useRef('');
+    const isAskingRef = useRef(false);
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const shouldFollowMessagesRef = useRef(true);
@@ -212,6 +214,7 @@ export function ProjectChatWorkspace({
                 { method: 'POST' },
             );
             setConversation(created);
+            composerDraftRef.current = '';
             setQuestion('');
             setFailedQuestion('');
             setFailedMessageId(null);
@@ -226,30 +229,39 @@ export function ProjectChatWorkspace({
 
     const askQuestion = async (event?: FormEvent) => {
         event?.preventDefault();
-        if (!conversation || isAsking) return;
+        if (!conversation || isAskingRef.current) return;
 
-        const normalized = question.trim();
-        if (!normalized) {
+        const submittedText = question.trim();
+        if (!submittedText) {
             setError('Enter a question about documents in this workspace.');
             return;
         }
-        if (normalized.length > 2_000) {
+        if (submittedText.length > 2_000) {
             setError('The question cannot exceed 2,000 characters.');
             return;
         }
 
         setError('');
         setFailedQuestion('');
-        const retryMessageId = failedQuestion === normalized
+        const retryMessageId = failedQuestion === submittedText
             ? failedMessageId
             : null;
         setFailedMessageId(null);
+        composerDraftRef.current = '';
+        setQuestion('');
+        isAskingRef.current = true;
         setIsAsking(true);
+        window.requestAnimationFrame(() => {
+            const textarea = composerRef.current;
+            if (!textarea) return;
+            textarea.style.height = 'auto';
+            textarea.focus();
+        });
         shouldFollowMessagesRef.current = true;
         const optimisticMessage: ConversationMessage = {
             id: `pending-${Date.now()}`,
             role: 'User',
-            content: normalized,
+            content: submittedText,
             createdAtUtc: new Date().toISOString(),
             sequence: (conversation.messages.at(-1)?.sequence ?? 0) + 1,
             sources: [],
@@ -264,19 +276,22 @@ export function ProjectChatWorkspace({
                 {
                     method: 'POST',
                     body: JSON.stringify({
-                        question: normalized,
+                        question: submittedText,
                         ...(retryMessageId ? { retryMessageId } : {}),
                     }),
                 },
             );
-            setQuestion('');
             await Promise.all([
                 loadConversation(conversation.id),
                 loadConversations(),
             ]);
         } catch (requestError) {
-            setFailedQuestion(normalized);
-            setQuestion(normalized);
+            const canRestoreSubmittedText = !composerDraftRef.current.trim();
+            if (canRestoreSubmittedText) {
+                composerDraftRef.current = submittedText;
+                setQuestion(submittedText);
+                setFailedQuestion(submittedText);
+            }
             setError(getErrorMessage(requestError));
             try {
                 const [reloaded] = await Promise.all([
@@ -284,15 +299,18 @@ export function ProjectChatWorkspace({
                     loadConversations(),
                 ]);
                 const lastMessage = reloaded.messages.at(-1);
-                setFailedMessageId(
-                    lastMessage?.role === 'User' && lastMessage.content === normalized
-                        ? lastMessage.id
-                        : null,
-                );
+                if (!composerDraftRef.current.trim() || composerDraftRef.current.trim() === submittedText) {
+                    setFailedMessageId(
+                        lastMessage?.role === 'User' && lastMessage.content === submittedText
+                            ? lastMessage.id
+                            : null,
+                    );
+                }
             } catch {
                 // Preserve the original safe provider error and local retry text.
             }
         } finally {
+            isAskingRef.current = false;
             setIsAsking(false);
         }
     };
@@ -563,11 +581,11 @@ export function ProjectChatWorkspace({
                                     rows={1}
                                     maxLength={2_000}
                                     placeholder="Ask about documents in this workspace…"
-                                    disabled={isAsking}
                                     aria-label="Question"
                                     aria-describedby="composer-scope composer-shortcut"
                                     onKeyDown={handleComposerKeyDown}
                                     onChange={(event) => {
+                                        composerDraftRef.current = event.target.value;
                                         setQuestion(event.target.value);
                                         if (event.target.value.trim() !== failedQuestion) {
                                             setFailedQuestion('');

@@ -31,7 +31,8 @@ public sealed record DocumentSummary(
     string? EmbeddingError,
     bool EmbeddingsAreCurrent,
     DocumentUnderstandingStatus? UnderstandingStatus,
-    DocumentTechnicalAnalysisStatus? TechnicalAnalysisStatus);
+    DocumentTechnicalAnalysisStatus? TechnicalAnalysisStatus,
+    DocumentOcrStatus? OcrStatus);
 
 public sealed record DocumentDetails(
     Guid Id,
@@ -62,7 +63,8 @@ public sealed record DocumentDetails(
     string? EmbeddingError,
     bool EmbeddingsAreCurrent,
     DocumentUnderstandingStatus? UnderstandingStatus,
-    DocumentTechnicalAnalysisStatus? TechnicalAnalysisStatus);
+    DocumentTechnicalAnalysisStatus? TechnicalAnalysisStatus,
+    DocumentOcrStatus? OcrStatus);
 
 public sealed record ExtractedTextSectionResponse(
     int SectionIndex,

@@ -112,6 +112,40 @@ public sealed class DocumentsControllerAuthorizationTests
     }
 
     [Fact]
+    public async Task DocumentResponsesExposeCurrentOcrSummaryStatus()
+    {
+        await using var database = await ControllerTestDatabase.CreateAsync(
+            DocumentStatus.Ready,
+            includeText: true);
+        database.Context.DocumentOcrAnalyses.Add(new DocumentOcrAnalysis
+        {
+            DocumentId = database.DocumentId,
+            Status = DocumentOcrStatus.Partial,
+            CandidatePageCount = 2,
+            SuccessfulPageCount = 1,
+            FailedPageCount = 1
+        });
+        await database.Context.SaveChangesAsync();
+        database.Context.ChangeTracker.Clear();
+        var controller = database.CreateController(database.OwnerId);
+
+        var listResult = await controller.GetAll(
+            database.ProjectId,
+            CancellationToken.None);
+        var detailsResult = await controller.GetById(
+            database.ProjectId,
+            database.DocumentId,
+            CancellationToken.None);
+
+        var summaries = Assert.IsAssignableFrom<IReadOnlyList<DocumentSummary>>(
+            Assert.IsType<OkObjectResult>(listResult.Result).Value);
+        var details = Assert.IsType<DocumentDetails>(
+            Assert.IsType<OkObjectResult>(detailsResult.Result).Value);
+        Assert.Equal(DocumentOcrStatus.Partial, Assert.Single(summaries).OcrStatus);
+        Assert.Equal(DocumentOcrStatus.Partial, details.OcrStatus);
+    }
+
+    [Fact]
     public async Task OwnerCanGenerateEmbeddingsForLegacyChunksWithoutOpeningStoredFile()
     {
         await using var database = await ControllerTestDatabase.CreateAsync(

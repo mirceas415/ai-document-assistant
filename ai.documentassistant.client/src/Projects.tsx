@@ -586,6 +586,7 @@ function DocumentsSection({
     const [textViewerDocument, setTextViewerDocument] = useState<DocumentSummary | null>(null);
     const [chunkViewerDocument, setChunkViewerDocument] = useState<DocumentSummary | null>(null);
     const [confirmation, setConfirmation] = useState<DocumentConfirmation | null>(null);
+    const [advancedDocumentId, setAdvancedDocumentId] = useState<string | null>(null);
     const [isDragging, setIsDragging] = useState(false);
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const understandingCacheRef = useRef<Record<string, DocumentUnderstanding>>({});
@@ -594,7 +595,39 @@ function DocumentsSection({
     const technicalAnalysisRequestIdsRef = useRef(new Set<string>());
     const ocrCacheRef = useRef<Record<string, DocumentOcrAnalysis>>({});
     const ocrRequestIdsRef = useRef(new Set<string>());
+    const documentRefreshRequestIdRef = useRef(0);
+    const advancedMenuRefs = useRef<Record<string, HTMLDetailsElement | null>>({});
     const showToast = useToast();
+
+    useEffect(() => {
+        if (!advancedDocumentId || confirmation) return;
+
+        const closeOnOutsidePointer = (event: PointerEvent) => {
+            const openMenu = advancedMenuRefs.current[advancedDocumentId];
+            if (openMenu && !openMenu.contains(event.target as Node)) {
+                setAdvancedDocumentId(null);
+            }
+        };
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            const openMenu = advancedMenuRefs.current[advancedDocumentId];
+            setAdvancedDocumentId(null);
+            window.requestAnimationFrame(() => {
+                openMenu?.querySelector<HTMLElement>('summary')?.focus();
+            });
+        };
+
+        document.addEventListener('pointerdown', closeOnOutsidePointer);
+        document.addEventListener('keydown', closeOnEscape);
+        return () => {
+            document.removeEventListener('pointerdown', closeOnOutsidePointer);
+            document.removeEventListener('keydown', closeOnEscape);
+        };
+    }, [advancedDocumentId, confirmation]);
+
+    useEffect(() => {
+        if (confirmation) setAdvancedDocumentId(null);
+    }, [confirmation]);
 
     const cacheUnderstanding = useCallback((documentId: string, understanding: DocumentUnderstanding) => {
         const next = { ...understandingCacheRef.current, [documentId]: understanding };
@@ -644,6 +677,7 @@ function DocumentsSection({
     const applyDocumentResponse = useCallback((response: DocumentSummary[]) => {
         let nextCache: Record<string, DocumentUnderstanding> | null = null;
         let nextTechnicalCache: Record<string, DocumentTechnicalAnalysis> | null = null;
+        let nextOcrCache: Record<string, DocumentOcrAnalysis> | null = null;
 
         for (const document of response) {
             const cached = understandingCacheRef.current[document.id];
@@ -664,6 +698,14 @@ function DocumentsSection({
                 nextTechnicalCache ??= { ...technicalAnalysisCacheRef.current };
                 delete nextTechnicalCache[document.id];
             }
+
+            const cachedOcrAnalysis = ocrCacheRef.current[document.id];
+            const ocrStatus = document.ocrStatus ??
+                (isPdfDocument(document) ? 'NotAnalyzed' : 'Skipped');
+            if (cachedOcrAnalysis && cachedOcrAnalysis.status !== ocrStatus) {
+                nextOcrCache ??= { ...ocrCacheRef.current };
+                delete nextOcrCache[document.id];
+            }
         }
 
         if (nextCache) {
@@ -674,6 +716,11 @@ function DocumentsSection({
         if (nextTechnicalCache) {
             technicalAnalysisCacheRef.current = nextTechnicalCache;
             setTechnicalAnalyses(nextTechnicalCache);
+        }
+
+        if (nextOcrCache) {
+            ocrCacheRef.current = nextOcrCache;
+            setOcrAnalyses(nextOcrCache);
         }
 
         onDocumentsChanged(response);
@@ -787,6 +834,10 @@ function DocumentsSection({
                 `/api/projects/${projectId}/documents/${documentId}/ocr`,
             );
             cacheOcrAnalysis(documentId, response);
+            onDocumentsChanged((currentDocuments) => currentDocuments.map((document) =>
+                document.id === documentId
+                    ? { ...document, ocrStatus: response.status }
+                    : document));
             return response;
         } catch (requestError) {
             setOcrErrors((current) => ({
@@ -802,13 +853,14 @@ function DocumentsSection({
                 return next;
             });
         }
-    }, [cacheOcrAnalysis, projectId]);
+    }, [cacheOcrAnalysis, onDocumentsChanged, projectId]);
 
     const shouldPoll = documents.some(
         (document) => document.status === 'Uploaded' ||
             document.status === 'Processing' ||
             isUnderstandingInProgress(document.understandingStatus) ||
-            isTechnicalAnalysisInProgress(document.technicalAnalysisStatus),
+            isTechnicalAnalysisInProgress(document.technicalAnalysisStatus) ||
+            isOcrInProgress(document.ocrStatus),
     );
 
     const visibleDocumentIds = new Set(documents.map((document) => document.id));
@@ -826,11 +878,14 @@ function DocumentsSection({
         .join(',');
 
     const refreshDocuments = useCallback(async () => {
+        const requestId = ++documentRefreshRequestIdRef.current;
         const response = await apiRequest<DocumentSummary[]>(
             `/api/projects/${projectId}/documents`,
         );
-        applyDocumentResponse(response);
-        setError('');
+        if (requestId === documentRefreshRequestIdRef.current) {
+            applyDocumentResponse(response);
+            setError('');
+        }
         return response;
     }, [applyDocumentResponse, projectId]);
 
@@ -840,17 +895,20 @@ function DocumentsSection({
         let isActive = true;
 
         const refreshDocuments = async () => {
+            const requestId = ++documentRefreshRequestIdRef.current;
             try {
                 const response = await apiRequest<DocumentSummary[]>(
                     `/api/projects/${projectId}/documents`,
                 );
 
-                if (isActive) {
+                if (isActive && requestId === documentRefreshRequestIdRef.current) {
                     applyDocumentResponse(response);
                     setError('');
                 }
             } catch (requestError) {
-                if (isActive) setError(getErrorMessage(requestError));
+                if (isActive && requestId === documentRefreshRequestIdRef.current) {
+                    setError(getErrorMessage(requestError));
+                }
             }
         };
 
@@ -1187,7 +1245,12 @@ function DocumentsSection({
         }
         onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
             item.id === document.id
-                ? { ...item, status: 'Processing', understandingStatus: 'Pending' }
+                ? {
+                    ...item,
+                    status: 'Processing',
+                    understandingStatus: 'Pending',
+                    ocrStatus: 'Processing',
+                }
                 : item));
 
         try {
@@ -1196,6 +1259,10 @@ function DocumentsSection({
                 { method: 'POST' },
             );
             cacheOcrAnalysis(document.id, response);
+            onDocumentsChanged((currentDocuments) => currentDocuments.map((item) =>
+                item.id === document.id
+                    ? { ...item, ocrStatus: response.status }
+                    : item));
             await refreshDocuments();
             setTextViewerDocument(null);
             setChunkViewerDocument(null);
@@ -1430,18 +1497,35 @@ function DocumentsSection({
                                     {(document.status === 'Ready' || isPdfDocument(document)) && (
                                         <details
                                             className="document-advanced"
+                                            open={advancedDocumentId === document.id}
+                                            ref={(element) => {
+                                                advancedMenuRefs.current[document.id] = element;
+                                            }}
                                             onToggle={(event) => {
                                                 if (event.currentTarget.open) {
+                                                    setAdvancedDocumentId(document.id);
                                                     void loadTechnicalAnalysis(document.id);
                                                     void loadOcrAnalysis(document.id);
                                                     if (document.status === 'Ready') {
                                                         void loadUnderstanding(document.id);
                                                     }
+                                                } else {
+                                                    setAdvancedDocumentId((current) =>
+                                                        current === document.id ? null : current);
                                                 }
                                             }}
                                         >
-                                            <summary><Icon name="more" size={16} /> Advanced</summary>
-                                            <div className="document-advanced-actions">
+                                            <summary
+                                                aria-expanded={advancedDocumentId === document.id}
+                                                aria-haspopup="true"
+                                                aria-controls={`document-advanced-actions-${document.id}`}
+                                            >
+                                                <Icon name="more" size={16} /> Advanced
+                                            </summary>
+                                            <div
+                                                id={`document-advanced-actions-${document.id}`}
+                                                className="document-advanced-actions"
+                                            >
                                                 <DocumentTechnicalAnalysisAudit
                                                     document={document}
                                                     analysis={technicalAnalyses[document.id]}
@@ -2802,6 +2886,10 @@ function isTechnicalAnalysisInProgress(status: DocumentTechnicalAnalysisStatus |
     return status === 'Processing';
 }
 
+function isOcrInProgress(status: DocumentOcrStatus | null | undefined) {
+    return status === 'Processing';
+}
+
 function isPdfDocument(document: DocumentSummary) {
     return document.contentType.toLowerCase() === 'application/pdf';
 }
@@ -2829,7 +2917,9 @@ function getOcrStatus(
     document: DocumentSummary,
     analysis: DocumentOcrAnalysis | undefined,
 ): DocumentOcrStatus {
-    return analysis?.status ?? (isPdfDocument(document) ? 'NotAnalyzed' : 'Skipped');
+    return document.ocrStatus ??
+        analysis?.status ??
+        (isPdfDocument(document) ? 'NotAnalyzed' : 'Skipped');
 }
 
 function formatOcrStatus(status: DocumentOcrStatus) {

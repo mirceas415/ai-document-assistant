@@ -108,6 +108,7 @@ export interface DocumentSummary {
     embeddingsAreCurrent: boolean;
     understandingStatus: DocumentUnderstandingStatus | null;
     technicalAnalysisStatus: DocumentTechnicalAnalysisStatus | null;
+    ocrStatus: DocumentOcrStatus | null;
 }
 
 export type DocumentDetails = DocumentSummary & {
