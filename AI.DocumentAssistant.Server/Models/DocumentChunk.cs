@@ -1,3 +1,4 @@
+using NpgsqlTypes;
 using Pgvector;
 
 namespace AI.DocumentAssistant.Server.Models;
@@ -13,6 +14,8 @@ public sealed class DocumentChunk
     public int ChunkIndex { get; set; }
 
     public string Content { get; set; } = string.Empty;
+
+    public NpgsqlTsVector SearchVector { get; private set; } = null!;
 
     public int CharacterCount { get; set; }
 

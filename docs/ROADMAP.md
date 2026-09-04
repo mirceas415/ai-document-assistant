@@ -222,17 +222,24 @@ Status: Complete
 
 ## Milestone 13 — Metadata-aware Hybrid Retrieval
 
-Status: Planned
+Status: Complete
 
-- Consume validated document intelligence for metadata-aware retrieval
-- Evaluate lexical/vector hybrid search without changing Milestone 12 production semantics
+- Preserve exact pgvector cosine retrieval with one transient query embedding and bounded vector candidates
+- Add language-neutral PostgreSQL `simple` full-text chunk retrieval with a generated `tsvector` and GIN index
+- Use only owned/project-scoped Ready M10 understanding for bounded document-level metadata, title, filename, subtype, and type signals
+- Deterministically recognize exact identifiers, conservative dates/amounts, and a small controlled document-type alias set without an LLM call
+- Fuse unique vector/lexical chunk candidates with soft metadata document contributions through deterministic weighted reciprocal rank fusion
+- Keep metadata out of answer evidence; only final authoritative chunks enter the unchanged bounded RAG context and citation path
+- Extend the existing collapsed Advanced Retrieval Details UI and API contract with bounded rank/debug information
+- Add focused fusion, behavior, query-safety, ownership-query, regression, and small synthetic evaluation tests
+- `AddHybridRetrievalIndexes` EF Core migration; no new package, reranker, ANN index, query-understanding model, or filter UI
 
 ## Milestone 14 — Reranking / Retrieval Quality
 
 Status: Planned
 
 - Evidence-based reranking and retrieval-quality measurement after hybrid retrieval
-- No reranker is present through Milestone 12
+- No reranker is present through Milestone 13
 
 ## Milestone 15 — Deployment / Production Hardening
 

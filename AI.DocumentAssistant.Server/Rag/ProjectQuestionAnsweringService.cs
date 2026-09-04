@@ -67,7 +67,7 @@ public sealed partial class ProjectQuestionAnsweringService
         if (retrieval.Chunks.Count == 0)
         {
             _logger.LogInformation(
-                "Answer generation skipped for project {ProjectId} because semantic retrieval returned zero eligible chunks.",
+                "Answer generation skipped for project {ProjectId} because hybrid retrieval returned zero eligible chunks.",
                 projectId);
             return new ProjectAnswerResult(
                 GetNoEvidenceAnswer(normalizedQuestion),

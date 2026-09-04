@@ -236,7 +236,19 @@ export interface SemanticSearchResult {
     pageStart: number | null;
     pageEnd: number | null;
     heading: string | null;
-    cosineDistance: number;
+    cosineDistance: number | null;
+    vectorRank: number | null;
+    lexicalRank: number | null;
+    metadataDocumentRank: number | null;
+    lexicalRankScore: number | null;
+    fusedScore: number | null;
+    matchedMetadata: MatchedMetadata[] | null;
+}
+
+export interface MatchedMetadata {
+    field: string;
+    value: string;
+    isExact: boolean;
 }
 
 export interface SemanticSearchResponse {

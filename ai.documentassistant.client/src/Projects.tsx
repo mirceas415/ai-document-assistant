@@ -464,8 +464,8 @@ export function SemanticSearchSection({ projectId }: SemanticSearchSectionProps)
             <div className="retrieval-heading">
                 <div>
                     <p className="eyebrow">Retrieval debug</p>
-                    <h2 id="semantic-search-heading">Semantic Search</h2>
-                    <p>Find the closest embedded chunks across ready documents in this workspace.</p>
+                    <h2 id="semantic-search-heading">Hybrid Search</h2>
+                    <p>Inspect semantic, lexical, and metadata-aware ranking across ready workspace documents.</p>
                 </div>
             </div>
 
@@ -499,7 +499,7 @@ export function SemanticSearchSection({ projectId }: SemanticSearchSectionProps)
                     <div className="retrieval-results-heading">
                         <h3>Ranked results</h3>
                         <span>
-                            {response.results.length} of up to {response.topK} chunks · smaller cosine distance is closer
+                            {response.results.length} of up to {response.topK} chunks · fused hybrid ranking
                         </span>
                     </div>
 
@@ -517,13 +517,21 @@ export function SemanticSearchSection({ projectId }: SemanticSearchSectionProps)
                                             <h3>{result.documentName}</h3>
                                         </div>
                                         <span className="retrieval-distance">
-                                            Cosine distance {result.cosineDistance.toFixed(4)}
+                                            Hybrid score {result.fusedScore?.toFixed(6) ?? 'unavailable'}
                                         </span>
                                     </div>
                                     <div className="retrieval-result-meta">
                                         <span>Chunk {result.chunkIndex + 1}</span>
                                         <span>{formatPageRange(result.pageStart, result.pageEnd)}</span>
+                                        {result.vectorRank !== null && <span>Vector #{result.vectorRank}</span>}
+                                        {result.lexicalRank !== null && <span>Lexical #{result.lexicalRank}</span>}
+                                        {result.metadataDocumentRank !== null && <span>Metadata doc #{result.metadataDocumentRank}</span>}
                                     </div>
+                                    {(result.matchedMetadata?.length ?? 0) > 0 && (
+                                        <div className="retrieval-result-meta">
+                                            <span>Metadata: {result.matchedMetadata?.map((match) => `${match.field}=${match.value}`).join(' · ')}</span>
+                                        </div>
+                                    )}
                                     {result.heading && <h4>{result.heading}</h4>}
                                     <p className="retrieval-result-content">{result.content}</p>
                                 </li>

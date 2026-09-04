@@ -63,7 +63,18 @@ public sealed class ProjectIntelligenceController : ControllerBase
                         chunk.PageStart,
                         chunk.PageEnd,
                         chunk.Heading,
-                        chunk.CosineDistance))
+                        chunk.CosineDistance,
+                        chunk.VectorRank,
+                        chunk.LexicalRank,
+                        chunk.MetadataDocumentRank,
+                        chunk.LexicalRankScore,
+                        chunk.FusedScore,
+                        (chunk.MatchedMetadata ?? [])
+                            .Select(match => new MatchedMetadataResponse(
+                                match.Field,
+                                match.Value,
+                                match.IsExact))
+                            .ToArray()))
                     .ToArray()));
         }
         catch (OperationCanceledException)

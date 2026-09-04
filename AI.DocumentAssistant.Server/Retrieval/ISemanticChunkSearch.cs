@@ -23,4 +23,15 @@ public sealed record RetrievedDocumentChunk(
     int? PageStart,
     int? PageEnd,
     string? Heading,
-    double CosineDistance);
+    double? CosineDistance,
+    int? VectorRank = null,
+    int? LexicalRank = null,
+    int? MetadataDocumentRank = null,
+    double? LexicalRankScore = null,
+    double? FusedScore = null,
+    IReadOnlyList<MatchedRetrievalMetadata>? MatchedMetadata = null);
+
+public sealed record MatchedRetrievalMetadata(
+    string Field,
+    string Value,
+    bool IsExact);

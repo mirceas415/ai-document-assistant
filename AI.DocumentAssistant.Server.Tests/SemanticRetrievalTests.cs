@@ -47,6 +47,8 @@ public sealed class SemanticRetrievalTests
         Assert.IsType<NotFoundObjectResult>(result.Result);
         Assert.Empty(fixture.EmbeddingService.Calls);
         Assert.Empty(fixture.ChunkSearch.Calls);
+        Assert.Empty(fixture.LexicalSearch.Calls);
+        Assert.Empty(fixture.MetadataSearch.Calls);
     }
 
     [Theory]
@@ -134,6 +136,45 @@ public sealed class SemanticRetrievalTests
     }
 
     [Fact]
+    public async Task SearchResponseExtendsExistingChunkContractWithHybridDiagnostics()
+    {
+        var chunk = CreateChunk("Vodafone termination terms", 0.17) with
+        {
+            VectorRank = 4,
+            LexicalRank = 1,
+            MetadataDocumentRank = 1,
+            LexicalRankScore = 0.81,
+            FusedScore = 0.041,
+            MatchedMetadata =
+            [
+                new MatchedRetrievalMetadata("Organization", "Vodafone", false),
+                new MatchedRetrievalMetadata("DocumentType", "Contract", false)
+            ]
+        };
+        var retrieval = new RecordingRetrievalService
+        {
+            Result = new SemanticRetrievalResult(8, [chunk])
+        };
+        var controller = CreateController(retrieval, Guid.NewGuid());
+
+        var action = await controller.Search(
+            Guid.NewGuid(),
+            new SemanticSearchRequest { Query = "Vodafone contract" },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(action.Result);
+        var response = Assert.IsType<SemanticSearchResponse>(ok.Value);
+        var result = Assert.Single(response.Results);
+        Assert.Equal(0.17, result.CosineDistance);
+        Assert.Equal(4, result.VectorRank);
+        Assert.Equal(1, result.LexicalRank);
+        Assert.Equal(1, result.MetadataDocumentRank);
+        Assert.Equal(0.81, result.LexicalRankScore);
+        Assert.Equal(0.041, result.FusedScore);
+        Assert.Equal(2, result.MatchedMetadata!.Count);
+    }
+
+    [Fact]
     public async Task RetrievalEmbedsQueryExactlyOnceAndForwardsCurrentConfiguration()
     {
         await using var fixture = await RetrievalFixture.CreateAsync();
@@ -155,8 +196,47 @@ public sealed class SemanticRetrievalTests
         Assert.Equal(fixture.ProjectId, searchCall.ProjectId);
         Assert.Equal(EmbeddingArchitecture.DefaultModel, searchCall.Model);
         Assert.Equal(EmbeddingArchitecture.Dimensions, searchCall.Dimensions);
-        Assert.Equal(3, searchCall.TopK);
+        Assert.Equal(
+            SemanticRetrievalLimits.DefaultVectorCandidateCount,
+            searchCall.TopK);
         Assert.Equal(EmbeddingArchitecture.Dimensions, searchCall.QueryEmbedding.ToArray().Length);
+        var lexicalCall = Assert.Single(fixture.LexicalSearch.Calls);
+        Assert.Equal(
+            SemanticRetrievalLimits.DefaultLexicalCandidateCount,
+            lexicalCall.CandidateCount);
+        Assert.Equal(
+            "Care sunt condițiile privind rezidența fiscală?",
+            lexicalCall.Query.OriginalText);
+        Assert.Single(fixture.MetadataSearch.Calls);
+    }
+
+    [Fact]
+    public async Task RetrievalCandidatePoolsAreClampedToCentralizedBounds()
+    {
+        await using var fixture = await RetrievalFixture.CreateAsync(
+            hybridOptions: new HybridRetrievalOptions
+            {
+                VectorCandidateCount = 1_000,
+                LexicalCandidateCount = 1_000,
+                MetadataDocumentCandidateCount = 1_000
+            });
+
+        await fixture.Service.SearchAsync(
+            fixture.OwnerId,
+            fixture.ProjectId,
+            "bounded candidates",
+            SemanticRetrievalLimits.MaximumTopK,
+            CancellationToken.None);
+
+        Assert.Equal(
+            SemanticRetrievalLimits.MaximumCandidateCount,
+            Assert.Single(fixture.ChunkSearch.Calls).TopK);
+        Assert.Equal(
+            SemanticRetrievalLimits.MaximumCandidateCount,
+            Assert.Single(fixture.LexicalSearch.Calls).CandidateCount);
+        Assert.Equal(
+            SemanticRetrievalLimits.MaximumMetadataDocumentCandidateCount,
+            Assert.Single(fixture.MetadataSearch.Calls).CandidateCount);
     }
 
     [Theory]
@@ -200,12 +280,14 @@ public sealed class SemanticRetrievalTests
             2,
             CancellationToken.None);
 
-        Assert.Equal(2, Assert.Single(fixture.ChunkSearch.Calls).TopK);
         Assert.Equal(
-            ["closest", "second", "third"],
+            SemanticRetrievalLimits.DefaultVectorCandidateCount,
+            Assert.Single(fixture.ChunkSearch.Calls).TopK);
+        Assert.Equal(
+            ["closest", "second"],
             result!.Chunks.Select(chunk => chunk.Content));
         Assert.Equal(
-            [0.05, 0.20, 0.42],
+            [0.05, 0.20],
             result.Chunks.Select(chunk => chunk.CosineDistance));
     }
 
@@ -228,6 +310,8 @@ public sealed class SemanticRetrievalTests
 
         Assert.Single(fixture.EmbeddingService.Calls);
         Assert.Empty(fixture.ChunkSearch.Calls);
+        Assert.Empty(fixture.LexicalSearch.Calls);
+        Assert.Empty(fixture.MetadataSearch.Calls);
     }
 
     [Fact]
@@ -267,7 +351,9 @@ public sealed class SemanticRetrievalTests
         Assert.Contains("c.\"EmbeddingDimensions\" = @embedding_dimensions", sql, StringComparison.Ordinal);
         Assert.Contains("c.\"EmbeddedAtUtc\" = d.\"EmbeddedAtUtc\"", sql, StringComparison.Ordinal);
         Assert.Contains("sha256(convert_to(c.\"Content\", 'UTF8'))", sql, StringComparison.Ordinal);
-        Assert.Contains("ORDER BY c.\"Embedding\" <=> @query_embedding", sql, StringComparison.Ordinal);
+        Assert.Contains("c.\"Embedding\" <=> @query_embedding,", sql, StringComparison.Ordinal);
+        Assert.Contains("d.\"Id\"", sql, StringComparison.Ordinal);
+        Assert.Contains("c.\"ChunkIndex\"", sql, StringComparison.Ordinal);
         Assert.Contains("LIMIT @top_k", sql, StringComparison.Ordinal);
     }
 
@@ -405,6 +491,52 @@ public sealed class SemanticRetrievalTests
         }
     }
 
+    private sealed class RecordingLexicalSearch : ILexicalChunkSearch
+    {
+        public List<LexicalSearchCall> Calls { get; } = [];
+
+        public IReadOnlyList<RetrievedDocumentChunk> Results { get; set; } = [];
+
+        public Task<IReadOnlyList<RetrievedDocumentChunk>> SearchAsync(
+            Guid ownerId,
+            Guid projectId,
+            RetrievalQuery query,
+            int candidateCount,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls.Add(new LexicalSearchCall(
+                ownerId,
+                projectId,
+                query,
+                candidateCount));
+            return Task.FromResult(Results);
+        }
+    }
+
+    private sealed class RecordingMetadataSearch : IMetadataDocumentSearch
+    {
+        public List<MetadataSearchCall> Calls { get; } = [];
+
+        public IReadOnlyList<MetadataDocumentMatch> Results { get; set; } = [];
+
+        public Task<IReadOnlyList<MetadataDocumentMatch>> SearchAsync(
+            Guid ownerId,
+            Guid projectId,
+            RetrievalQuery query,
+            int candidateCount,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls.Add(new MetadataSearchCall(
+                ownerId,
+                projectId,
+                query,
+                candidateCount));
+            return Task.FromResult(Results);
+        }
+    }
+
     private sealed class RetrievalFixture : IAsyncDisposable
     {
         private RetrievalFixture(
@@ -413,6 +545,8 @@ public sealed class SemanticRetrievalTests
             Guid projectId,
             RecordingEmbeddingService embeddingService,
             RecordingChunkSearch chunkSearch,
+            RecordingLexicalSearch lexicalSearch,
+            RecordingMetadataSearch metadataSearch,
             SemanticRetrievalService service)
         {
             Context = context;
@@ -420,6 +554,8 @@ public sealed class SemanticRetrievalTests
             ProjectId = projectId;
             EmbeddingService = embeddingService;
             ChunkSearch = chunkSearch;
+            LexicalSearch = lexicalSearch;
+            MetadataSearch = metadataSearch;
             Service = service;
         }
 
@@ -433,11 +569,16 @@ public sealed class SemanticRetrievalTests
 
         public RecordingChunkSearch ChunkSearch { get; }
 
+        public RecordingLexicalSearch LexicalSearch { get; }
+
+        public RecordingMetadataSearch MetadataSearch { get; }
+
         public SemanticRetrievalService Service { get; }
 
         public static async Task<RetrievalFixture> CreateAsync(
             string resultModel = EmbeddingArchitecture.DefaultModel,
-            int resultDimensions = EmbeddingArchitecture.Dimensions)
+            int resultDimensions = EmbeddingArchitecture.Dimensions,
+            HybridRetrievalOptions? hybridOptions = null)
         {
             var options = new DbContextOptionsBuilder<ApplicationDbContext>()
                 .UseInMemoryDatabase($"semantic-retrieval-{Guid.NewGuid():N}")
@@ -461,16 +602,25 @@ public sealed class SemanticRetrievalTests
                 Dimensions = resultDimensions
             };
             var chunkSearch = new RecordingChunkSearch();
+            var lexicalSearch = new RecordingLexicalSearch();
+            var metadataSearch = new RecordingMetadataSearch();
+            var configuredHybridOptions = Options.Create(
+                hybridOptions ?? new HybridRetrievalOptions());
             var service = new SemanticRetrievalService(
                 context,
                 embeddingService,
                 chunkSearch,
+                lexicalSearch,
+                metadataSearch,
+                new DeterministicRetrievalQueryAnalyzer(),
+                new ReciprocalRankFusion(configuredHybridOptions),
                 Options.Create(new OpenAIEmbeddingOptions
                 {
                     EmbeddingModel = EmbeddingArchitecture.DefaultModel,
                     EmbeddingDimensions = EmbeddingArchitecture.Dimensions,
                     BatchSize = 32
                 }),
+                configuredHybridOptions,
                 NullLogger<SemanticRetrievalService>.Instance);
 
             return new RetrievalFixture(
@@ -479,6 +629,8 @@ public sealed class SemanticRetrievalTests
                 projectId,
                 embeddingService,
                 chunkSearch,
+                lexicalSearch,
+                metadataSearch,
                 service);
         }
 
@@ -498,4 +650,16 @@ public sealed class SemanticRetrievalTests
         string Model,
         int Dimensions,
         int TopK);
+
+    private sealed record LexicalSearchCall(
+        Guid OwnerId,
+        Guid ProjectId,
+        RetrievalQuery Query,
+        int CandidateCount);
+
+    private sealed record MetadataSearchCall(
+        Guid OwnerId,
+        Guid ProjectId,
+        RetrievalQuery Query,
+        int CandidateCount);
 }

@@ -194,6 +194,24 @@ public sealed class ApplicationDbContext
                 .HasColumnType("text")
                 .IsRequired();
 
+            if (string.Equals(
+                    Database.ProviderName,
+                    "Microsoft.EntityFrameworkCore.InMemory",
+                    StringComparison.Ordinal))
+            {
+                chunk.Ignore(value => value.SearchVector);
+            }
+            else
+            {
+                chunk.HasGeneratedTsVectorColumn(
+                        value => value.SearchVector,
+                        "simple",
+                        value => new { value.Content })
+                    .HasIndex(value => value.SearchVector)
+                    .HasDatabaseName("IX_DocumentChunks_SearchVector")
+                    .HasMethod("GIN");
+            }
+
             chunk.Property(value => value.SectionTitle)
                 .HasMaxLength(500);
 

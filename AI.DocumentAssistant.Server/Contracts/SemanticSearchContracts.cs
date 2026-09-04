@@ -20,4 +20,15 @@ public sealed record SemanticSearchResultResponse(
     int? PageStart,
     int? PageEnd,
     string? Heading,
-    double CosineDistance);
+    double? CosineDistance,
+    int? VectorRank = null,
+    int? LexicalRank = null,
+    int? MetadataDocumentRank = null,
+    double? LexicalRankScore = null,
+    double? FusedScore = null,
+    IReadOnlyList<MatchedMetadataResponse>? MatchedMetadata = null);
+
+public sealed record MatchedMetadataResponse(
+    string Field,
+    string Value,
+    bool IsExact);

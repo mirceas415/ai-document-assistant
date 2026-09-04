@@ -2,7 +2,7 @@
 
 ## Overview
 
-AI Document Assistant is a modular monolith with an ASP.NET Core 10 backend, a React and TypeScript frontend, PostgreSQL persistence through Entity Framework Core and pgvector, OpenAI embedding and answer generation, local document storage, and selective local OCR. The completed core MVP supports authenticated, user-owned projects, PDF and DOCX ingestion, semantic search across a project, grounded answers with authoritative document citations, and persistent project conversations.
+AI Document Assistant is a modular monolith with an ASP.NET Core 10 backend, a React and TypeScript frontend, PostgreSQL persistence through Entity Framework Core and pgvector, OpenAI embedding and answer generation, local document storage, and selective local OCR. The completed core MVP supports authenticated, user-owned projects, PDF and DOCX ingestion, metadata-aware hybrid search across a project, grounded answers with authoritative document citations, and persistent project conversations.
 
 The two main flows are:
 
@@ -12,22 +12,23 @@ Upload -> Technical PDF Analysis -> OCR-aware Extract -> Normalize -> Document U
        -> Chunk -> Embed -> PostgreSQL + pgvector
 
 QUERY
-Question -> Query embedding -> ownership-filtered semantic retrieval
-         -> Top-K chunks -> bounded untrusted context -> OpenAI answer -> citations
+Question -> deterministic preparation + one query embedding
+         -> ownership-filtered vector + lexical candidates + Ready M10 metadata signal
+         -> RRF unique Top-K chunks -> bounded untrusted context -> OpenAI answer -> citations
 
 CONVERSATION
-Persisted conversation -> current question -> semantic retrieval
+Persisted conversation -> current question -> hybrid retrieval
   -> bounded non-authoritative recent history + authoritative document context
   -> grounded answer -> persisted assistant message + source snapshots
 ```
 
-The application deliberately does not include cloud OCR, vision/image understanding, custom computer vision, metadata-aware or hybrid/BM25 retrieval, reranking, agents, Semantic Kernel, cloud storage, streaming, or a durable message broker. Milestone 12 consumes only Milestone 11's page-level `Scanned` signal for local Tesseract OCR; retrieval and answer logic are unchanged.
+The application deliberately does not include cloud OCR, vision/image understanding, custom computer vision, BM25 tuning, reranking, agents, Semantic Kernel, cloud storage, streaming, or a durable message broker. Milestone 13 adds deterministic retrieval fusion only: M10/M11/M12 ingestion semantics and answer/citation behavior remain unchanged.
 
 ## Components
 
-- `AI.DocumentAssistant.Server` hosts the JSON API, cookie authentication, static frontend output, EF Core data access, file storage, ingestion pipeline, in-memory background queue, semantic retrieval, bounded RAG context construction, and narrow OpenAI embedding and answer adapters.
+- `AI.DocumentAssistant.Server` hosts the JSON API, cookie authentication, static frontend output, EF Core data access, file storage, ingestion pipeline, in-memory background queue, hybrid retrieval, bounded RAG context construction, and narrow OpenAI embedding and answer adapters.
 - `ai.documentassistant.client` is a React 19 and TypeScript single-page application built with Vite.
-- `AI.DocumentAssistant.Server.Tests` contains xUnit tests using EF Core's in-memory provider, fakes for every OpenAI boundary, generated PDF and DOCX fixtures, and SQL-shape checks for the PostgreSQL-only vector query.
+- `AI.DocumentAssistant.Server.Tests` contains xUnit tests using EF Core's in-memory provider, fakes for every OpenAI boundary, generated PDF and DOCX fixtures, deterministic retrieval evaluation cases, and SQL/model-shape checks for PostgreSQL vector and full-text queries.
 - PostgreSQL is the production relational database. The pgvector extension stores embeddings through the provider's first-class `Vector` type; vectors are not manually serialized.
 - The local `Uploads` directory stores uploaded PDF and DOCX files under generated filenames. Stored paths and uploaded files are not exposed through the API.
 
@@ -323,11 +324,22 @@ Structured embedding logs contain safe aggregates such as document/project IDs, 
 
 Embedding calls occur only for a newly processed upload, explicit processing retry, normalization rebuild, chunk rebuild, or explicit embedding generation/rebuild. GET endpoints, polling, startup, rendering, and recurring background work never create embeddings, and historical documents are not silently backfilled.
 
-## Semantic Retrieval Flow
+## Metadata-aware Hybrid Retrieval Flow
 
-`POST /api/projects/{projectId}/search` accepts a trimmed query and optional `TopK`. The query is required, whitespace-only input is rejected, and the maximum length is 2,000 characters. `TopK` defaults to 8 and is bounded from 1 through 20. The endpoint returns ranked safe chunk metadata and cosine distance; it never returns an embedding, storage filename, physical path, or owner ID.
+`POST /api/projects/{projectId}/search` accepts a trimmed query and optional `TopK`. The query is required, whitespace-only input is rejected, and the maximum length is 2,000 characters. `TopK` defaults to 8 and is bounded from 1 through 20. The endpoint returns ranked safe chunk metadata plus optional hybrid diagnostics; it never returns an embedding, storage filename, physical path, or owner ID.
 
-`ISemanticRetrievalService` is the shared orchestration boundary used by both Search and Ask. It first verifies `(Project.Id, Project.OwnerId)` in the database. Only after that succeeds does it call the existing `ITextEmbeddingService` exactly once with a one-item batch containing the normalized query. The returned model, count, 1,536 dimensions, and finite values are validated against current embedding configuration. Query embeddings are transient and are never saved, serialized, returned, or logged.
+`ISemanticRetrievalService` remains the single shared orchestration boundary used by both Search and Ask. It first verifies `(Project.Id, Project.OwnerId)` in the database. Only after that succeeds does deterministic local query preparation run and `ITextEmbeddingService` get called exactly once with a one-item batch containing the trimmed original query. The returned model, count, 1,536 dimensions, and finite values are validated against current embedding configuration. Query embeddings are transient and are never saved, serialized, returned, or logged. M13 adds no query-classification, rewrite, entity-extraction, HyDE, or other LLM request.
+
+The bounded retrieval shape is:
+
+```text
+Question -> one query embedding -> exact pgvector candidates (default 30)
+         -> original text -> PostgreSQL full-text candidates (default 30)
+         -> deterministic hints -> Ready M10 document matches (default 20)
+         -> weighted reciprocal-rank fusion and ChunkId deduplication
+         -> unique final TopK chunks (default 8, maximum 20)
+         -> existing RagContextBuilder and grounded answer generation
+```
 
 `ISemanticChunkSearch` is the small PostgreSQL-specific vector-query boundary. `PgvectorSemanticChunkSearch` issues one parameterized command whose essential shape is:
 
@@ -352,13 +364,43 @@ WHERE p."Id" = @project_id
   AND c."EmbeddedAtUtc" = d."EmbeddedAtUtc"
   AND c."EmbeddingContentHash" = upper(
       encode(sha256(convert_to(c."Content", 'UTF8')), 'hex'))
-ORDER BY c."Embedding" <=> @query_embedding
+ORDER BY c."Embedding" <=> @query_embedding,
+         d."Id", c."ChunkIndex", c."Id"
 LIMIT @top_k;
 ```
 
 The displayed literal `'Ready'` is also supplied as a parameter in the implementation. Project, owner, status, model, dimensions, query vector, and limit are parameters; document text and vector values are not interpolated into SQL. Ownership, project scope, document state, aggregate currency, per-chunk vector metadata, timestamp agreement, and exact SHA-256 hash freshness are therefore enforced before/as part of nearest-neighbor retrieval. PostgreSQL performs cosine ordering; the application never loads vectors to calculate similarity in memory and never globally retrieves chunks before filtering.
 
-Cosine distance was chosen because it compares embedding direction and is the conventional pgvector metric for semantic OpenAI embeddings. The `<=>` operator returns cosine distance: a smaller value means a closer semantic match. It is displayed as a distance, not as a percentage or confidence score. Search returns ranked Top-K results without an arbitrary relevance threshold. Romanian, English, mixed-language, and Unicode queries pass unchanged to the multilingual embedding model; there is no translation or document-specific tuning.
+Cosine distance was chosen because it compares embedding direction and is the conventional pgvector metric for semantic OpenAI embeddings. The `<=>` operator returns cosine distance: a smaller value means a closer semantic match. It is diagnostic data, not a percentage or confidence score. Romanian, English, mixed-language, and Unicode queries pass unchanged to the multilingual embedding model; there is no translation or document-specific tuning. The embedding model, dimensions, freshness predicates, and exact pgvector search semantics are unchanged.
+
+### Lexical candidates
+
+`DocumentChunk.SearchVector` is a PostgreSQL-generated stored `tsvector` derived automatically from `Content` with the language-neutral `simple` configuration. `AddHybridRetrievalIndexes` adds that column and `IX_DocumentChunks_SearchVector`, a GIN index. Applications never synchronize the vector manually. `ILexicalChunkSearch` uses the indexed `@@` operator and `ts_rank_cd`, with stable document/chunk tie breakers and a bounded default candidate count of 30 (hard maximum 100).
+
+The raw trimmed question is supplied as a parameter to `websearch_to_tsquery('simple', @query_text)`. A second parameter contains only the analyzer's bounded significant terms joined as plain text, which avoids requiring conversational filler words to occur in a chunk while the original query still drives phrase/operator matching. User text is never concatenated into SQL or tsquery syntax. PostgreSQL web-search parsing gives forgiving behavior for quotes, parentheses, punctuation, apostrophes, `OR`/`AND`-like words, identifiers, and Unicode; an effectively empty tsquery simply yields no lexical candidates. The lexical SQL independently joins `Projects`, filters owner and route project, and requires a Ready document before ranking. It does not require a usable embedding, so lexical retrieval can degrade independently while the vector channel retains its existing freshness rules.
+
+### Deterministic metadata document signal
+
+`IRetrievalQueryAnalyzer` performs bounded local Unicode normalization without changing the original text used for embeddings or FTS. It retains identifier forms such as `CN-2026-00491`, `INV/2026/118`, and `AB_9917`; recognizes only unambiguous ISO/dotted dates; and canonicalizes written amount/currency pairs such as `18,500 EUR` and `18500 EUR` for exact comparison. A small explicit alias map recognizes Contract (`contract`, `contractul`, `contracte`), Invoice (`invoice`, `factura`, `factură`, `facturi`), Report/`raport`, Policy/`politică`, Procedure/`procedură`, Manual, Form/`formular`, Letter/`scrisoare`, Resume/CV, Research Paper, and Course Material/`course`/`curs`. These hints are soft signals, not filters or NLP classification.
+
+`IMetadataDocumentSearch` ranks at most 20 documents by default (hard maximum 50). Its one parameterized PostgreSQL query starts from Ready documents in the owned route project, inner-joins only `DocumentUnderstanding.Status == Ready`, and only then examines their `DocumentMetadataEntry` rows. Failed, Processing, Pending, Skipped, absent, or staged-stale understanding is ignored. Exact normalized Identifier matches rank most strongly; conservative Date and MonetaryAmount matches, document type/subtype, Organization and other metadata values, original filename, detected title, and subject contribute bounded deterministic document-ranking signals. Primary language never becomes an automatic filter. M11/M12 technical/OCR classifications are not queried.
+
+Legacy Ready documents with no M10 row remain candidates through vector and lexical retrieval. A metadata match never creates a chunk candidate: it contributes only to vector/lexical candidate chunks that already belong to that document. Debug output contains at most three matched metadata/document signals and never exposes all metadata.
+
+### Rank fusion
+
+Raw cosine distance and `ts_rank_cd` are never added because their scales differ. `IHybridRetrievalFusion` uses weighted reciprocal rank fusion (RRF):
+
+```text
+score(chunk) = 1.00 / (60 + vector rank)
+             + 1.00 / (60 + lexical rank)
+             + 0.35 * exactIdentifierMultiplier / (60 + metadata document rank)
+
+exactIdentifierMultiplier = 1.50 for an exact persisted Identifier match,
+                            otherwise 1.00
+```
+
+Missing channels contribute zero. The deliberately smaller ordinary metadata weight improves prioritization without hard-excluding stronger chunk evidence; the exact-Identifier multiplier remains smaller than an evidence channel. Candidates are deduplicated by `ChunkId` while retaining every channel rank. Ties are resolved by best individual rank, `DocumentId`, `ChunkIndex`, and `ChunkId`. Only the requested unique TopK enters RAG; the larger candidate pools do not increase the existing context budget.
 
 ### Vector index decision
 
@@ -371,7 +413,8 @@ Milestone 7 intentionally uses an exact filtered scan and adds no HNSW or IVFFla
 ```text
 authenticate and validate
   -> verify owned project and create one query embedding
-  -> reuse ISemanticRetrievalService with TopK 8
+  -> reuse ISemanticRetrievalService for bounded vector + lexical + metadata fusion
+  -> select unique TopK 8 authoritative chunks
   -> build bounded context from retrieved chunks
   -> call IGroundedAnswerService once
   -> validate cited source IDs
@@ -458,7 +501,7 @@ The lightweight History API router supports `/projects/{projectId}`, `/projects/
 
 The chat composer and main chat drop surface reuse the existing document upload endpoint, frontend PDF/DOCX validation, Toast provider, and project document-status reads. A document uploaded from chat is stored under the current project/workspace, enters the normal extraction → normalization → chunking → embedding pipeline, and is reusable by every conversation in that workspace. `Conversation` does not own documents, there is no conversation/document join, and upload triggers no answer-generation request. Existing Ready documents remain usable while a recent upload processes; compact transient status chips reflect backend document state through the chat workspace's single conditional status-polling loop.
 
-Full document status, raw/normalized text, chunks, embedding generation/rebuild, processing controls, and deletion remain on the Documents route. Semantic Search remains available under a collapsed `Retrieval details` control instead of dominating the normal chat experience. Desktop uses the available three-column width; the history/sidebar progressively collapse on smaller screens.
+Full document status, raw/normalized text, chunks, embedding generation/rebuild, processing controls, and deletion remain on the Documents route. Hybrid Search diagnostics remain available under a collapsed `Retrieval details` control instead of dominating the normal chat experience. Desktop uses the available three-column width; the history/sidebar progressively collapse on smaller screens.
 
 ## Technical Analysis, OCR, Normalization, Understanding, Chunk, and Embedding Rebuild Flow
 
@@ -499,7 +542,7 @@ The project detail page polls while a document is Uploaded or Processing. A succ
 
 Technical analysis, OCR, normalization, understanding, chunk, and embedding rebuilds require browser confirmation. AI-backed confirmations make API-credit usage explicit; the OCR confirmation distinguishes local recognition from the existing downstream M10/embedding calls. Document cards show concise raw/normalized/chunk statistics plus Embedded, Not embedded, or Needs rebuild state, embedded chunk count, model, dimensions, and time. They never display vectors. Compact lazy-loaded Technical Analysis and OCR disclosures show their independent states. OCR summarizes pages processed, engine, Romanian + English languages, and target DPI; Advanced shows only candidate pages with status, characters, confidence, source type, and effective DPI. DOCX displays `Not applicable to DOCX`. A separate lazy-loaded Document Intelligence disclosure retains its independent M10 states and business metadata. Action loading state disables conflicting actions for that document, and successful requests refresh metadata. Polling observes statuses but never initiates technical analysis, OCR, or an AI request.
 
-Document management is intentionally separate from the focused chat workspace. The chat UI persists project conversations and renders only backend-authoritative source snapshots. Semantic Search is retained as a collapsed advanced retrieval inspector with ranked document/chunk/page/heading/content results and cosine distance. Neither view receives vectors, provider configuration, prompts, storage paths, or secrets.
+Document management is intentionally separate from the focused chat workspace. The chat UI persists project conversations and renders only backend-authoritative source snapshots. Hybrid Search is retained as a collapsed advanced retrieval inspector with ranked document/chunk/page/heading/content results, fused/vector/lexical ranks, optional cosine/lexical scores, and a bounded matched-metadata summary. These fields explain retrieval only; neither metadata nor filenames become answer evidence. Neither view receives vectors, provider configuration, prompts, storage paths, or secrets.
 
 ## Completed Milestones
 
@@ -518,9 +561,10 @@ Document management is intentionally separate from the focused chat workspace. T
 - Milestone 10: Generic document classification, primary-language detection, bounded document metadata extraction, deterministic sampling, strict and locally validated structured output, independent non-fatal status, content/model/prompt idempotency, ownership-safe APIs, Document Intelligence UI, migration, and fake-based tests.
 - Milestone 11: Original-file PDF hashing, deterministic PdfPig text/image/page diagnostics, conservative text/scanned/image/mixed classification, OCR-ready page signals, independent non-fatal persistence, ownership-safe read/rebuild APIs, compact UI, migration, and offline tests.
 - Milestone 12: Page-selective local PDFium rendering and Tesseract OCR for M11 `Scanned` pages, unified extraction provenance, bounded diagnostics and resources, content/configuration/routing idempotency, ownership-safe read/forced-rebuild APIs, compact UI, migration, offline fake-based tests, and local setup documentation.
+- Milestone 13: Language-neutral PostgreSQL FTS, Ready-M10 metadata document signals, deterministic identifier/date/amount/type hints, bounded weighted RRF over vector and lexical chunk candidates, ownership-safe queries, compact advanced diagnostics, migration, and offline regression evaluation.
 
 ## Core MVP Status and Limitations
 
-The core bachelor's-project MVP and ingestion-intelligence foundation are complete through Milestone 12. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, OCR limited to M11 `Scanned` pages and locally installed Romanian/English Tesseract models, no layout/table/image understanding, exact vector search sized for MVP data, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no formal offline retrieval/answer benchmark beyond the deterministic/manual guides.
+The core bachelor's-project MVP and ingestion-intelligence foundation are complete through Milestone 13. Deployment remains a separate operational milestone. Current intentional limitations include local file storage, a process-local non-durable processing queue, OCR limited to M11 `Scanned` pages and locally installed Romanian/English Tesseract models, no layout/table/image understanding, exact vector search sized for MVP data, deterministic rather than learned metadata matching, approximate tokenizer accounting for answer and recent-history context, non-streaming answers, no document-scoped chat filter, no full Markdown engine, and no large formal retrieval/answer benchmark beyond the small deterministic/manual guides.
 
-Metadata-aware retrieval, hybrid lexical/vector search, reranking, broader image/vision policies, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening remain future work. M11 still uses only deterministic structural heuristics; M12 consumes its `Scanned` page result without changing classification. Technical PDF intelligence asks “How is this PDF represented?”, local OCR asks “What text can be recovered from pages identified as scans?”, and M10 Document Understanding independently asks “What does this document mean?” No M12 code changes semantic retrieval, prompts, citation semantics, or source mapping; see `ROADMAP.md`.
+Reranking, broader image/vision policies, durable queues, cloud/object storage, streaming, a larger evaluation framework, observability, and deployment hardening remain future work. M11 still uses only deterministic structural heuristics; M12 consumes its `Scanned` page result without changing classification. Technical PDF intelligence asks “How is this PDF represented?”, local OCR asks “What text can be recovered from pages identified as scans?”, and M10 Document Understanding independently asks “What does this document mean?” M13 consumes only Ready M10 intelligence as a soft retrieval signal and changes no M10/M11/M12 ingestion semantics, answer prompt, citation semantics, or source mapping; see `ROADMAP.md`.

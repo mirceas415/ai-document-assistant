@@ -1139,18 +1139,28 @@ function RetrievalDebug({ projectId }: { projectId: string }) {
 
     return (
         <div className="retrieval-debug-panel">
-            <p>Inspect ranked pgvector results without generating an answer.</p>
+            <p>Inspect ranked hybrid results without generating an answer.</p>
             <form onSubmit={(event) => void search(event)}>
-                <input value={query} maxLength={2_000} placeholder="Semantic search phrase" onChange={(event) => setQuery(event.target.value)} />
+                <input value={query} maxLength={2_000} placeholder="Search phrase" onChange={(event) => setQuery(event.target.value)} />
                 <button type="submit" disabled={loading}>{loading ? 'Searching…' : 'Search'}</button>
             </form>
             {error && <div className="retrieval-debug-error">{error}</div>}
             {response && (
                 <ol>
-                    {response.results.map((result) => (
+                    {response.results.map((result, index) => (
                         <li key={result.chunkId}>
                             <strong>{result.documentName}</strong>
-                            <span>Chunk {result.chunkIndex + 1} · {formatPageRange(result.pageStart, result.pageEnd)} · cosine distance {result.cosineDistance.toFixed(4)}</span>
+                            <span>
+                                Hybrid rank #{index + 1}
+                                {result.fusedScore !== null ? ` · score ${result.fusedScore.toFixed(6)}` : ''}
+                                {result.vectorRank !== null ? ` · Vector #${result.vectorRank}` : ''}
+                                {result.lexicalRank !== null ? ` · Lexical #${result.lexicalRank}` : ''}
+                                {result.metadataDocumentRank !== null ? ` · Metadata doc #${result.metadataDocumentRank}` : ''}
+                            </span>
+                            <span>Chunk {result.chunkIndex + 1} · {formatPageRange(result.pageStart, result.pageEnd)}</span>
+                            {(result.matchedMetadata?.length ?? 0) > 0 && (
+                                <span>Metadata: {result.matchedMetadata?.map((match) => `${match.field}=${match.value}`).join(' · ')}</span>
+                            )}
                             <p>{result.content}</p>
                         </li>
                     ))}

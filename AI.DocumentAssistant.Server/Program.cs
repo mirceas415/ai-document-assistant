@@ -59,6 +59,10 @@ builder.Services.AddScoped<IOcrService, TesseractOcrService>();
 builder.Services.AddScoped<IDocumentOcrExtractionService, DocumentOcrExtractionService>();
 builder.Services.AddScoped<IDocumentProcessingService, DocumentProcessingService>();
 builder.Services.AddScoped<ISemanticChunkSearch, PgvectorSemanticChunkSearch>();
+builder.Services.AddScoped<ILexicalChunkSearch, PostgreSqlLexicalChunkSearch>();
+builder.Services.AddScoped<IMetadataDocumentSearch, PostgreSqlMetadataDocumentSearch>();
+builder.Services.AddSingleton<IRetrievalQueryAnalyzer, DeterministicRetrievalQueryAnalyzer>();
+builder.Services.AddSingleton<IHybridRetrievalFusion, ReciprocalRankFusion>();
 builder.Services.AddScoped<ISemanticRetrievalService, SemanticRetrievalService>();
 builder.Services.AddScoped<IProjectQuestionAnsweringService, ProjectQuestionAnsweringService>();
 builder.Services.AddScoped<IConversationService, ConversationService>();
@@ -114,6 +118,15 @@ builder.Services.AddOptions<OpenAIAnswerOptions>()
 builder.Services.AddOptions<OpenAIDocumentUnderstandingOptions>()
     .Bind(builder.Configuration.GetSection(OpenAIDocumentUnderstandingOptions.SectionName))
     .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<HybridRetrievalOptions>()
+    .Bind(builder.Configuration.GetSection(HybridRetrievalOptions.SectionName))
+    .ValidateDataAnnotations()
+    .Validate(
+        options => options.MetadataWeight * options.ExactIdentifierMultiplier <=
+            Math.Min(options.VectorWeight, options.LexicalWeight),
+        "HybridRetrieval metadata contribution must not outweigh either chunk-evidence channel.")
     .ValidateOnStart();
 
 // Tessdata and native OCR availability are deliberately checked only when a
