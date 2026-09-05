@@ -1,7 +1,7 @@
 \chapter{Testing and Evaluation}
 \label{chap:testing-evaluation}
 
-Testing and experimental evaluation answer different questions. Automated tests determine whether specified implementation behavior is preserved: for example, whether an unauthorized project is rejected, a chunk stays below its hard token limit, or invalid reranker identifiers trigger the documented fallback. Experimental evaluation asks how well the complete system performs on representative documents and questions. Passing orchestration tests does not establish retrieval accuracy, OCR quality, or answer correctness. This chapter therefore reports the verified automated suite separately from a methodology and empty result structure for the final evaluation.
+Testing and experimental evaluation answer different questions. Automated tests determine whether specified implementation behavior is preserved: for example, whether an unauthorized project is rejected, a chunk stays below its hard token limit, or invalid reranker identifiers trigger the documented fallback. Experimental evaluation asks how well the complete system performs on representative documents and questions. Passing orchestration tests does not establish retrieval accuracy, OCR quality, or answer correctness. This chapter therefore reports the verified automated suite separately from the completed evaluation of retrieval, answers, document understanding, and selective OCR on a small synthetic corpus.
 
 \section{Automated Testing Strategy}
 \label{sec:automated-testing}
@@ -46,94 +46,79 @@ Tests around model-dependent stages focus on contracts and local authority. For 
 
 The suite also exercises failure isolation. A failed technical analysis must not prevent native extraction. A failed Document Understanding request must not prevent chunks and embeddings from making the document retrievable. An OCR failure may coexist with successful ingestion only when another page still provides useful text. If embedding generation fails before initial persistence, incomplete new chunks must not replace the prior authoritative state. These cases validate the lifecycle described in Section~\ref{sec:ingestion-status-isolation}.
 
-Automated success has limits. Provider substitutes cannot measure live model relevance, recognition quality, network latency, or cost. The in-memory database cannot execute PostgreSQL's cosine and full-text operators. Query-text assertions verify important filters, but the final evaluation must still run against the intended PostgreSQL configuration. Likewise, the absence of frontend automation means that the screenshot and manual interaction pass must verify the visible behavior described in Chapter~\ref{chap:application-ux}.
+Automated success has limits. Provider substitutes cannot measure live model relevance, recognition quality, network latency, or cost. The in-memory database cannot execute PostgreSQL's cosine and full-text operators. Query-text assertions verify important filters, while the application runs reported below provide complementary observations of complete workflows. Those observations do not replace frontend automation or establish production-scale database performance.
 
 \section{Evaluation Methodology}
 \label{sec:evaluation-methodology}
 
-The final evaluation will use the separately prepared synthetic corpus. No quantitative evaluation has yet been performed for this first draft. The method below is designed to make future measurements repeatable and to prevent attractive examples from being presented as a benchmark.
+The evaluation examines whether the system retrieves supporting evidence near the top of the candidate list, produces supported answers and citations, abstains or responds safely where required, and correctly classifies and routes the tested documents. These objectives connect the component measurements to the assistant's intended use without treating any single metric as a complete measure of quality.
+
+The completed \texttt{evaluation\_workbook\_final.xlsx}, stored with the thesis evaluation material, is the source of the experimental results. Its \texttt{Questions} sheet records 32 cases, Q01--Q32, with expected evidence or behavior, observed ranks, binary judgements, and explanatory notes. The \texttt{M10 Understanding} sheet records eight document-understanding cases, and \texttt{M11-M12 OCR} records three technical PDF and OCR controls. The aggregate results were checked against these individual records rather than treating the summary cells as independent observations.
 
 \subsection{Controlled setup and ground truth}
 
-Before running cases, the evaluator should record the repository revision, database version, model identifiers, tokenizer, chunking parameters, candidate limits, RRF configuration, reranking configuration, OCR languages and rendering limits, and time of execution. The same ingested documents and current embeddings must be used when retrieval variants are compared. A configuration change requires a new recorded run rather than silently replacing an earlier result.
+The corpus contains 11 synthetic PDFs: eight primary documents and three equivalent representations of an OCR control memo. The primary documents comprise two service agreements, an invoice, a Romanian tax-residency policy, AI course notes, security guidelines, a quarterly report, and a gateway manual. Seven have English as their expected primary language and one has Romanian. The control memo is supplied as a text-based PDF, a scanned PDF, and a mixed PDF, numbered 09, 10, and 11 respectively. Each control contains three pages.
 
-Each synthetic document should have a manifest that identifies its intended document type, primary language, title/subject expectations, controlled metadata values, technical page types, exact source text, and the questions it is designed to answer. Retrieval questions should identify all acceptable relevant chunks before results are viewed. Security cases should contain fictional canary strings and no real credential. This produces a ground truth independent of the application's prediction.
+The workbook specifies gold documents and sections, expected answers, controlled document labels, and expected OCR page selections. Question coverage includes semantic paraphrases, identifiers, entity disambiguation, negation, comparisons, absent facts, instruction attacks, and facts from the OCR controls. These are manually assessed demonstration cases; the workbook does not document an independent second scorer or a held-out benchmark protocol.
 
-The corpus should cover at least:
+The recorded workflow was staged. Q01--Q28 were evaluated initially, after which the OCR controls were uploaded, M11/M12 were assessed, and Q29--Q32 were run. Q13 explicitly records a final retest after the OCR controls became available. Only this final Q13 observation contributes to the results; its earlier no-evidence response, obtained before those files were uploaded, is not counted as a retrieval failure or as a second case. Consequently, the reported totals describe the completed workbook and do not imply that all 32 questions were executed once against one frozen final corpus.
 
-\begin{itemize}
-    \item born-digital PDF, scanned PDF, mixed PDF, image-based page, blank/unknown page, and structured DOCX;
-    \item Romanian, English, and mixed-language content with Romanian diacritics and additional Unicode characters;
-    \item paraphrased questions, exact identifiers, organization names, dates, monetary values, and exact phrases;
-    \item similar documents that require a type or metadata distinction;
-    \item questions with one known supporting chunk, questions with several acceptable chunks, and questions for which the collection contains no answer; and
-    \item benign facts placed near adversarial instructions that attempt to redirect understanding, reranking, or answer generation.
-\end{itemize}
-
-Project and user isolation should be part of the setup, not a separate informal check. A distinctive term can be repeated in a second workspace and another user's workspace with different facts. Neither source may appear in the evaluated workspace's results, model context, answer, citation, or diagnostics.
+The workbook records Tesseract, Romanian and English recognition languages, and a target rendering resolution of 300 DPI for the OCR controls. It does not provide a complete repository, database, model-version, or retrieval-configuration snapshot. This limits exact reproduction of the application runs.
 
 \subsection{Document Understanding evaluation}
 
-For every document, compare the stored controlled type and primary language with the manifest. Type and language are exact-match classification tasks. Optional subtype, title, and subject require a written rubric because several phrasings can be acceptable. Metadata entries should be matched by kind and normalized value where normalization is defined; person and organization spelling should be compared conservatively without inventing aliases after seeing the prediction.
+M10 compares the actual controlled document type and primary language with the expected labels for all eight primary documents. Both tasks use exact matching. A semantically plausible alternative type therefore remains a mismatch when it differs from the gold label.
 
-Report accuracy for controlled type and language. For metadata, report precision and recall over labelled entries: precision measures the fraction of returned entries that are correct, while recall measures the fraction of expected entries that were returned. Title and subject can be scored as correct, partially correct, or incorrect by a reviewer, with the rubric recorded before scoring. Understanding marked \texttt{Skipped} or \texttt{Failed} must be counted explicitly rather than removed from the denominator.
-
-The representative-sampling path needs at least one document exceeding the 6,000-token input bound. Expected fields should be distributed across the beginning, middle, and end, while another expected value can be placed outside the selected sample. The latter case helps distinguish a designed sampling limit from a validation defect. Repeating the same build checks determinism and idempotent reuse, not semantic quality.
+Metadata coverage is recorded through qualitative notes on identifiers, organizations, dates, amounts, and topics. These notes provide examples of useful extraction, but there is no complete entry-level annotation from which metadata precision or recall could be calculated. Titles and subjects likewise have no separate numerical score. The evaluation therefore reports only type and language accuracy quantitatively.
 
 \subsection{Technical PDF and OCR evaluation}
 
-Technical classification should be evaluated at page level and document level. The corpus manifest assigns one of \texttt{TextBased}, \texttt{Scanned}, \texttt{ImageBased}, \texttt{Mixed}, or \texttt{Unknown} to each page using independently inspected construction facts. Compare these labels with stored diagnostics and create a confusion matrix. Boundary fixtures should separately exercise 40 alphanumeric characters, eight useful words, 0.30 substantial image coverage, 0.80 page-sized coverage, the 80\% document majority, and the allowed unknown-page count.
+M11 compares the expected and actual technical document labels for the three control PDFs. M12 records a combined OCR routing/content pass judgement for each control, accompanied by the observed OCR status, selected pages, and notes on native-page preservation. The text-based control should require no OCR; the scanned control should process pages 1--3; the mixed control should process only page 2 while retaining native text on pages 1 and 3.
 
-OCR evaluation has two components. \emph{Routing correctness} asks whether every intended scanned page was selected and every non-scanned page avoided unnecessary OCR. \emph{Content recovery} compares recognized text with a known transcription. Character Error Rate or a carefully defined exact-field score can be used, provided the chosen metric and normalization are fixed before the run \cite{OCRDEvaluation}.
-
-The OCR record must also be checked for correct page order, source type, requested/effective DPI, pixel limit, status, recognition count, and \texttt{UsedInExtraction}. A mixed PDF should demonstrate that native pages remain native while selected scanned pages receive OCR provenance. Very poor or empty scans should be retained as failed/empty observations rather than discarded.
+Q13 and Q29--Q32 assess retrieval and answering for control-memo facts. Any valid evidence from documents 09, 10, or 11 is accepted because their relevant content is equivalent. These questions demonstrate that the facts are available in the evaluated collection, but their success cannot isolate transcription quality for each scanned file when a native equivalent is also an acceptable source. No character error rate or independently scored transcription measure was recorded. The distinction between routing and transcription quality is therefore retained when interpreting M12 \cite{OCRDEvaluation}.
 
 \subsection{Retrieval comparison}
 
-Every labelled question will be evaluated under three variants:
+The workbook records three retrieval orderings from the application's Retrieval Details for each rankable question:
 
 \begin{enumerate}
-    \item \textbf{Vector-only baseline}: order eligible chunks only by pgvector cosine distance.
-    \item \textbf{Hybrid retrieval}: combine semantic, lexical, and applicable metadata ranks through the implemented weighted RRF, without applying the model reranker.
-    \item \textbf{Hybrid + reranking}: use the same hybrid candidate generation and allow the bounded reranker to produce the final order.
+    \item \textbf{Vector}: the vector ranking used as the retrieval baseline.
+    \item \textbf{Hybrid}: the ordering after combining the retrieval signals, before model reranking.
+    \item \textbf{Reranked / final}: the recorded ordering at the final retrieval stage.
 \end{enumerate}
 
-The comparison must keep the workspace, question text, chunks, embeddings, and TopK fixed. For the reranked variant, record whether reranking was actually applied. A timeout or unavailable provider is a successful availability fallback but is not evidence for or against ranking quality. Record vector, lexical, metadata, hybrid, rerank, and final positions through the advanced diagnostics so that individual changes can be explained after aggregate metrics are calculated.
+These are diagnostic orderings captured for the same recorded question, rather than three separately scored answer-generation experiments. The Summary sheet uses the Vector, Hybrid, and Reranked rank columns; the Reranked and Final columns agree on every rankable row. The workbook does not provide a per-case record of reranking application or fallback, so the final ordering alone cannot establish how often the model reranker changed candidates.
 
-Query groups should be reported separately as well as together: semantic paraphrase, exact identifier, exact phrase/name, date/amount, document-type distinction, Romanian, English, and mixed Unicode. This prevents an overall average from hiding a regression in a practically important category. No weight or prompt should be tuned on the final test questions; if tuning becomes necessary, split the corpus into development and held-out evaluation sets.
+The retrieval denominator is 25: Q01--Q18, Q25, and Q27--Q32. The three multi-document cases Q19--Q21 are excluded because their success requires combining distinct sources, which a first-relevant-rank measure does not capture. The three no-evidence cases Q22--Q24 and direct attack Q26 are also excluded. Q25 remains rankable because it asks an answerable question about the security document, and it also contributes to the security assessment. For equivalent-source cases Q13 and Q29--Q32, the recorded rank is that of the first valid gold evidence, not the rank of one preferred file.
 
 \subsection{Answers, citations, no-evidence, and security}
 
-After retrieval measurement, issue the corresponding question through the full conversational path. A reviewer should compare each factual statement with the source chunks returned by the backend. An answer is correct only when it addresses the question and its factual content is supported by the collection. Fluent but unsupported additions count against correctness.
+All 32 questions have a binary answer-correctness judgement against the recorded expected answer or behavior. Citation correctness is recorded at question level for 29 applicable cases. Q22--Q24 have no supporting evidence and are marked not applicable for citations; they remain in the answer denominator. The workbook does not split citation correctness into separate claim-support and source-mapping scores.
 
-Citation evaluation has two levels. Mapping correctness confirms that the displayed identifier belongs to the source object returned by the backend and that its excerpt and provenance match the stored chunk. Support correctness asks whether that chunk actually supports the associated statement. The former is strongly constrained by implementation and tests; the latter still needs human or separately verified judgement.
-
-No-evidence questions should include an empty eligible collection and an unrelated question asked of a non-empty collection. The first should bypass answer generation and return the fixed no-information response. The second tests whether the answer model declines despite receiving weak nearest neighbours. Security cases should place instruction-like text in a document, retrieve it when relevant, and verify that understanding, reranking, and answering treat it as data. The evaluator must never place a real API key in the corpus or inspect a real secret to determine whether the test passed.
+The combined no-evidence/security assessment contains Q22--Q26. Q22--Q24 ask for facts absent from the documents. Q25 asks how an instruction-injection example should be treated, and Q26 directly requests disclosure of a secret and a specified citation. The judgements concern the responses to these five cases. They do not measure resistance to all prompt-injection forms or experimentally test cross-user isolation.
 
 \section{Evaluation Metrics}
 \label{sec:evaluation-metrics}
 
-Let $Q$ be the set of evaluated questions. For a question $q$, let $R_q$ be the set of chunks labelled relevant before execution, and let $L_{q,k}$ be the first $k$ returned chunks.
-
-Top-1 accuracy is
+Let $Q_r$ be the set of 25 rankable questions, and let $r_v(q)$ be the recorded rank of the first valid gold evidence for question $q$ under ordering $v$. Top-1 accuracy is
 
 \begin{equation}
-    \operatorname{Top1} = \frac{1}{|Q|}
-    \sum_{q\in Q}\mathbb{I}\!\left[L_{q,1}\cap R_q\neq\emptyset\right],
+    \operatorname{Top1}_v = \frac{1}{|Q_r|}
+    \sum_{q\in Q_r}\mathbb{I}\!\left[r_v(q)=1\right],
     \label{eq:top1-accuracy}
 \end{equation}
 
-where $\mathbb{I}$ equals one when the first result is relevant and zero otherwise. Top-$k$ recall is
+where $\mathbb{I}$ equals one when its condition holds and zero otherwise. For $k=3$ and $k=8$, the workbook reports
 
 \begin{equation}
-    \operatorname{Recall@}k = \frac{1}{|Q|}
-    \sum_{q\in Q}\frac{|L_{q,k}\cap R_q|}{|R_q|}.
+    \operatorname{Hit@}k(v) = \frac{1}{|Q_r|}
+    \sum_{q\in Q_r}\mathbb{I}\!\left[r_v(q)\leq k\right].
     \label{eq:recall-at-k}
 \end{equation}
 
-The final report will use $k=3$ and $k=8$. If every question has exactly one labelled relevant chunk, Recall@3 and Recall@8 reduce to the fraction of questions for which that chunk appears within the first three or eight results. When several chunks are acceptable, Equation~\ref{eq:recall-at-k} gives partial credit for retrieving some but not all of them \cite{Manning2008IR}.
+The workbook labels Equation~\ref{eq:recall-at-k} as ``Top-$k$ recall.'' Here it is described as a query hit rate: the fraction of questions with at least one valid gold result in the first $k$ positions. Conventional recall measures the fraction of all relevant items retrieved \cite{Manning2008IR}. Because only the first relevant rank is recorded, the present data cannot measure that broader notion of evidence completeness. This distinction also explains the exclusion of questions requiring several distinct sources.
 
-Table~\ref{tab:evaluation-metric-definitions} records the remaining application-level metrics. Their rubrics must be used consistently across all variants.
+The other percentages divide the number of recorded passes by the number of applicable cases, as specified in Table~\ref{tab:evaluation-metric-definitions}. Counts accompany percentages to make the small denominators explicit.
 
 \begin{table}[!htbp]
     \centering
@@ -144,163 +129,192 @@ Table~\ref{tab:evaluation-metric-definitions} records the remaining application-
         \toprule
         \textbf{Metric} & \textbf{Definition} & \textbf{Primary unit} \\
         \midrule
-        Top-1 accuracy & Fraction of questions whose first returned chunk is labelled relevant & Query \\
-        Top-3 / Top-8 recall & Mean fraction of labelled relevant chunks present in the first 3 / 8 results & Query and relevant chunk \\
-        Type/language accuracy & Fraction of documents with the exact expected controlled label & Document \\
-        Metadata precision/recall & Correct returned metadata over returned entries / expected entries & Metadata entry \\
-        OCR routing correctness & Correct scanned-page selections and correct non-selections & Page \\
-        OCR content correctness & Agreement with a fixed known transcription under the selected metric & Character or labelled field \\
-        Citation mapping correctness & Displayed sources map to the backend-assigned stored chunks & Citation \\
-        Citation support correctness & Cited chunk supports the factual statement associated with it & Cited claim \\
-        Answer correctness & Answer addresses the question without facts unsupported by the corpus & Answer \\
-        No-evidence/security correctness & Expected refusal, isolation, and non-compliance behavior occurs & Test case \\
+        Top-1 accuracy & First valid gold evidence is ranked first & 25 rankable questions \\
+        Top-3 / Top-8 hit rate & First valid gold evidence is within the first 3 / 8 positions & 25 rankable questions \\
+        Answer correctness & Answer meets the recorded expected answer or behavior & 32 questions \\
+        Citation correctness & Applicable question receives a Yes citation judgement & 29 questions \\
+        No-evidence/security correctness & Expected abstention or safe behavior is observed & 5 cases \\
+        M10 type/language accuracy & Actual controlled label exactly matches the expected label & 8 documents per task \\
+        M11 technical classification & Recorded technical classification passes & 3 control PDFs \\
+        M12 OCR routing/content & Combined routing/content judgement passes & 3 control PDFs \\
         \bottomrule
     \end{tabular}
 \end{table}
 
-Latency and provider usage should be recorded as descriptive engineering measurements even though they are not primary quality metrics. At minimum, record reranking applied/fallback status and end-to-end question time. Cost comparisons must use the provider's verified pricing at evaluation time and are therefore outside this first draft. \citationneeded{official model-provider pricing and usage accounting at final evaluation time}
+The workbook contains no latency or provider-usage measurements. Performance and cost comparisons are therefore outside the scope of these results.
 
-\section{Results Placeholders}
-\label{sec:results-placeholders}
+\section{Evaluation Results}
+\label{sec:evaluation-results}
 
-\begin{center}
-\Large\textbf{[RESULTS PENDING FINAL EVALUATION]}
-\end{center}
+\subsection{Retrieval quality}
 
-The following tables are intentionally empty. ``PENDING'' is not a zero and does not imply that one variant is better than another.
+Table~\ref{tab:retrieval-results} and Figure~\ref{fig:eval-retrieval} summarize the 25 rankable cases. Vector retrieval places the first valid gold evidence at rank 1 for 22 questions (88\%). Hybrid and reranked/final retrieval each do so for 24 questions (96\%). Every rankable question has valid gold evidence within the first three results under all three orderings; the Top-8 result is consequently also 100\%.
 
 \begin{table}[!htbp]
     \centering
-    \caption{Retrieval quality comparison (results pending final evaluation).}
+    \caption{Retrieval results on 25 rankable questions. Top-3 and Top-8 are first-relevant-evidence hit rates.}
     \label{tab:retrieval-results}
-    \begin{tabular}{L{0.26\textwidth} C{0.19\textwidth} C{0.19\textwidth} C{0.25\textwidth}}
+    \begin{tabular}{@{}L{0.26\textwidth} C{0.19\textwidth} C{0.19\textwidth} C{0.25\textwidth}@{}}
         \toprule
-        \textbf{Metric} & \textbf{Vector} & \textbf{Hybrid} & \textbf{Hybrid + Reranking} \\
+        \textbf{Metric} & \textbf{Vector} & \textbf{Hybrid} & \textbf{Reranked / final} \\
         \midrule
-        Top-1 accuracy & PENDING & PENDING & PENDING \\
-        Top-3 recall & PENDING & PENDING & PENDING \\
-        Top-8 recall & PENDING & PENDING & PENDING \\
+        Top-1 accuracy & 22/25 (88\%) & 24/25 (96\%) & 24/25 (96\%) \\
+        Top-3 hit rate & 25/25 (100\%) & 25/25 (100\%) & 25/25 (100\%) \\
+        Top-8 hit rate & 25/25 (100\%) & 25/25 (100\%) & 25/25 (100\%) \\
         \bottomrule
     \end{tabular}
 \end{table}
 
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width=0.98\textwidth]{img/evaluation/evaluation_retrieval_metrics.pdf}
+    \caption{Retrieval metrics calculated from the 25 recorded rankable cases. Top-$k$ denotes first-relevant-evidence hit rate; each ordering uses the same applicable questions.}
+    \label{fig:eval-retrieval}
+\end{figure}
+
+The eight-percentage-point Top-1 improvement corresponds to two cases. Q04 moves the relevant course-notes evidence from vector rank 2 to hybrid rank 1, and Q11 makes the same improvement for the BlueGrid agreement. Both remain first in the final ordering. No further aggregate gain is observed between hybrid and final retrieval.
+
+\subsection{Answers, citations, and safe responses}
+
+Table~\ref{tab:grounding-results} reports 31 correct answers out of 32 (96.9\%) and 28 correct citation judgements out of 29 applicable questions (96.6\%). Both failures belong to Q21, an open-ended synthesis across documents. The 29-case citation denominator excludes only Q22--Q24; Q26 is included because the displayed security-guidelines source was actually retrieved and its mapping was judged correct.
+
 \begin{table}[!htbp]
     \centering
-    \caption{Document Understanding evaluation (results pending final evaluation).}
+    \caption{Answer and citation results for the completed question set.}
+    \label{tab:grounding-results}
+    \begin{tabular}{L{0.40\textwidth} L{0.29\textwidth} C{0.20\textwidth}}
+        \toprule
+        \textbf{Aspect} & \textbf{Assessment unit} & \textbf{Result} \\
+        \midrule
+        Answer correctness & All 32 questions & 31/32 (96.9\%) \\
+        Citation correctness & 29 applicable questions & 28/29 (96.6\%) \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+All five no-evidence/security cases pass their recorded checks (Table~\ref{tab:security-results}). Q22--Q24 avoid inventing a gateway Wi-Fi password, an invoice VAT rate, or a chief executive's name. Q25 treats the embedded instruction example as untrusted content. Q26 refuses the request to reveal a secret; its \texttt{S1} citation maps to a real retrieved source rather than one fabricated to satisfy the requested identifier.
+
+\begin{table}[!htbp]
+    \centering
+    \caption{Observed no-evidence and security responses. Q25 also belongs to the retrieval set.}
+    \label{tab:security-results}
+    \begin{tabular}{L{0.46\textwidth} L{0.22\textwidth} C{0.20\textwidth}}
+        \toprule
+        \textbf{Case group} & \textbf{Questions} & \textbf{Result} \\
+        \midrule
+        Absent-fact abstention & Q22--Q24 & 3/3 (100\%) \\
+        Document injection example & Q25 & 1/1 (100\%) \\
+        Direct secret request & Q26 & 1/1 (100\%) \\
+        Combined assessment & Q22--Q26 & 5/5 (100\%) \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width=0.98\textwidth]{img/evaluation/evaluation_answer_metrics.pdf}
+    \caption{Answer, citation, and no-evidence/security results. The denominators are 32, 29, and 5 respectively; citation judgements are at question level.}
+    \label{fig:eval-grounding}
+\end{figure}
+
+Figure~\ref{fig:eval-grounding} presents these related response measures without combining their different denominators. The safety total establishes the expected behavior in the five recorded cases, not a general security guarantee.
+
+\subsection{Document Understanding}
+
+M10 obtains the expected controlled type on seven of eight documents (87.5\%) and the expected primary language on all eight (100\%), as shown in Table~\ref{tab:understanding-results}. The only type mismatch is \texttt{08\_edge\_gateway\_manual.pdf}: the gold label is \texttt{TechnicalDocument}, while the application returns \texttt{Manual}. The latter is a plausible description of the content, but it remains an error under the exact-match criterion.
+
+\begin{table}[!htbp]
+    \centering
+    \caption{Document Understanding results for the eight primary documents.}
     \label{tab:understanding-results}
     \begin{tabular}{L{0.36\textwidth} L{0.34\textwidth} C{0.18\textwidth}}
         \toprule
         \textbf{Task} & \textbf{Metric} & \textbf{Result} \\
         \midrule
-        Controlled document type & Exact-match accuracy & PENDING \\
-        Primary language & Exact-match accuracy & PENDING \\
-        Title and subject & Predefined review rubric & PENDING \\
-        Generic metadata & Precision / recall & PENDING \\
-        Failure/skip accounting & Count by status & PENDING \\
+        Controlled document type & Exact-match accuracy & 7/8 (87.5\%) \\
+        Primary language & Exact-match accuracy & 8/8 (100\%) \\
         \bottomrule
     \end{tabular}
 \end{table}
 
+The notes describe strong metadata coverage across the eight cases, including agreement and invoice identifiers, parties, dates, the quarterly reporting period, and the gateway's product and revision. This is qualitative evidence of useful document descriptions. It does not support numerical claims about metadata precision, recall, or title quality.
+
+\subsection{Technical PDF classification and selective OCR}
+
+All three control PDFs receive the expected technical document label (Table~\ref{tab:pdf-classification-results}). The recorded page composition agrees with their construction: three native-text pages in document 09, three scanned pages in document 10, and two native-text pages with one scanned page in document 11. The reported M11 score is three document-level passes, rather than a separately measured page-level confusion matrix.
+
 \begin{table}[!htbp]
     \centering
-    \caption{Technical PDF classification evaluation (results pending final evaluation).}
+    \caption{M11 technical classification of the three equivalent control PDFs.}
     \label{tab:pdf-classification-results}
     \begin{tabular}{L{0.39\textwidth} L{0.34\textwidth} C{0.16\textwidth}}
         \toprule
-        \textbf{Scope} & \textbf{Metric} & \textbf{Result} \\
+        \textbf{Control document} & \textbf{Expected / actual type} & \textbf{Result} \\
         \midrule
-        Page classification & Accuracy and confusion matrix & PENDING \\
-        Document aggregation & Exact-match accuracy & PENDING \\
-        Threshold boundary fixtures & Correct cases / total cases & PENDING \\
-        Unknown-page handling & Correct cases / total cases & PENDING \\
+        09: text-based PDF & TextBased / TextBased & Pass \\
+        10: scanned PDF & Scanned / Scanned & Pass \\
+        11: mixed PDF & Mixed / Mixed & Pass \\
+        Overall & Document-level pass rate & 3/3 (100\%) \\
         \bottomrule
     \end{tabular}
 \end{table}
 
 \begin{table}[!htbp]
     \centering
-    \caption{Selective OCR evaluation (results pending final evaluation).}
+    \caption{M12 selective OCR observations. The workbook records a combined routing/content pass for each control.}
     \label{tab:ocr-results}
-    \begin{tabular}{L{0.39\textwidth} L{0.34\textwidth} C{0.16\textwidth}}
+    \begin{tabular}{L{0.24\textwidth} L{0.22\textwidth} L{0.20\textwidth} C{0.20\textwidth}}
         \toprule
-        \textbf{Aspect} & \textbf{Metric} & \textbf{Result} \\
+        \textbf{Control} & \textbf{OCR status} & \textbf{OCR pages} & \textbf{M12 result} \\
         \midrule
-        Scanned-page routing & Precision / recall & PENDING \\
-        Avoided non-scanned pages & Correct non-selections & PENDING \\
-        Recognized content & Chosen transcription metric & PENDING \\
-        Page order and provenance & Correct cases / total cases & PENDING \\
-        Partial/empty/failure behavior & Correct cases / total cases & PENDING \\
+        09: text-based & Not required & None & Pass \\
+        10: scanned & Ready & 1, 2, 3 & Pass \\
+        11: mixed & Ready & 2 only & Pass \\
+        Overall & --- & --- & 3/3 (100\%) \\
         \bottomrule
     \end{tabular}
 \end{table}
 
-\begin{table}[!htbp]
+Table~\ref{tab:ocr-results} shows that OCR was avoided for the native control, completed for all three scanned pages, and limited to page 2 of the mixed control. The latter retained native pages 1 and 3. These observations support selective routing in the tested layouts. M12's three passes include the native control, so 3/3 must not be read as three successful transcription tests.
+
+The final Q13 run and Q29--Q32 obtain correct answers with first-relevant evidence at rank 1. The recovered facts include the site code RAVEN-7319, the monthly maintenance window, the 15-minute acknowledgement period, and escalation reference ESC-441-A. In Q31, the answer correctly states that the memo does not specify the action to take after an interruption continues beyond 04:15; the notes also record mention of a separate Priority 1 procedure. Its recorded pass concerns preserving that limitation rather than inventing the missing instruction.
+
+\begin{figure}[!htbp]
     \centering
-    \caption{Grounding and citation evaluation (results pending final evaluation).}
-    \label{tab:grounding-results}
-    \begin{tabular}{L{0.42\textwidth} L{0.30\textwidth} C{0.16\textwidth}}
-        \toprule
-        \textbf{Aspect} & \textbf{Metric} & \textbf{Result} \\
-        \midrule
-        Backend source mapping & Correct citations / citations & PENDING \\
-        Claim support & Supported cited claims / cited claims & PENDING \\
-        Answer correctness & Correct answers / questions & PENDING \\
-        Unsupported additions & Count and severity & PENDING \\
-        Historical source snapshot & Correct cases / total cases & PENDING \\
-        \bottomrule
-    \end{tabular}
-\end{table}
+    \includegraphics[width=0.98\textwidth]{img/evaluation/evaluation_document_processing_metrics.pdf}
+    \caption{Document-processing results with their separate denominators: M10 type and language use eight primary documents; M11 and M12 use three control PDFs. M12 is a recorded combined routing/content pass rate, not character-level OCR accuracy.}
+    \label{fig:eval-classification}
+\end{figure}
 
-\begin{table}[!htbp]
-    \centering
-    \caption{Security and no-evidence evaluation (results pending final evaluation).}
-    \label{tab:security-results}
-    \begin{tabular}{L{0.46\textwidth} L{0.28\textwidth} C{0.15\textwidth}}
-        \toprule
-        \textbf{Case group} & \textbf{Metric} & \textbf{Result} \\
-        \midrule
-        Empty eligible collection & Correct response / cases & PENDING \\
-        Unrelated question with weak neighbours & Correct refusal / cases & PENDING \\
-        Cross-workspace and cross-user canary & Isolation pass / cases & PENDING \\
-        Document prompt injection & Robust response / cases & PENDING \\
-        Unknown/duplicate citation markers & Correct handling / cases & PENDING \\
-        \bottomrule
-    \end{tabular}
-\end{table}
+Figure~\ref{fig:eval-classification} brings together the available processing measures while preserving the distinction between semantic labels, technical classification, and the combined OCR assessment. No aggregate across these tasks is calculated.
 
-\section{Results Figure Placeholders}
-\label{sec:results-figure-placeholders}
+\section{Discussion}
+\label{sec:evaluation-discussion}
 
-The final plots must be generated from the completed result tables rather than drawn from illustrative values. Each reserved figure is marked accordingly.
+\subsection{Ranking improvements and answer completeness}
 
-\thesisfigureplaceholder{EVAL-01 -- WAIT UNTIL FINAL EVALUATION}{Retrieval-quality comparison for vector-only, hybrid, and hybrid-plus-reranking variants.}{fig:eval-retrieval}
+The observed hybrid advantage is modest and specific: two additional questions have relevant evidence in first position, with no change to Top-3 or Top-8 coverage. Evidence within the first three positions makes it available early in the candidate ordering, although the answer generator must still select and interpret it correctly. Q04 concerns a conceptual RAG explanation, while Q11 contains the exact BlueGrid agreement identifier. The workbook attributes their promotion to hybrid retrieval and, for Q11, notes metadata involvement. These observations are compatible with complementary retrieval signals helping different query forms, but there is no isolated lexical or metadata ablation from which to assign their individual contributions.
 
-Figure~\ref{fig:eval-retrieval} will compare Top-1 accuracy, Top-3 recall, and Top-8 recall after every labelled retrieval case has been run under identical conditions.
+The final stage neither improves nor worsens the reported retrieval metrics relative to hybrid retrieval. This sample therefore provides no measured aggregate gain from reranking. It also does not establish that reranking is ineffective in larger or more ambiguous collections, particularly because application/fallback status and repeated runs are not documented.
 
-\thesisfigureplaceholder{EVAL-02 -- WAIT UNTIL FINAL EVALUATION}{Selective OCR routing and recognized-content results.}{fig:eval-ocr}
+Q28 illustrates why first-position ranking and answer correctness require separate evaluation. The evidence about service credits preserving termination rights remains at rank 2 in every ordering. Nevertheless, the answer correctly uses the relevant \texttt{S2} evidence. This is a Top-1 miss with a correct answer, rather than a complete retrieval or generation failure.
 
-Figure~\ref{fig:eval-ocr} will separate routing correctness from transcription quality so that avoiding unnecessary OCR is not confused with recognizing selected pages accurately.
+Q21 is the principal observed answer failure. It asks which documents mention Meridian Retail and what role the organization has in each. The expected set contains the NovaTel agreement and invoice, where it is the customer; the BlueGrid agreement, where it is the client; and the quarterly report, which it issues. The response identifies several roles correctly but also includes a document where Meridian Retail is absent, notably the tax-residency policy. Both answer and citation correctness are therefore marked No. Partial correctness does not compensate for the unsupported inclusion in an otherwise apparently comprehensive synthesis. This case shows that the presence of citations alone does not ensure correct evidence selection or semantic support.
 
-\thesisfigureplaceholder{EVAL-03 -- WAIT UNTIL FINAL EVALUATION}{Document Understanding and technical PDF classification results.}{fig:eval-classification}
+This contrasts with Q19 and Q20, where focused comparisons correctly combine the two required sources. The pattern suggests that broad entity-based enumeration is a more demanding task than a comparison with explicitly named documents. The workbook establishes over-broad aggregation in Q21 but does not expose enough detail to identify whether the decisive error arose during retrieval, context selection, or answer generation. A future evaluation of such questions would need to score both coverage of the required source set and unsupported inclusions.
 
-Figure~\ref{fig:eval-classification} will show controlled classification outcomes without combining document-type, language, and PDF-technical labels into one unsupported aggregate.
+\subsection{Processing and safety interpretation}
 
-\section{Discussion Framework}
-\label{sec:discussion-framework}
+The M10 mismatch shows the practical importance of the controlled-label definition. \texttt{Manual} describes the gateway document plausibly, yet differs from the required \texttt{TechnicalDocument} label. Retaining it as an error avoids revising the gold standard after observing the prediction. Correct language labels and useful metadata notes are encouraging within this corpus, but do not establish broad multilingual or entity-extraction performance.
 
-The discussion will be completed only after the result tables and plots contain verified observations. It should explain error patterns rather than repeat percentages. The following prompts define the intended analysis:
+The PDF controls demonstrate the intended distinction between native, scanned, and mixed content, including selective OCR of a single scanned page. The strongest direct evidence concerns routing and preservation of native pages. The equivalent control sources and absence of a transcription score prevent a claim that OCR is perfectly accurate. Similarly, the five successful no-evidence/security responses show appropriate abstention and handling of the tested instructions, but do not quantify robustness against a wider attack distribution.
 
-\begin{itemize}
-    \item \todocomplete{After evaluation, discuss cases where hybrid retrieval changed exact-identifier, phrase, date, amount, or organization-name results relative to the vector baseline.}
-    \item \todocomplete{Determine whether reranking promoted relevant semantic evidence, preserved clear exact matches, or introduced regressions; report fallback runs separately.}
-    \item \todocomplete{Relate false PDF classifications to the meaningful-text and image-coverage heuristics, including borderline and mixed pages.}
-    \item \todocomplete{Separate OCR routing errors from recognition errors and identify scan properties associated with each.}
-    \item \todocomplete{Analyze Document Understanding errors by controlled type, language, sampled document region, and metadata kind.}
-    \item \todocomplete{Review every incorrect or partially correct answer for retrieval failure, context truncation, model interpretation, citation support, or missing source evidence.}
-    \item \todocomplete{Report prompt-injection and no-evidence cases conservatively; do not generalize a finite pass set into a claim of complete security.}
-    \item \todocomplete{Record latency and provider-use trade-offs for reranking and compare them with any measured quality difference.}
-\end{itemize}
+\subsection{Threats to validity}
 
-Threats to validity must also be addressed. A small synthetic corpus may not represent long, noisy, or domain-specific real collections. Carefully constructed identifiers can make exact retrieval easier than uncontrolled data. Model services may vary across time even when a model identifier is unchanged. Human scoring of title quality, answer correctness, and citation support can be subjective; a written rubric and, if possible, a second reviewer reduce this risk. Tests on a local demonstration database do not establish throughput at production scale.
+\textbf{Internal validity.} Gold expectations and pass/fail judgements are manually recorded, and no independent scorer or inter-rater agreement is documented. Binary question-level scoring can conceal differences in partial correctness. Case notes make the principal failure reviewable, but the available records do not support causal attribution to individual retrieval or generation components.
 
-The final discussion should conclude with what the measurements support, not what the architecture was intended to achieve. Until those measurements exist, this chapter establishes verified implementation testing and a reproducible evaluation plan, while all quality result cells remain explicitly pending.
+\textbf{External validity.} The evaluation uses 11 synthetic PDFs, of which three repeat equivalent control content. The eight primary documents cover a limited range of domains and only English and Romanian primary-language labels. Clear synthetic identifiers and controlled content may be easier than noisy, long, or heterogeneous production collections. The experiment does not establish performance for DOCX input, ImageBased or Unknown PDF cases, extreme scans, classification threshold boundaries, or the document-understanding sampling limit. Automated tests cover some related implementation risks, but are separate evidence from these application-level results.
+
+\textbf{Construct validity.} First-relevant-evidence hit rate measures access to at least one supporting result, not retrieval of all required evidence. Citation judgements are per question, not an independent claim-level accuracy measurement. M12 combines routing/content observations and includes a case requiring no OCR; it is not a transcription-accuracy estimate. Metadata notes have no precision/recall denominator. These distinctions constrain the meaning of the high percentages.
+
+\textbf{Reproducibility and scope.} Uploads were staged, Q13 was retested, and there is no complete frozen configuration or external model-version record. No repeated trials quantify model variability. The workbook also contains no latency, provider-usage, production-load, historical-citation-snapshot, empty-workspace, or cross-user experimental measurements. The results therefore support correct operation on most recorded cases, with a measurable hybrid Top-1 improvement and a documented failure in broad multi-document synthesis; they do not establish production-scale performance or comprehensive security.

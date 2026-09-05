@@ -1,0 +1,203 @@
+{
+  "workbook": "evaluation_workbook_final.xlsx",
+  "workbook_sha256": "fee08ff2f604a7de1009359916290a634a865acb45b849ef7fc717f1d86f0e18",
+  "sheets": [
+    "Questions",
+    "M10 Understanding",
+    "M11-M12 OCR",
+    "Summary"
+  ],
+  "question_count": 32,
+  "rankable_questions": [
+    "Q01",
+    "Q02",
+    "Q03",
+    "Q04",
+    "Q05",
+    "Q06",
+    "Q07",
+    "Q08",
+    "Q09",
+    "Q10",
+    "Q11",
+    "Q12",
+    "Q13",
+    "Q14",
+    "Q15",
+    "Q16",
+    "Q17",
+    "Q18",
+    "Q25",
+    "Q27",
+    "Q28",
+    "Q29",
+    "Q30",
+    "Q31",
+    "Q32"
+  ],
+  "excluded_from_ranking": {
+    "Q19": "multi-source",
+    "Q20": "multi-source",
+    "Q21": "multi-source",
+    "Q22": "no-evidence",
+    "Q23": "no-evidence",
+    "Q24": "no-evidence",
+    "Q26": "security"
+  },
+  "safety_questions": [
+    "Q22",
+    "Q23",
+    "Q24",
+    "Q25",
+    "Q26"
+  ],
+  "retrieval_definition": "Fraction of numeric first-relevant ranks <= k; any valid gold source counts.",
+  "final_rank_check": "Questions J and K agree for every rankable question.",
+  "m12_scope": "Recorded document-level routing/content pass; not character accuracy. Page selection also checked against gold.",
+  "metrics": {
+    "vector_top1": {
+      "numerator": 22,
+      "denominator": 25,
+      "percentage": 88.0,
+      "source_range": "Questions!H2:H33",
+      "summary_cell": "Summary!B4",
+      "formula": "IFERROR(COUNTIFS(Questions!H2:H33,\">=1\",Questions!H2:H33,\"<=1\")/COUNT(Questions!H2:H33),0)",
+      "cached_ratio": 0.88
+    },
+    "vector_top3": {
+      "numerator": 25,
+      "denominator": 25,
+      "percentage": 100.0,
+      "source_range": "Questions!H2:H33",
+      "summary_cell": "Summary!B5",
+      "formula": "IFERROR(COUNTIFS(Questions!H2:H33,\">=1\",Questions!H2:H33,\"<=3\")/COUNT(Questions!H2:H33),0)",
+      "cached_ratio": 1.0
+    },
+    "vector_top8": {
+      "numerator": 25,
+      "denominator": 25,
+      "percentage": 100.0,
+      "source_range": "Questions!H2:H33",
+      "summary_cell": "Summary!B6",
+      "formula": "IFERROR(COUNTIFS(Questions!H2:H33,\">=1\",Questions!H2:H33,\"<=8\")/COUNT(Questions!H2:H33),0)",
+      "cached_ratio": 1.0
+    },
+    "hybrid_top1": {
+      "numerator": 24,
+      "denominator": 25,
+      "percentage": 96.0,
+      "source_range": "Questions!I2:I33",
+      "summary_cell": "Summary!C4",
+      "formula": "IFERROR(COUNTIFS(Questions!I2:I33,\">=1\",Questions!I2:I33,\"<=1\")/COUNT(Questions!I2:I33),0)",
+      "cached_ratio": 0.96
+    },
+    "hybrid_top3": {
+      "numerator": 25,
+      "denominator": 25,
+      "percentage": 100.0,
+      "source_range": "Questions!I2:I33",
+      "summary_cell": "Summary!C5",
+      "formula": "IFERROR(COUNTIFS(Questions!I2:I33,\">=1\",Questions!I2:I33,\"<=3\")/COUNT(Questions!I2:I33),0)",
+      "cached_ratio": 1.0
+    },
+    "hybrid_top8": {
+      "numerator": 25,
+      "denominator": 25,
+      "percentage": 100.0,
+      "source_range": "Questions!I2:I33",
+      "summary_cell": "Summary!C6",
+      "formula": "IFERROR(COUNTIFS(Questions!I2:I33,\">=1\",Questions!I2:I33,\"<=8\")/COUNT(Questions!I2:I33),0)",
+      "cached_ratio": 1.0
+    },
+    "final_top1": {
+      "numerator": 24,
+      "denominator": 25,
+      "percentage": 96.0,
+      "source_range": "Questions!J2:J33",
+      "summary_cell": "Summary!D4",
+      "formula": "IFERROR(COUNTIFS(Questions!J2:J33,\">=1\",Questions!J2:J33,\"<=1\")/COUNT(Questions!J2:J33),0)",
+      "cached_ratio": 0.96
+    },
+    "final_top3": {
+      "numerator": 25,
+      "denominator": 25,
+      "percentage": 100.0,
+      "source_range": "Questions!J2:J33",
+      "summary_cell": "Summary!D5",
+      "formula": "IFERROR(COUNTIFS(Questions!J2:J33,\">=1\",Questions!J2:J33,\"<=3\")/COUNT(Questions!J2:J33),0)",
+      "cached_ratio": 1.0
+    },
+    "final_top8": {
+      "numerator": 25,
+      "denominator": 25,
+      "percentage": 100.0,
+      "source_range": "Questions!J2:J33",
+      "summary_cell": "Summary!D6",
+      "formula": "IFERROR(COUNTIFS(Questions!J2:J33,\">=1\",Questions!J2:J33,\"<=8\")/COUNT(Questions!J2:J33),0)",
+      "cached_ratio": 1.0
+    },
+    "citation": {
+      "numerator": 28,
+      "denominator": 29,
+      "percentage": 96.55172413793103,
+      "source_range": "Questions!L2:L33",
+      "summary_cell": "Summary!B9",
+      "formula": "IFERROR(COUNTIF(Questions!L2:L33,\"Yes\")/(COUNTIF(Questions!L2:L33,\"Yes\")+COUNTIF(Questions!L2:L33,\"No\")),0)",
+      "cached_ratio": 0.9655172413793104
+    },
+    "answer": {
+      "numerator": 31,
+      "denominator": 32,
+      "percentage": 96.875,
+      "source_range": "Questions!M2:M33",
+      "summary_cell": "Summary!B10",
+      "formula": "IFERROR(COUNTIF(Questions!M2:M33,\"Yes\")/(COUNTIF(Questions!M2:M33,\"Yes\")+COUNTIF(Questions!M2:M33,\"No\")),0)",
+      "cached_ratio": 0.96875
+    },
+    "safety": {
+      "numerator": 5,
+      "denominator": 5,
+      "percentage": 100.0,
+      "source_range": "Questions!N2:N33",
+      "summary_cell": "Summary!B11",
+      "formula": "IFERROR(COUNTIF(Questions!N2:N33,\"Yes\")/(COUNTIF(Questions!N2:N33,\"Yes\")+COUNTIF(Questions!N2:N33,\"No\")),0)",
+      "cached_ratio": 1.0
+    },
+    "m10_type": {
+      "numerator": 7,
+      "denominator": 8,
+      "percentage": 87.5,
+      "source_range": "'M10 Understanding'!I2:I9",
+      "summary_cell": "Summary!B12",
+      "formula": "IF(COUNTA('M10 Understanding'!I2:I9)<8,\"\",COUNTIF('M10 Understanding'!I2:I9,\"Yes\")/8)",
+      "cached_ratio": 0.875
+    },
+    "m10_language": {
+      "numerator": 8,
+      "denominator": 8,
+      "percentage": 100.0,
+      "source_range": "'M10 Understanding'!J2:J9",
+      "summary_cell": "Summary!B13",
+      "formula": "IF(COUNTA('M10 Understanding'!J2:J9)<8,\"\",COUNTIF('M10 Understanding'!J2:J9,\"Yes\")/8)",
+      "cached_ratio": 1.0
+    },
+    "m11": {
+      "numerator": 3,
+      "denominator": 3,
+      "percentage": 100.0,
+      "source_range": "'M11-M12 OCR'!I2:I4",
+      "summary_cell": "Summary!B14",
+      "formula": "IF(COUNTA('M11-M12 OCR'!I2:I4)<3,\"\",COUNTIF('M11-M12 OCR'!I2:I4,\"Yes\")/3)",
+      "cached_ratio": 1.0
+    },
+    "m12": {
+      "numerator": 3,
+      "denominator": 3,
+      "percentage": 100.0,
+      "source_range": "'M11-M12 OCR'!J2:J4",
+      "summary_cell": "Summary!B15",
+      "formula": "IF(COUNTA('M11-M12 OCR'!J2:J4)<3,\"\",COUNTIF('M11-M12 OCR'!J2:J4,\"Yes\")/3)",
+      "cached_ratio": 1.0
+    }
+  }
+}

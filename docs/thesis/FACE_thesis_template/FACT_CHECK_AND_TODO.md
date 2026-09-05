@@ -60,23 +60,35 @@ This file is the authoritative checklist for information that must not be guesse
 
 ## Final experimental evaluation
 
-- [ ] Freeze and record the evaluated repository revision and runtime configuration.
-- [ ] Confirm the final synthetic evaluation corpus and independent ground-truth manifest.
-- [ ] Run and record Document Understanding type, language, title/subject, metadata, skip, and failure cases.
-- [ ] Run and record technical PDF page/document classification and threshold-boundary cases.
-- [ ] Run and record OCR routing, transcription, provenance, empty, partial, failed, and page-limit cases.
-- [ ] Run identical labelled queries for vector-only, hybrid, and hybrid-plus-reranking retrieval.
-- [ ] Populate Top-1 accuracy, Top-3 recall, and Top-8 recall without changing definitions after viewing results.
-- [ ] Evaluate backend citation mapping and human-reviewed citation support separately.
-- [ ] Evaluate grounded-answer correctness, unsupported additions, and historical-source behavior.
-- [ ] Evaluate empty-collection, unrelated-question, cross-owner/workspace, unknown-citation, and prompt-injection cases using fictional canaries only.
-- [ ] Record latency, reranking applied/fallback state, and provider usage for descriptive discussion.
-- [ ] Populate all six result tables in Chapter 7; `PENDING` currently means unmeasured, not zero.
-- [ ] Produce EVAL-01 retrieval comparison plot.
-- [ ] Produce EVAL-02 OCR results plot.
-- [ ] Produce EVAL-03 understanding/PDF classification plot.
-- [ ] Complete every Chapter 7 `[TO COMPLETE: ...]` discussion marker using only measured observations.
-- [ ] Update the English and Romanian summaries and conclusions if the final results materially change what can be stated.
+Final evaluation pass completed on 5 September 2026. The read-only source is [`../evaluation/evaluation_workbook_final.xlsx`](../evaluation/evaluation_workbook_final.xlsx). See [`../evaluation/EVALUATION_VALIDATION.md`](../evaluation/EVALUATION_VALIDATION.md) for cell ranges, reproducible plot generation, scope limits, and validation results. The original broader evaluation plan is distinguished below from the cases actually recorded.
+
+- [x] Confirm the evaluated corpus and workbook gold expectations: eight primary PDFs, three equivalent OCR controls, and 32 questions.
+- [x] Verify completion of Q01--Q32 and M10--M12 from the recorded application runs; independently recalculate all Summary metrics without modifying the workbook.
+- [x] Validate the three recorded retrieval orderings for the same applicable questions. These are stage diagnostics, not separately scored answer-generation experiments; uploads were staged and Q13 was retested.
+- [x] Populate retrieval metrics over 25 rankable questions: Top-1 22/25, 24/25, 24/25; Top-3 and Top-8 25/25 at every stage. Correct the draft's metric definition to the workbook's first-relevant hit rate, accepting equivalent gold sources.
+- [x] Populate question-level citation correctness (28/29) and answer correctness (31/32), retaining Q21 as the sole failure in both.
+- [x] Record no-evidence/security correctness for Q22--Q26 (5/5), with claims limited to these cases.
+- [x] Complete M10 exact type (7/8) and language (8/8) reporting; preserve the Manual versus TechnicalDocument mismatch and describe metadata only qualitatively.
+- [x] Complete M11 technical PDF classification reporting (3/3 control documents).
+- [x] Complete M12 recorded OCR routing/content reporting (3/3 controls); preserve the distinction from character-level transcription accuracy.
+- [x] Populate all six Chapter 7 result tables with measured outcomes and explicit assessment units.
+- [x] Generate and integrate EVAL-01: `img/evaluation/evaluation_retrieval_metrics.pdf`.
+- [x] Generate and integrate EVAL-02: `img/evaluation/evaluation_answer_metrics.pdf`. The former OCR-only slot now presents answer/grounding results; measured M12 outcomes are included in EVAL-03.
+- [x] Generate and integrate EVAL-03: `img/evaluation/evaluation_document_processing_metrics.pdf`, covering M10, M11, and M12 with separate denominators.
+- [x] Complete the Chapter 7 evaluation write-up, qualitative failure analysis, and threats to validity; remove all evaluation placeholders and discussion TODO markers.
+- [x] Correct only the obsolete evaluation-pending statements in Conclusions; broader conclusions and summary integration remain for the later full-thesis audit.
+
+Unmeasured extensions and reproduction details remain open; none is represented as a completed experiment:
+
+- [ ] Recover and record the evaluated repository revision, database/model versions, and complete runtime configuration from contemporaneous evidence; do not substitute current defaults.
+- [ ] Independently review the gold expectations and answer/citation judgements; no second scorer is documented in the workbook.
+- [ ] Extend Document Understanding evaluation to numerical title/subject and metadata scoring, sampling limits, and explicit skip/failure cases.
+- [ ] Extend technical PDF evaluation to a page-level confusion matrix, ImageBased/Unknown cases, and threshold-boundary experiments.
+- [ ] Extend OCR evaluation to independent transcription accuracy, degraded scans, empty/partial/failed results, and page-limit cases; isolate scanned sources from equivalent native controls.
+- [ ] Score backend citation mapping and semantic claim support separately, and evaluate historical-source behavior.
+- [ ] Extend experimental security coverage to empty collections, cross-owner/workspace cases, unknown citation markers, and additional attacks using synthetic data.
+- [ ] Record latency, per-case reranking applied/fallback state, and provider usage for descriptive discussion.
+- [ ] Review English/Romanian summaries and broader conclusions during the separate final full-thesis audit.
 
 ## Bibliography and academic integrity
 
@@ -125,5 +137,5 @@ This file is the authoritative checklist for information that must not be guesse
 - [x] Main Chapters 1--7 and separate Chapter 8 conclusions drafted in English.
 - [x] Romanian and English project summaries drafted without invented experimental results.
 - [x] Ten conceptual Mermaid diagram sources created.
-- [x] Five compile-safe UI placeholders and three pending-results figure placeholders created.
+- [x] Five UI screenshots and three measured evaluation plots integrated; the original placeholders have been replaced.
 - [x] One full backend test run completed: 345 passed, 0 failed, 0 skipped. It must not be repeated for this drafting task.

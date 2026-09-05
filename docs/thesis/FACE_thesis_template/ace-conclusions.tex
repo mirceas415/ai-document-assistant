@@ -15,7 +15,7 @@ On the question side, one transient query embedding supports owner- and workspac
 
 Final chunks are serialized within a separate document-context token budget. The backend assigns source identifiers, the answer model is instructed to rely only on the delimited untrusted evidence, and locally accepted citations must belong to the context map. Conversation history is persistent and bounded, but it is explicitly non-authoritative and does not replace retrieval for the current question. Bounded source snapshots preserve the historical meaning of a citation even if its live document is later removed.
 
-The completed implementation is supported by 345 passing backend tests, with no failures or skipped cases in the single full run performed for this draft. The tests cover successful paths, ownership isolation, deterministic algorithms, malformed model output, prompt-like document content, provider failures, and fallback behavior. This is evidence that specified software behavior is implemented; it is not a substitute for the pending experimental evaluation. Accordingly, the results tables in Chapter~\ref{chap:testing-evaluation} remain visibly unpopulated, and this conclusion makes no claim that hybrid retrieval or reranking achieved an unmeasured accuracy improvement.
+The completed implementation is supported by 345 passing backend tests, with no failures or skipped cases in the single full run performed for this draft. The tests cover successful paths, ownership isolation, deterministic algorithms, malformed model output, prompt-like document content, provider failures, and fallback behavior. This is evidence that specified software behavior is implemented; it complements the completed experimental evaluation reported in Chapter~\ref{chap:testing-evaluation}. That evaluation records a hybrid Top-1 gain within the tested corpus, no further aggregate gain from the final ordering, and an answer/citation failure in broad multi-document synthesis.
 
 \section{Personal Contribution and Lessons Learned}
 
@@ -41,14 +41,14 @@ The implementation has practical limitations that define the scope of its conclu
     \item The background queue is bounded, process-local, and non-durable. A process restart loses queued identifiers, and a full queue may require a document to be scheduled again. Local file storage likewise assumes one application environment rather than a distributed deployment.
     \item One user owns each workspace; sharing and role-based collaboration are not implemented. The repository also does not define a production deployment, distributed monitoring, or durable object-storage architecture.
     \item Backend behavior has extensive automated coverage, but the React client has no automated test suite and accessibility has not undergone a formal compliance audit or assistive-technology study.
-    \item The labelled final evaluation has not yet been performed. Retrieval quality, OCR content quality, classification accuracy, citation support, grounded-answer correctness, security cases, latency, and provider cost therefore remain to be measured.
+    \item The completed evaluation is limited to a small synthetic corpus and manually scored cases. It does not establish general retrieval or security robustness, character-level OCR accuracy, or production-scale performance; latency and provider usage were not measured.
 \end{itemize}
 
 These limitations do not negate the completed engineering flow. They identify where a local, feature-complete bachelor project ends and where deployment hardening or broader empirical study would begin.
 
 \section{Future Work}
 
-The first priority for future work is to execute the evaluation defined in Chapter~\ref{chap:testing-evaluation} and complete its tables, plots, and discussion. The corpus should then be expanded with longer documents, noisier scans, additional layouts, multilingual queries, ambiguous cases, and independently labelled relevance judgements. Measurements should guide changes to chunking, candidate pools, fusion weights, reranking prompts, and context limits rather than adjusting them from isolated demonstrations.
+Future evaluation should extend the completed study in Chapter~\ref{chap:testing-evaluation} with longer documents, noisier scans, additional layouts, multilingual queries, ambiguous cases, and independently labelled relevance judgements. Measurements should guide changes to chunking, candidate pools, fusion weights, reranking prompts, and context limits rather than adjusting them from isolated demonstrations.
 
 For ingestion reliability, the process-local channel could be replaced by a durable job queue with retry policy, visibility, concurrency control, and recovery after restart. Uploaded content could move from one local directory to managed object storage, with checksum verification and retention policy. Production deployment would additionally require environment-specific secret management, transport and storage security, observability, rate limiting, backup, and operational testing.
 
@@ -64,5 +64,4 @@ Finally, the client would benefit from automated component and end-to-end tests,
 
 The project demonstrates how a document assistant can be built as an accountable engineering pipeline. Its usefulness depends on the connections between stages: page analysis determines OCR routing; extraction and normalization determine chunks; chunks and metadata determine retrieval; retrieval determines context; and backend source mappings determine which citations the interface can trust. Treating these connections as first-class design concerns distinguishes the system from a generic file-upload chat interface.
 
-The application is feature-complete for the stated project scope, while quantitative evaluation and bibliography verification remain explicit documentation tasks. The resulting first draft therefore offers a complete technical account without converting planned measurements, established methods, or future improvements into unsupported claims.
-
+The application is feature-complete for the stated project scope, with quantitative results and their limitations reported in Chapter~\ref{chap:testing-evaluation}. These observations support the technical account within the evaluated corpus while leaving broader empirical claims open.
