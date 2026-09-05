@@ -6,7 +6,7 @@ Testing and experimental evaluation answer different questions. Automated tests 
 \section{Automated Testing Strategy}
 \label{sec:automated-testing}
 
-The backend test project uses xUnit with controlled substitutes at external model boundaries and, where appropriate, Entity Framework Core's in-memory provider. Generated PDF and DOCX fixtures make extraction tests reproducible without private documents. Deterministic fake embedding, reranking, understanding, and answer services allow tests to control model responses without sending document content or consuming provider resources. SQL-shape tests complement in-memory service tests where PostgreSQL-specific vector and full-text behavior matters. \citationneeded{software testing principles for unit, integration, and boundary tests}
+The backend test project uses xUnit with controlled substitutes at external model boundaries and, where appropriate, Entity Framework Core's in-memory provider. Generated PDF and DOCX fixtures make extraction tests reproducible without private documents. Deterministic fake embedding, reranking, understanding, and answer services allow tests to control model responses without sending document content or consuming provider resources. SQL-shape tests complement in-memory service tests where PostgreSQL-specific vector and full-text behavior matters. This layered strategy follows established distinctions among unit, integration, and system-level testing \cite{Ammann2016SoftwareTesting}.
 
 On 4 September 2026, the complete solution test command was executed once from the repository root:
 
@@ -84,7 +84,7 @@ The representative-sampling path needs at least one document exceeding the 6,000
 
 Technical classification should be evaluated at page level and document level. The corpus manifest assigns one of \texttt{TextBased}, \texttt{Scanned}, \texttt{ImageBased}, \texttt{Mixed}, or \texttt{Unknown} to each page using independently inspected construction facts. Compare these labels with stored diagnostics and create a confusion matrix. Boundary fixtures should separately exercise 40 alphanumeric characters, eight useful words, 0.30 substantial image coverage, 0.80 page-sized coverage, the 80\% document majority, and the allowed unknown-page count.
 
-OCR evaluation has two components. \emph{Routing correctness} asks whether every intended scanned page was selected and every non-scanned page avoided unnecessary OCR. \emph{Content recovery} compares recognized text with a known transcription. Character Error Rate or a carefully defined exact-field score can be used, provided the chosen metric and normalization are fixed before the run. \citationneeded{OCR Character Error Rate definition and evaluation practice}
+OCR evaluation has two components. \emph{Routing correctness} asks whether every intended scanned page was selected and every non-scanned page avoided unnecessary OCR. \emph{Content recovery} compares recognized text with a known transcription. Character Error Rate or a carefully defined exact-field score can be used, provided the chosen metric and normalization are fixed before the run \cite{OCRDEvaluation}.
 
 The OCR record must also be checked for correct page order, source type, requested/effective DPI, pixel limit, status, recognition count, and \texttt{UsedInExtraction}. A mixed PDF should demonstrate that native pages remain native while selected scanned pages receive OCR provenance. Very poor or empty scans should be retained as failed/empty observations rather than discarded.
 
@@ -131,7 +131,7 @@ where $\mathbb{I}$ equals one when the first result is relevant and zero otherwi
     \label{eq:recall-at-k}
 \end{equation}
 
-The final report will use $k=3$ and $k=8$. If every question has exactly one labelled relevant chunk, Recall@3 and Recall@8 reduce to the fraction of questions for which that chunk appears within the first three or eight results. When several chunks are acceptable, Equation~\ref{eq:recall-at-k} gives partial credit for retrieving some but not all of them. \citationneeded{standard information retrieval evaluation metrics}
+The final report will use $k=3$ and $k=8$. If every question has exactly one labelled relevant chunk, Recall@3 and Recall@8 reduce to the fraction of questions for which that chunk appears within the first three or eight results. When several chunks are acceptable, Equation~\ref{eq:recall-at-k} gives partial credit for retrieving some but not all of them \cite{Manning2008IR}.
 
 Table~\ref{tab:evaluation-metric-definitions} records the remaining application-level metrics. Their rubrics must be used consistently across all variants.
 

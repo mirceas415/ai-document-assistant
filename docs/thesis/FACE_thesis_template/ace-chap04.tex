@@ -89,8 +89,7 @@ rather than a set of unrelated document utilities.
 
 The processing worker selects an extractor from the validated media type and
 stored extension. PDF extraction is implemented with PdfPig, while DOCX
-extraction uses the Open XML SDK. \citationneeded{PdfPig project and PDF text extraction}
-\citationneeded{Open XML SDK and WordprocessingML specification}
+extraction uses the Open XML SDK \cite{PdfPigDocs,MicrosoftOpenXMLSDK,ECMA376}.
 The result of either adapter is the same application-level structure: an
 ordered collection of text sections carrying optional page and heading
 provenance plus an extraction-method marker.
@@ -157,7 +156,6 @@ Repeated page edges, divided words, and inconsistent whitespace consume chunk
 budgets and can become misleading retrieval signals. Conversely, aggressive
 cleanup can delete clauses or identifiers. The implementation therefore
 prefers retaining occasional boilerplate to silently removing valid evidence.
-\citationneeded{text normalization and conservative de-hyphenation}
 
 The first normalization pass is format-independent. Sections are ordered by
 their source index. Windows and classic Macintosh line endings are converted to
@@ -246,8 +244,9 @@ cleanup observable and recoverable.
 
 PDFs may contain native text, scanned images, or a mixture. The application
 therefore performs deterministic structural analysis before OCR routing. The
-analysis describes page representation, not subject matter.
-\citationneeded{PDF text and raster-image representation}
+analysis describes page representation, not subject matter; the distinction is
+grounded in the PDF document representation standardized by ISO~32000-2
+\cite{ISO32000PDF}.
 
 The controlled types are listed in Table~\ref{tab:technical-types}. Keeping the
 taxonomy small makes routing and diagnostics understandable. In particular,
@@ -370,10 +369,9 @@ usable text layer with a less certain recognition result and prevents every
 decorative image from triggering expensive rasterization. It also makes the
 routing decision reproducible from persisted page diagnostics.
 
-Rendering is provided by PDFtoImage using its PDFium runtime assets, and
-recognition is performed by Tesseract through the TesseractOCR .NET wrapper.
-\citationneeded{PDFium and PDFtoImage project documentation}
-\citationneeded{Tesseract OCR official project documentation}
+Rendering is provided by PDFtoImage using its PDFium runtime assets
+\cite{PDFtoImageDocs}, and recognition is performed by Tesseract through the
+TesseractOCR .NET wrapper \cite{Smith2007Tesseract,TesseractDocs}.
 Both operations execute on the application host; the OCR stage itself does not
 send page images to a cloud OCR service. This statement does not imply that all
 document data remains local. Later Document Understanding and embedding stages
@@ -500,7 +498,7 @@ description that can support document diagnostics and later act as a soft
 ranking signal. The current configured model is \texttt{gpt-5.6-luna}; if a
 separate Understanding model is not configured, the service falls back to the
 answer model. Provider interaction uses structured output rather than parsing
-free-form prose. \citationneeded{OpenAI Responses API structured outputs}
+free-form prose \cite{OpenAIResponsesAPI}.
 
 The output contains a controlled document type, optional subtype, confidence,
 primary language code and confidence, optional detected title and subject, and
@@ -605,11 +603,15 @@ exceed bounded context and make provenance imprecise. At the opposite extreme,
 one vector per sentence can remove the surrounding definitions and conditions
 needed to interpret a passage. Chunking establishes an intermediate evidence
 unit: small enough to rank and cite, but large enough to preserve local meaning.
-Overlap carries limited context across boundaries. \citationneeded{document chunking for semantic retrieval}
+Passage-level retrieval provides the established setting for this engineering
+trade-off \cite{Karpukhin2020DPR,Luan2021SparseDense}; overlap is the project's
+deterministic mechanism for carrying limited context across boundaries.
 
 The implementation measures tokens with the \texttt{cl100k\_base} encoding
-provided through Microsoft.ML.Tokenizers. \citationneeded{cl100k base tokenizer and Microsoft ML Tokenizers}
-Character counts are retained for diagnostics, but all size decisions are made
+through Microsoft.ML.Tokenizers. The package provides Tiktoken token counting
+and conversion between text, token identifiers, and character indexes
+\cite{MicrosoftMLTokenizers}. Character counts are retained for diagnostics,
+but all size decisions are made
 from actual tokenizer counts. This is important for multilingual material,
 punctuation, numbers, and Unicode because equal character lengths do not imply
 equal model-token lengths.
@@ -816,11 +818,14 @@ which the chunks were generated. The current provider model is
 Inputs are sent in sequential batches of at most 32. The adapter requests the
 configured dimension explicitly, restores provider results to input order by
 their response indexes, and rejects missing, duplicated, non-finite, or
-wrong-sized vectors. \citationneeded{OpenAI text embedding model and dimensions}
+wrong-sized vectors. The provider documents both the selected embedding model
+and the endpoint's configurable dimension parameter
+\cite{OpenAIEmbeddingModel,OpenAIEmbeddingsAPI}; the value of 1,536 above is
+the checked-in application configuration.
 
 The application persists vectors through the pgvector .NET type. PostgreSQL
 enables the \texttt{vector} extension and stores the value in a native
-\texttt{vector(1536)} column. \citationneeded{pgvector official documentation}
+\texttt{vector(1536)} column \cite{PgvectorDocs}.
 The fixed dimension is part of the database schema, so startup validation
 rejects a different configured dimension rather than allowing a later database
 error. Alongside the vector, every chunk stores the model identifier,

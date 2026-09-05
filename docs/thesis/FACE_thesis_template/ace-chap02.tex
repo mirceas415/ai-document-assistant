@@ -6,7 +6,7 @@ This chapter introduces the concepts needed to understand the implemented assist
 \section{Information Retrieval for Documents}
 \label{sec:background-ir}
 
-Information retrieval concerns the selection and ranking of items that are relevant to an information need. In a document assistant, the user's question expresses that need, while the searchable collection consists of smaller passages derived from uploaded documents. A retrieval system normally returns a ranked list rather than a single binary match because relevance is gradual: one passage may answer the question directly, another may provide useful context, and many may share only superficial vocabulary. \citationneeded{authoritative information retrieval textbook or survey}
+Information retrieval concerns the selection and ranking of items that are relevant to an information need. In a document assistant, the user's question expresses that need, while the searchable collection consists of smaller passages derived from uploaded documents. A retrieval system normally returns a ranked list rather than a single binary match because relevance is gradual: one passage may answer the question directly, another may provide useful context, and many may share only superficial vocabulary \cite{Manning2008IR}.
 
 The distinction between a \emph{document} and a \emph{retrieval unit} is important. A fifty-page document is convenient for a person to recognize by filename, but it is too broad to send to a language model for every question. A paragraph-sized unit is precise, but it may omit definitions located immediately before it. The application therefore searches document chunks: bounded passages that retain enough source location to be traced back to their documents.
 
@@ -17,7 +17,7 @@ Provenance adds an application-specific requirement to ordinary ranking. A usefu
 \section{Text Extraction from Structured Documents}
 \label{sec:background-extraction}
 
-PDF and DOCX encode documents differently. A DOCX file is an Open Packaging Conventions container whose word-processing content exposes logical elements such as paragraphs, styles, and tables. This makes it possible to traverse body content and recognize explicit heading styles. A PDF primarily describes how content is placed on pages. Its text can be stored as positioned glyphs, and a visually simple paragraph may not be represented as one logical paragraph in the file. \citationneeded{PDF specification and Office Open XML specification}
+PDF and DOCX encode documents differently. A DOCX file is an Open Packaging Conventions container whose word-processing content exposes logical elements such as paragraphs, styles, and tables. This makes it possible to traverse body content and recognize explicit heading styles. A PDF primarily describes how content is placed on pages. Its text can be stored as positioned glyphs, and a visually simple paragraph may not be represented as one logical paragraph in the file \cite{ECMA376,ISO32000PDF}.
 
 Consequently, text extraction is not equivalent to reading a plain-text file. A PDF extractor must reconstruct text in a plausible reading order and preserve the page number. A DOCX extractor can preserve logical order and headings but does not automatically know the final printed page because pagination depends on fonts and layout. Tables also need a textual representation that preserves row and cell distinctions without pretending to reproduce every visual property.
 
@@ -26,7 +26,7 @@ Some PDF pages contain no useful text layer at all. They may consist of a full-p
 \section{Optical Character Recognition}
 \label{sec:background-ocr}
 
-Optical character recognition (OCR) converts an image containing written or printed symbols into machine-readable text. A typical OCR route rasterizes a page, detects and recognizes character shapes using one or more language models, and returns text together with optional confidence information. Tesseract is the local OCR engine used by this project. \citationneeded{Tesseract OCR official project documentation and an authoritative OCR overview}
+Optical character recognition (OCR) converts an image containing written or printed symbols into machine-readable text. A typical OCR route rasterizes a page, detects and recognizes character shapes using one or more language models, and returns text together with optional confidence information. Tesseract is the local OCR engine used by this project \cite{Smith2007Tesseract,TesseractDocs}.
 
 OCR output is an estimate rather than a lossless decoding of the source. Blur, skew, compression artifacts, unusual typefaces, low contrast, handwriting, complex columns, and an incorrect language configuration may produce substitutions, missing characters, or an incorrect reading order. Increasing rendering resolution can improve character detail, but it also increases CPU time and memory consumption approximately with the number of pixels. An implementation therefore needs explicit page and pixel bounds.
 
@@ -37,7 +37,7 @@ In this thesis, \emph{local OCR} means that PDF rendering and recognition occur 
 \section{Text Normalization}
 \label{sec:background-normalization}
 
-Extracted text often contains layout artifacts that have little value for retrieval: inconsistent line endings, repeated page headers and footers, isolated page numbers, multiple spaces, or words split with a hyphen at the end of a line. Normalization derives a more consistent searchable representation while preserving the raw extraction for inspection. \citationneeded{text normalization and document preprocessing for information retrieval}
+Extracted text often contains layout artifacts that have little value for retrieval: inconsistent line endings, repeated page headers and footers, isolated page numbers, multiple spaces, or words split with a hyphen at the end of a line. Normalization derives a more consistent searchable representation \cite{Manning2008IR}; in this project, the raw extraction is also preserved for inspection.
 
 Normalization must be conservative. The same character pattern can have different meanings: a line at a page edge may be a repeated running header, or it may be a valid short section heading. A hyphen can indicate an extraction-induced word break, or it can be part of a technical term or identifier. Removing uncertain content can permanently hide evidence from every downstream retrieval stage. The safer engineering principle is therefore to apply bounded rules supported by repeated or positional evidence and to retain occasional boilerplate when certainty is low.
 
@@ -46,7 +46,7 @@ Keeping both raw and normalized representations improves traceability. A develop
 \section{Tokenization}
 \label{sec:background-tokenization}
 
-A language-model tokenizer maps text to a sequence of integer token identifiers. Tokens are not equivalent to words. A frequent word may be one token, an identifier may be several, and punctuation, whitespace, or non-Latin scripts can change the token count. Therefore a fixed character or word limit cannot reliably enforce a model input budget. \citationneeded{cl100k\_base tokenizer documentation}
+A language-model tokenizer maps text to a sequence of integer token identifiers. Tokens are not equivalent to words. A frequent word may be one token, an identifier may be several, and punctuation, whitespace, or non-Latin scripts can change the token count. Therefore a fixed character or word limit cannot reliably enforce a model input budget \cite{MicrosoftMLTokenizers}.
 
 This project uses the \texttt{cl100k\_base} tokenizer for chunk sizes and for the bounded model inputs used in understanding, reranking, document context, and conversation context. Applying the same counting method across these operations makes budgets reproducible. Unicode still needs special handling at slicing boundaries: an implementation must avoid cutting between the two UTF-16 code units of a surrogate pair, even when a token boundary is translated back to a string index.
 
@@ -55,7 +55,7 @@ Token counts serve two related purposes. During ingestion, they prevent a chunk 
 \section{Document Chunking}
 \label{sec:background-chunking}
 
-Chunking divides an ordered document representation into bounded passages suitable for embedding, retrieval, and model context. Without chunking, a long document would produce one broad vector and one expensive context item. The broad vector could obscure a short relevant clause, and retrieving the whole document would consume the context budget. At the other extreme, splitting every sentence independently can remove definitions, headings, and qualifications needed to interpret a result. \citationneeded{document chunking for semantic retrieval}
+Chunking divides an ordered document representation into bounded passages suitable for embedding, retrieval, and model context. Passage-level dense retrieval provides the general setting for this design \cite{Karpukhin2020DPR,Luan2021SparseDense}. Without chunking, a long document would produce one broad vector and one expensive context item. The broad vector could obscure a short relevant clause, and retrieving the whole document would consume the context budget. At the other extreme, splitting every sentence independently can remove definitions, headings, and qualifications needed to interpret a result.
 
 Three design variables interact:
 
@@ -72,7 +72,7 @@ The detailed algorithm in Section~\ref{sec:document-chunking} uses natural line 
 \section{Vector Embeddings}
 \label{sec:background-embeddings}
 
-A text embedding is a fixed-length numerical vector intended to place texts with related meanings near one another in a high-dimensional space. The vector coordinates are not manually assigned topics and generally do not have a useful independent interpretation. Their value lies in comparing complete vectors. A question and a passage can share a semantic neighborhood even when they do not use exactly the same words. \citationneeded{vector text embeddings and the configured embedding model}
+A text embedding is a fixed-length numerical vector intended to place texts with related meanings near one another in a high-dimensional space. The vector coordinates are not manually assigned topics and generally do not have a useful independent interpretation. Their value lies in comparing complete vectors. A question and a passage can share a semantic neighborhood even when they do not use exactly the same words \cite{Karpukhin2020DPR,OpenAIEmbeddingModel}.
 
 For retrieval, each document chunk is embedded once during successful ingestion, and the current question is embedded when a search is performed. The same embedding model and dimension must be used on both sides; comparing representations produced by incompatible models would not define the intended semantic space. Model identity, dimension, content hash, and time are therefore part of embedding validity in the implemented system.
 
@@ -98,21 +98,21 @@ Here, $\mathbf{x}\cdot\mathbf{y}$ is the dot product, and each denominator term 
     \label{eq:cosine-distance}
 \end{equation}
 
-for which a smaller value is preferable. \citationneeded{cosine similarity in the vector-space model}
+for which a smaller value is preferable \cite{Manning2008IR}.
 
 The distance is a ranking signal, not a calibrated probability that a passage answers the question. A value cannot safely be displayed as ``confidence'' without an empirical calibration for the specific model, corpus, and task. The implemented system therefore orders semantic candidates by distance and preserves the value for diagnostics, but it does not apply a universal relevance threshold.
 
 \section{Vector Databases and pgvector}
 \label{sec:background-pgvector}
 
-A vector-capable database stores embeddings in a native numerical type and provides distance operators that can participate in queries. The \emph{pgvector} extension adds this ability to PostgreSQL. It allows relational predicates and vector ordering to be expressed together, so a query can restrict rows by owner, workspace, document status, and embedding validity before returning the nearest chunks. \citationneeded{official PostgreSQL and pgvector documentation}
+A vector-capable database stores embeddings in a native numerical type and provides distance operators that can participate in queries. The \emph{pgvector} extension adds this ability to PostgreSQL. It allows relational predicates and vector ordering to be expressed together, so a query can restrict rows by owner, workspace, document status, and embedding validity before returning the nearest chunks \cite{PgvectorDocs}.
 
 Co-locating relational data and vectors simplifies lifecycle management in this application. A chunk's embedding is stored on the chunk row rather than in an unrelated external identifier map. Deleting the owning document cascades through its chunks, and the same transaction model governs textual and vector artifacts. This does not make all vector searches equally scalable. Exact distance ordering is suitable for the current project scale, whereas much larger collections may require an approximate nearest-neighbour index and an evaluation of its recall/performance trade-off.
 
 \section{Retrieval-Augmented Generation}
 \label{sec:background-rag}
 
-Retrieval-Augmented Generation (RAG) connects information retrieval to language generation. A typical sequence retrieves passages for the current question, serializes a bounded evidence context, and asks a language model to answer using that context. The model is not used as the database: retrieval decides what evidence is made available, while generation turns that evidence into a readable response. \citationneeded{foundational Retrieval-Augmented Generation publication}
+Retrieval-Augmented Generation (RAG) connects information retrieval to language generation. A typical sequence retrieves passages for the current question, serializes a bounded evidence context, and asks a language model to answer using that context. The model is not used as the database: retrieval decides what evidence is made available, while generation turns that evidence into a readable response \cite{Lewis2020RAG}.
 
 RAG can reduce unsupported use of a model's general knowledge, but the acronym does not guarantee correctness. A relevant passage may be missed, a weak passage may be selected, a context may be truncated, or the model may interpret evidence incorrectly. The system must specify no-evidence behavior, keep source provenance, bound context and output, and evaluate both retrieval and the final response.
 
@@ -121,16 +121,16 @@ The implemented design uses the current question to retrieve project-owned chunk
 \section{Lexical and Full-Text Retrieval}
 \label{sec:background-lexical}
 
-Lexical retrieval ranks text through the occurrence and distribution of query terms. Unlike semantic embeddings, it directly rewards shared textual forms. This is valuable for strings whose importance depends on exact spelling: contract identifiers, invoice numbers, monetary values, organization names, and quoted phrases. A lexical method may also fail when the user paraphrases a concept using different vocabulary. \citationneeded{lexical information retrieval and PostgreSQL full-text search}
+Lexical retrieval ranks text through the occurrence and distribution of query terms. Unlike semantic embeddings, it directly rewards shared textual forms. This is valuable for strings whose importance depends on exact spelling: contract identifiers, invoice numbers, monetary values, organization names, and quoted phrases. A lexical method may also fail when the user paraphrases a concept using different vocabulary \cite{Manning2008IR}.
 
-PostgreSQL full-text search represents document text as a \texttt{tsvector} and a query as a \texttt{tsquery}. A GIN index can efficiently locate rows containing query lexemes. The \texttt{simple} configuration is language-neutral: it tokenizes and normalizes without applying an English-only or Romanian-only stemmer. That choice is appropriate for a multilingual collection and for identifiers that should not be transformed according to one language. \citationneeded{official PostgreSQL full-text search configuration and indexing}
+PostgreSQL full-text search represents document text as a \texttt{tsvector} and a query as a \texttt{tsquery}. A GIN index can efficiently locate rows containing query lexemes. The \texttt{simple} configuration is language-neutral: it tokenizes and normalizes without applying an English-only or Romanian-only stemmer. That choice is appropriate for a multilingual collection and for identifiers that should not be transformed according to one language \cite{PostgreSQLFTS}.
 
 User input must not be concatenated into SQL or manually interpreted as trusted query syntax. The current implementation uses parameterized PostgreSQL functions designed for web-style search text and combines an original and deterministically relaxed query. Chapter~\ref{chap:retrieval-grounding} describes that implementation without exposing database internals to the user.
 
 \section{Hybrid Retrieval}
 \label{sec:background-hybrid}
 
-Hybrid retrieval combines channels that express different forms of relevance. Semantic search handles paraphrase and conceptual similarity; lexical search rewards matching terms and identifiers; metadata can express that a candidate belongs to a document whose known type, title, or extracted fields correspond to the query. \citationneeded{hybrid lexical and semantic retrieval}
+Hybrid retrieval combines channels that express different forms of relevance. Semantic search handles paraphrase and conceptual similarity; lexical search rewards matching terms and identifiers; metadata can express that a candidate belongs to a document whose known type, title, or extracted fields correspond to the query. Research comparing sparse and dense text representations provides the general motivation for combining complementary retrieval signals \cite{Luan2021SparseDense}.
 
 Table~\ref{tab:retrieval-channel-comparison} summarizes these roles. No channel is universally superior. A paraphrased policy question may favor the vector channel, an invoice number may favor lexical matching, and a query naming a contract type and identifier may benefit from both content evidence and a metadata boost.
 
@@ -164,14 +164,14 @@ Raw semantic distance and lexical full-text score do not share a meaningful nume
     \label{eq:generic-rrf}
 \end{equation}
 
-where $n$ is the number of ranking channels, $w_i$ is the weight of channel $i$, $k$ is a positive rank constant, and $r_i(c)$ is the one-based rank of candidate $c$ in that channel. If the candidate is absent from a channel, that channel contributes zero. \citationneeded{original Reciprocal Rank Fusion publication}
+where $n$ is the number of ranking channels, $w_i$ is the weight of channel $i$, $k$ is a positive rank constant, and $r_i(c)$ is the one-based rank of candidate $c$ in that channel. If the candidate is absent from a channel, that channel contributes zero \cite{Cormack2009RRF}.
 
 The constant $k$ smooths the difference between adjacent ranks. Channel weights express an engineering preference but do not convert ranks into probabilities. RRF is an established information-retrieval technique; it was not invented for this project. The project contribution is its concrete weighted implementation with semantic, lexical, and bounded document-metadata contributions, deterministic deduplication, and stable tie-breaking. Section~\ref{sec:hybrid-rrf} gives the actual formula and configuration.
 
 \section{Reranking}
 \label{sec:background-reranking}
 
-First-stage retrieval must search a potentially large collection efficiently, often using independent query--candidate scores. A reranker receives a smaller candidate set and can compare each candidate more directly with the complete question. Its objective is to improve precision among candidates that have already passed a recall-oriented stage. \citationneeded{second-stage or model-based information retrieval reranking}
+First-stage retrieval must search a potentially large collection efficiently, often using independent query--candidate scores. A reranker receives a smaller candidate set and can compare each candidate more directly with the complete question. Its objective is to improve precision among candidates that have already passed a recall-oriented stage \cite{Nogueira2019BERT}.
 
 A model-based reranker is not an answer generator. It should return candidate identifiers and bounded relevance grades, not prose or new facts. Local validation is required because structured-output requests can still fail, omit items, repeat identifiers, or return invalid values. The safest availability strategy is fail-open: if reranking cannot provide a valid ordering within its time and token limits, the deterministic hybrid order remains usable.
 
@@ -180,7 +180,7 @@ Reranking introduces a trade-off. It can consider the relationship between a que
 \section{Grounding and Citations}
 \label{sec:background-grounding}
 
-A grounded answer is constrained to supplied evidence instead of being encouraged to fill gaps from general model knowledge. Grounding requires more than telling a model to ``use the documents.'' The application must select an evidence set, state the boundary between instructions and data, define what to do when evidence is insufficient, and preserve a mapping from labels in the model context to authoritative source records. \citationneeded{grounded generation and citation evaluation}
+A grounded answer is constrained to supplied evidence instead of being encouraged to fill gaps from general model knowledge. Grounding requires more than telling a model to ``use the documents.'' The application must select an evidence set, state the boundary between instructions and data, define what to do when evidence is insufficient, and preserve a mapping from labels in the model context to authoritative source records. Verifiability research further distinguishes the presence of citations from whether those citations actually support the associated claims \cite{Liu2023Verifiability}.
 
 In this project, labels such as \texttt{S1} are assigned by the backend when it builds context. The model may cite a supplied label, but it cannot create a corresponding database source. After generation, the backend accepts only identifiers present in its context map and returns source metadata derived from the real chunks. This prevents an invented \texttt{S999} marker from becoming a clickable source.
 
@@ -189,7 +189,7 @@ Identifier validation is necessary but not sufficient for citation correctness. 
 \section{Prompt Injection in Document-Based Systems}
 \label{sec:background-prompt-injection}
 
-Prompt injection occurs when untrusted input contains text that attempts to alter a model's task or reveal protected information. In a document-based assistant, an uploaded file may contain a sentence such as ``ignore previous instructions'' even though the user asked an ordinary factual question. This is an indirect prompt-injection risk because the instruction-like text reaches a model through retrieved data. \citationneeded{authoritative guidance on prompt injection in language-model applications}
+Prompt injection occurs when untrusted input contains text that attempts to alter a model's task or reveal protected information. In a document-based assistant, an uploaded file may contain a sentence such as ``ignore previous instructions'' even though the user asked an ordinary factual question. This is an indirect prompt-injection risk because the instruction-like text reaches a model through retrieved data \cite{Abdelnabi2023IndirectPromptInjection,OWASPPromptInjection}.
 
 No single prompt can prove that prompt injection has been completely solved. A defense-in-depth design reduces risk at several boundaries:
 
@@ -204,4 +204,3 @@ No single prompt can prove that prompt injection has been completely solved. A d
 \end{itemize}
 
 Residual risk remains because model behavior is probabilistic and an apparently ordinary passage can carry adversarial text. The evaluation plan therefore includes malicious synthetic document content, unsupported questions, malformed structured responses, and verification that no real secret is displayed during testing. The project treats prompt injection as a security boundary to test and constrain, not as a problem that can be declared universally eliminated.
-

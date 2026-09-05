@@ -257,11 +257,9 @@ then coordinate use cases such as processing a document, searching a project,
 answering a question, or persisting a conversation. Entity Framework Core
 provides the unit-of-work boundary for domain persistence, while direct,
 parameterized PostgreSQL commands are used where vector and full-text search
-need database-specific operators. The framework mechanisms used for
-controllers, dependency injection, hosted services, and relational mapping
-require supporting technical references.
-\citationneeded{ASP.NET Core controllers, dependency injection, and hosted services}
-\citationneeded{Entity Framework Core and the Npgsql PostgreSQL provider}
+need database-specific operators. These framework roles describe the
+checked-in application structure rather than a general comparison of backend
+frameworks.
 
 Provider adapters form deliberate narrow boundaries around facilities that are
 either external or implementation-specific. Examples include the local file
@@ -302,7 +300,7 @@ of the public API.
 \label{sec:frontend-architecture}
 
 The client is a React single-page application written in TypeScript and built
-with Vite. \citationneeded{React and TypeScript official documentation} A small
+with Vite. A small
 route parser maps browser paths to authentication, workspace dashboard,
 workspace chat, conversation, and document-management views. Navigation uses
 the browser history API and responds to back and forward events. At startup,
@@ -364,9 +362,7 @@ pgvector type, together with model, dimensions, content hash, and generation
 time. A generated PostgreSQL full-text vector for the same chunk supports the
 lexical retrieval channel. This co-location means that relational ownership
 filters, text retrieval, and vector retrieval can operate over the same
-document and chunk identifiers.
-\citationneeded{PostgreSQL generated full-text search columns and generalized inverted indexes}
-\citationneeded{pgvector data types and cosine-distance operators}
+document and chunk identifiers \cite{PostgreSQLFTS,PgvectorDocs}.
 
 Three nullable one-to-one aggregates attach distinct forms of document
 analysis. \emph{DocumentUnderstanding} contains the controlled document type,
@@ -410,7 +406,6 @@ current chunk content.
 
 Authentication uses ASP.NET Core Identity with globally unique user
 identifiers and an application cookie.
-\citationneeded{ASP.NET Core Identity and cookie authentication}
 The cookie is HTTP-only, uses the \emph{Lax} same-site policy, has a sliding
 expiration, and follows the security of the current request; HTTPS redirection
 is enabled by the host. API authentication and access-denied events return JSON
@@ -496,10 +491,8 @@ owned project are eligible. Weighted Reciprocal Rank Fusion deduplicates and
 orders the candidate chunks without directly adding incompatible vector and
 lexical score scales. A bounded model-based reranker may reorder the strongest
 fused candidates; if that stage times out or returns an invalid result, the
-hybrid order remains the fallback.
-\citationneeded{Retrieval-Augmented Generation}
-\citationneeded{Reciprocal Rank Fusion}
-\citationneeded{model-based retrieval reranking}
+hybrid order remains the fallback. These stages apply established RAG, rank
+fusion, and passage-reranking ideas \cite{Lewis2020RAG,Cormack2009RRF,Nogueira2019BERT}.
 
 The final chunks are converted into a token-bounded context. The backend assigns
 source labels such as \texttt{S1} and includes the document name, page range,
@@ -586,8 +579,7 @@ hybrid ranking. Grounded answer generation separates retrieved text from
 instructions, denies document-driven commands or secret disclosure, and
 validates citations after generation. These controls reduce the authority
 available to malicious text, but they do not justify describing arbitrary
-document content as safe.
-\citationneeded{indirect prompt injection and defense-in-depth guidance for language-model applications}
+document content as safe \cite{Abdelnabi2023IndirectPromptInjection,OWASPPromptInjection}.
 
 Resource bounds also serve a security role. The application limits accepted
 file size, processing queue capacity, OCR raster size and page count, chunk

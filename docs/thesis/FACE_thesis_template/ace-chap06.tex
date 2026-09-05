@@ -8,7 +8,7 @@ The user interface is deliberately chat-first, but the chat is not the whole pro
 \section{Technology Stack}
 \label{sec:technology-stack}
 
-Table~\ref{tab:technology-stack} summarizes the principal technologies and their roles. The table describes their use in this application rather than attempting a general comparison of web frameworks or databases. Version-specific claims in the final submission should be checked once more against the locked project files. \citationneeded{official documentation for the implemented technology stack}
+Table~\ref{tab:technology-stack} summarizes the principal technologies and their roles. The table describes their use in this application rather than attempting a general comparison of web frameworks or databases. Version-specific claims in the final submission should be checked once more against the locked project files.
 
 \begin{table}[!htbp]
     \centering
@@ -48,7 +48,7 @@ The application uses the following user-facing hierarchy:
 
 \emph{Project} is the backend and database name for the same object that the interface calls a \emph{Workspace}. This distinction is retained consistently: API routes and entity relationships use a project identifier, whereas labels visible to the user use ``Workspace.'' A workspace is both an organization unit and an authorization boundary. Every document and every conversation belongs to one workspace, and each workspace has one owner. Chapter~\ref{chap:requirements-architecture} describes the enforcement of that boundary in more detail.
 
-Registration and sign-in are handled by ASP.NET Core Identity with a server-managed, HTTP-only application cookie. Protected API calls therefore use the authenticated server session rather than storing a bearer token in browser application state. Failed API authentication returns JSON status information, allowing the React client to present an application error instead of following a page redirect. \citationneeded{ASP.NET Core Identity and cookie authentication}
+Registration and sign-in are handled by ASP.NET Core Identity with a server-managed, HTTP-only application cookie. Protected API calls therefore use the authenticated server session rather than storing a bearer token in browser application state. Failed API authentication returns JSON status information, allowing the React client to present an application error instead of following a page redirect.
 
 Placing documents at workspace level rather than attaching them to a single conversation is a significant product decision. Extraction, normalization, understanding, chunking, and embedding may be relatively expensive. Once a document is ready, the same processed chunks can support many questions and multiple conversations in that workspace. A new chat therefore creates a new conversational context without duplicating the document-processing work. Conversely, switching to another workspace changes both the visible conversations and the retrievable document collection, which reflects the backend security boundary shown in Figure~\ref{fig:domain-model}.
 
@@ -130,6 +130,6 @@ The implementation includes several small interaction mechanisms that reduce unc
 
 Dialogs identify themselves with appropriate dialog roles, labels, and modal semantics. When opened, focus is moved to a useful control; when closed, the previously focused element is restored where implemented. The Escape key closes source, text, chunk, editor, and confirmation dialogs when doing so will not interrupt a protected in-progress action. Buttons that contain only an icon receive accessible labels, tab-like text-view controls state their selection, and global focus-visible styling makes keyboard position apparent.
 
-CSS breakpoints adapt the workspace, modal, and source-card layouts for narrower screens. A \texttt{prefers-reduced-motion} rule disables or reduces non-essential animation, including skeleton motion, for users who request that preference. These are concrete accessibility considerations, but they do not establish full compliance with the Web Content Accessibility Guidelines or substitute for assistive-technology testing. \citationneeded{Web Content Accessibility Guidelines for final accessibility terminology}
+CSS breakpoints adapt the workspace, modal, and source-card layouts for narrower screens. A \texttt{prefers-reduced-motion} rule disables or reduces non-essential animation, including skeleton motion, for users who request that preference. These are concrete accessibility considerations, but they do not establish full compliance with the Web Content Accessibility Guidelines or substitute for assistive-technology testing \cite{WCAG22}.
 
 Taken together, the interface keeps the common path compact while allowing the implementation to remain inspectable. A user can ask a question without learning retrieval terminology; an evaluator can open the relevant document, source, or ranking detail when provenance matters. This balance supports the thesis's central claim of an integrated document assistant: the visible experience is conversational, while the evidence-processing and ownership mechanisms remain explicit and testable underneath it.
