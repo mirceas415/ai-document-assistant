@@ -49,13 +49,14 @@ This file is the authoritative checklist for information that must not be guesse
 - [x] Replace DIA-08 placeholder: weighted RRF fusion concept.
 - [x] Replace DIA-09 placeholder: reranking and fail-open fallback.
 - [x] Replace DIA-10 placeholder: grounded citation/source flow.
-- [ ] Capture UI-02: grounded answer with multiple citations.
-- [ ] Capture UI-03: source-details modal.
-- [ ] Capture UI-04: document management with real processing states.
-- [ ] Capture UI-07: local OCR diagnostics for a synthetic scanned PDF.
-- [ ] Capture UI-10: Advanced Retrieval Details for an exact-identifier query.
-- [ ] Follow `FIGURE_CAPTURE_PLAN.md`; use only synthetic/redistributable documents and a synthetic account.
-- [ ] After inserting real assets, check legibility at printed size, caption consistency, surrounding references, copyright/attribution where applicable, and the generated List of Figures.
+- [x] Capture and integrate UI-02: grounded answer with multiple citations.
+- [x] Capture and integrate UI-03: source-details modal.
+- [x] Capture and integrate UI-04: document management with real processing states.
+- [x] Capture and integrate UI-07: local OCR diagnostics for a scanned PDF.
+- [x] Capture and integrate UI-10: Advanced Retrieval Details for the BlueGrid Q11 query.
+- [x] Confirm the captures use thesis evaluation documents and expose no credentials or unrelated confidential information; the student's own visible account identity is acceptable.
+- [x] After inserting real assets, check screenshot legibility, caption consistency, surrounding references, and privacy-sensitive content.
+- [ ] Verify the five screenshot entries in the generated List of Figures during the final LaTeX build.
 
 ## Final experimental evaluation
 

@@ -61,9 +61,14 @@ After a workspace is selected, the principal screen resembles a conversational d
 
 The screen supports both a newly created empty conversation and a persisted conversation containing messages. Selecting \emph{New Chat} creates a server-side conversation with an initial default title, ready to receive its first question. Once messages exist, they are loaded from persistent storage and shown in sequence. The conversation title is derived from the initial user content within a bounded length and can subsequently be managed through the interface. The current question initiates retrieval each time; merely displaying an earlier message does not turn that message into document evidence.
 
-Figure~\ref{fig:ui-grounded-answer} will show the final chat layout with a synthetic workspace and an answer containing multiple source markers. The screenshot is referenced here because it captures the interaction as a whole: navigation, history, question, answer, source cards, and composer. It must be captured with synthetic evaluation documents so that no private filename or unrelated conversation appears.
+Figure~\ref{fig:ui-grounded-answer} shows the final chat layout in the evaluation workspace with an answer containing multiple source markers. The screenshot captures the interaction as a whole: navigation, history, question, answer, source cards, and composer.
 
-\thesisfigureplaceholder{UI-02}{Grounded answer with multiple citations in the active workspace.}{fig:ui-grounded-answer}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=\textwidth]{img/screenshots/UI-02.png}
+	\caption{Grounded answer with multiple citations in the active workspace.}
+	\label{fig:ui-grounded-answer}
+\end{figure}
 
 While a question is being answered, controls are disabled where a duplicate submission would be confusing, and the interface presents progress feedback rather than leaving a blank region. Initial workspace and conversation loads use skeletons that approximate the final layout. Errors from the API are transformed into concise user-facing messages; long technical response bodies are not displayed as ordinary errors. Successful actions such as an upload or update use transient toast notifications.
 
@@ -74,9 +79,14 @@ The composer and navigation are responsive. At narrower viewport widths, the lay
 
 The document screen is the operational view of the ingestion pipeline. It accepts PDF and DOCX uploads and presents each document's safe original filename, type, size, creation time, and processing state. The principal state answers the first user question---whether the document is still waiting, being processed, ready for retrieval, or failed---without exposing internal exception text. Additional summaries show extracted-section, normalized-character, chunk, and embedding information when it is available.
 
-Figure~\ref{fig:ui-documents} is reserved for a workspace containing several synthetic documents in deliberately different states. The value of this image is not visual decoration; it demonstrates that ingestion is asynchronous and that one workspace may contain ready, processing, and failed items at the same time. The surrounding labels should remain legible in the final crop.
+Figure~\ref{fig:ui-documents} shows two processed PDFs with different technical classifications and OCR outcomes. The mixed document reports one OCR page processed, whereas the scanned document reports three; document-level status and management actions remain visible.
 
-\thesisfigureplaceholder{UI-04}{Document management view showing processing states and document-level actions.}{fig:ui-documents}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=\textwidth]{img/screenshots/UI-04.png}
+	\caption{Document management view showing processing states and document-level actions.}
+	\label{fig:ui-documents}
+\end{figure}
 
 Expanded document information separates four related but independent concerns:
 
@@ -89,9 +99,14 @@ Expanded document information separates four related but independent concerns:
 
 Document Intelligence shows the controlled document type and subtype, primary language, detected title and subject, confidences where present, and validated metadata grouped by kind. Technical Analysis shows the document type, page-type counts, analyzer identity, and expandable page measurements. The OCR panel shows candidate and successful page totals, engine/configuration facts suitable for diagnostics, and per-page status, recognition counts, effective rendering properties, and whether OCR text was used. These panels expose the outputs described in Chapter~\ref{chap:document-ingestion} without requiring a user to read database rows.
 
-Figure~\ref{fig:ui-ocr-diagnostics} focuses on a genuinely scanned synthetic PDF for which at least one page was routed to OCR. It should show both the aggregate OCR status and the page table, because either view alone would omit an important part of the selective design.
+Figure~\ref{fig:ui-ocr-diagnostics} focuses on a scanned PDF routed to local OCR. It shows the scanned technical classification together with the aggregate OCR outcome, three processed pages, the Tesseract engine, the configured languages, and the target DPI.
 
-\thesisfigureplaceholder{UI-07}{Local OCR diagnostics for a synthetic scanned PDF selected by technical analysis.}{fig:ui-ocr-diagnostics}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=\textwidth]{img/screenshots/UI-07.png}
+	\caption{OCR processing information for a scanned PDF.}
+	\label{fig:ui-ocr-diagnostics}
+\end{figure}
 
 The interface also provides raw and normalized text views and a chunk viewer. The two text representations allow an evaluator to check whether normalization removed repeated material without overwriting the extraction record. Section-level provenance identifies native PDF, OCR, or DOCX extraction. The chunk viewer shows the retrieval units and their page/heading information, which is particularly useful when checking the algorithm described in Section~\ref{sec:document-chunking}.
 
@@ -104,9 +119,14 @@ Document deletion is also confirmed. The dialog explains that current extracted 
 
 An assistant message combines readable prose with compact citation markers such as \texttt{[S1]}. Only identifiers returned as validated sources by the backend become interactive citations. The message also includes source cards containing the safe document name, available page range or heading, a bounded excerpt, and a control that opens more detail. This arrangement gives a quick indication of evidence without forcing the full provenance record into the answer text.
 
-Selecting an inline marker or its source card opens the source-details dialog reserved in Figure~\ref{fig:ui-source-details}. The dialog presents the source identifier, document name, chunk/page/heading location, and the stored excerpt. For a current source it may link the snapshot to a live document identifier; for a deleted document it can still show the historical snapshot and communicate that the original is no longer available. The interface does not pretend that the excerpt is a complete copy of the document.
+Selecting an inline marker or its source card opens the source-details dialog shown in Figure~\ref{fig:ui-source-details}. The dialog presents the source identifier, document name, page and chunk location, and the saved authoritative excerpt. For a current source it may link the snapshot to a live document identifier; for a deleted document it can still show the historical snapshot and communicate that the original is no longer available. The interface does not pretend that the excerpt is a complete copy of the document.
 
-\thesisfigureplaceholder{UI-03}{Source-details dialog showing validated document, page, chunk, heading, and excerpt provenance.}{fig:ui-source-details}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=\textwidth]{img/screenshots/UI-03.png}
+	\caption{Source-details dialog showing the authoritative excerpt and its document, page, and chunk provenance.}
+	\label{fig:ui-source-details}
+\end{figure}
 
 This behavior is important to the trust model. A visually formatted marker by itself is not proof. The source object received from the server is the authoritative bridge between \texttt{S1} and a real retrieved chunk. Unknown bracketed text that happens to resemble a citation has no associated source control. The UI therefore reflects, rather than replaces, the backend validation described in Chapter~\ref{chap:retrieval-grounding}.
 
@@ -117,9 +137,14 @@ The chat screen contains an expandable advanced retrieval panel. Its main audien
 
 For each result, the current diagnostic contract can expose vector rank and distance, lexical rank and score, metadata document rank and matched metadata signals, the fused hybrid rank and score, the model rerank rank and relevance score when reranking was applied, and the final rank returned to the caller. It also states whether reranking was applied or whether a fallback retained the hybrid order. These values let an evaluator distinguish four different events: a chunk entering through semantic similarity, entering through lexical matching, receiving a document-level metadata contribution, and changing position during reranking.
 
-Figure~\ref{fig:ui-retrieval-details} should use an exact-identifier question against synthetic documents so that both lexical and metadata columns are meaningful. A screenshot where every result entered through the same channel would be technically valid but would poorly demonstrate the purpose of the panel.
+Figure~\ref{fig:ui-retrieval-details} shows the BlueGrid evaluation query and one concrete retrieval outcome. The relevant evidence from \texttt{03\_bluegrid\_support\_agreement.pdf} is at vector rank~2 and moves to hybrid rank~1, with reranked and final rank~1. This single case illustrates an inspectable rank improvement rather than an aggregate comparison.
 
-\thesisfigureplaceholder{UI-10}{Advanced Retrieval Details showing vector, lexical, metadata, hybrid, reranked, and final positions.}{fig:ui-retrieval-details}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=\textwidth]{img/screenshots/UI-10.png}
+	\caption{Advanced retrieval diagnostics for the BlueGrid case, showing vector, hybrid, reranked, and final positions.}
+	\label{fig:ui-retrieval-details}
+\end{figure}
 
 The diagnostics are intentionally read-only. They do not allow a browser user to change RRF weights, replace model instructions, or submit a different document owner identifier. Configuration remains a server responsibility. In the final evaluation, the same conceptual fields help explain individual ranking successes and failures, but screenshots must not be mistaken for aggregate experimental results.
 
