@@ -1,15 +1,20 @@
-flowchart TD
-    A[Top hybrid candidates] --> B[Assign opaque candidate IDs]
-    B --> C[Add bounded filename, location, signals, and content]
-    C --> D{Request fits total token budget?}
-    D -- No --> E[Reduce/truncate bounded candidate content]
-    E --> D
-    D -- Yes --> F[Structured model relevance ranking]
-    F --> G{Locally valid IDs, scores, and uniqueness?}
-    G -- Yes --> H[Apply reranked order; append omitted candidates stably]
-    G -- No --> I[Fail open to hybrid order]
-    F -. timeout/provider failure .-> I
-    J[Skip when disabled, unnecessary, or too few bounded candidates] -.-> I
-    H --> K[Final Top-K]
-    I --> K
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial, sans-serif","fontSize":"16px","primaryColor":"#f3f4f6","primaryTextColor":"#111111","primaryBorderColor":"#4b5563","lineColor":"#4b5563","secondaryColor":"#ffffff","tertiaryColor":"#e5e7eb","clusterBkg":"#fafafa","clusterBorder":"#6b7280"},"flowchart":{"curve":"linear","nodeSpacing":28,"rankSpacing":38,"htmlLabels":true}}}%%
+flowchart TB
+    Hybrid[Hybrid Candidate Ranking] --> Bounded[Bounded Candidate Set<br/>with Opaque IDs]
+    Bounded --> Reranker[Model Reranker]
+    Reranker --> Structured[Structured Relevance Output]
+    Structured --> Validation{Local Validation<br/>passes?}
 
+    Validation -- Yes --> Reordered[Reranked Order<br/>with Omitted Candidates Appended]
+    Reordered --> TopK[Final Top-K]
+
+    Validation -- No --> Fallback[Preserve Original Hybrid Order]
+    Reranker -. timeout / provider failure .-> Fallback
+    Fallback --> TopK
+
+    classDef stage fill:#e5e7eb,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef external fill:#ffffff,stroke:#374151,stroke-width:1.4px,stroke-dasharray:6 4,color:#111111;
+    classDef decision fill:#fafafa,stroke:#374151,stroke-width:1.4px,color:#111111;
+    class Hybrid,Bounded,Structured,Reordered,Fallback,TopK stage;
+    class Reranker external;
+    class Validation decision;

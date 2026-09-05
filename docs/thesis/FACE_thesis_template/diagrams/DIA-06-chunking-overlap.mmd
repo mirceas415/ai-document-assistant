@@ -1,16 +1,33 @@
-flowchart LR
-    S1[Section 0\npage 1\nheading A] --> T[Ordered normalized text units]
-    S2[Section 1\npage 2\nheading A] --> T
-    S3[Section 2\npage 3\nheading B] --> T
-    T --> C1[Chunk 0\ntoward target budget]
-    C1 --> O[Bounded trailing overlap]
-    O --> C2[Chunk 1\nnew content + overlap]
-    C2 --> C3[Chunk 2]
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial, sans-serif","fontSize":"16px","primaryColor":"#f3f4f6","primaryTextColor":"#111111","primaryBorderColor":"#4b5563","lineColor":"#4b5563","secondaryColor":"#ffffff","tertiaryColor":"#e5e7eb","clusterBkg":"#fafafa","clusterBorder":"#6b7280"},"flowchart":{"curve":"linear","nodeSpacing":28,"rankSpacing":42,"htmlLabels":true,"subGraphTitleMargin":{"top":8,"bottom":18}}}}%%
+flowchart TB
+    Text[Normalized Text / Token Sequence]
 
-    P1[Provenance: source-section range, page range, heading] -. attached .-> C1
-    P2[Provenance recomputed from included units] -. attached .-> C2
-    M[Hard token maximum is never exceeded]:::rule -. constrains .-> C1
-    M -. constrains .-> C2
-    M -. constrains .-> C3
-    classDef rule fill:#fff8dc,stroke:#8a6d1d,color:#111;
+    subgraph Chunk1[Chunk 1]
+        direction LR
+        C1New[New Content] --> C1Overlap[Trailing Overlap A]
+    end
 
+    subgraph Chunk2[Chunk 2]
+        direction LR
+        C2Overlap[Copied Overlap A] --> C2New[New Content]
+        C2New --> C2Trailing[Trailing Overlap B]
+    end
+
+    subgraph Chunk3[Chunk 3]
+        direction LR
+        C3Overlap[Copied Overlap B] --> C3New[New Content]
+    end
+
+    Text --> C1New
+    C1Overlap -.-> C2Overlap
+    C2Trailing -.-> C3Overlap
+
+    Limits[Current Configuration<br/>target = 700 tokens<br/><i>preferred, not exact</i><br/>hard maximum = 900 tokens<br/>overlap &le; 100 tokens] -. constrains .-> C2New
+    Provenance[Each chunk retains page, heading,<br/>and source-section provenance] -. attached .-> C2New
+
+    classDef content fill:#e5e7eb,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef overlap fill:#ffffff,stroke:#374151,stroke-width:1.4px,stroke-dasharray:5 3,color:#111111;
+    classDef note fill:#fafafa,stroke:#6b7280,stroke-dasharray:5 3,color:#111111;
+    class Text,C1New,C2New,C3New content;
+    class C1Overlap,C2Overlap,C2Trailing,C3Overlap overlap;
+    class Limits,Provenance note;

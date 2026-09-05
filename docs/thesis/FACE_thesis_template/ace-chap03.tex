@@ -224,7 +224,12 @@ provider supplies embeddings, structured document analysis, reranking, and
 grounded answer generation. PDF inspection, PDF rendering, OCR, normalization,
 and chunking remain local to the server.
 
-\thesisfigureplaceholder{DIA-01}{High-level architecture of the AI Document Assistant, showing the browser, modular backend, persistence, local processing, and configured model-provider boundary.}{fig:system-architecture}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=0.95\textwidth]{img/diagrams/DIA-01-high-level-architecture.pdf}
+	\caption{High-level architecture of the AI Document Assistant.}
+	\label{fig:system-architecture}
+\end{figure}
 
 Two end-to-end flows cross these areas. On the document side, an authenticated
 upload is validated and stored, then a queued job converts it into an ordered,
@@ -333,7 +338,12 @@ The domain model separates user intent, source material, derived retrieval
 artifacts, and conversation records. Figure~\ref{fig:domain-model} shows the
 principal relationships without reproducing every database field.
 
-\thesisfigureplaceholder{DIA-02}{Compact domain model for workspace ownership, document-processing artifacts, and persistent conversations.}{fig:domain-model}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=0.95\textwidth]{img/diagrams/DIA-02-domain-workspace-model.pdf}
+	\caption{Conceptual workspace and document-reuse domain model.}
+	\label{fig:domain-model}
+\end{figure}
 
 An \emph{ApplicationUser} owns zero or more \emph{Project} records. Each
 Project is one user-facing workspace and is the common parent of its

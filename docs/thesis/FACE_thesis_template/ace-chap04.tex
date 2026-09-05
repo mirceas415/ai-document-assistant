@@ -78,11 +78,16 @@ non-durable. Pending items can be lost when the server stops, while persisted
 \emph{Uploaded} or \emph{Failed} records can be queued again. A durable broker
 and multi-worker coordination are future work.
 
-Figure~\ref{fig:ingestion-pipeline} reserves the complete flow diagram. It
-shows that validation and storage lead into one connected processing path,
-rather than a set of unrelated document utilities.
+Figure~\ref{fig:ingestion-pipeline} shows the complete flow from validation
+and storage to one connected processing path, rather than a set of unrelated
+document utilities.
 
-\thesisfigureplaceholder{DIA-03}{Complete document-ingestion pipeline from validated upload to searchable persisted knowledge.}{fig:ingestion-pipeline}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=0.92\textwidth]{img/diagrams/DIA-03-ingestion-pipeline.pdf}
+	\caption{Document ingestion and enrichment pipeline.}
+	\label{fig:ingestion-pipeline}
+\end{figure}
 
 \section{PDF and DOCX Text Extraction}
 \label{sec:text-extraction}
@@ -353,10 +358,15 @@ original-file SHA--256 hash and analyzer version
 \texttt{pdf-technical-analysis-v1} to match; a forced rebuild bypasses reuse.
 Failure is recorded separately and native extraction continues.
 
-The intended flow of these decisions is shown by the reserved
+The intended flow of these decisions is shown in
 Figure~\ref{fig:pdf-classification-flow}.
 
-\thesisfigureplaceholder{DIA-04}{Decision flow for deterministic page-level and document-level technical PDF classification.}{fig:pdf-classification-flow}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=0.90\textwidth,height=0.82\textheight,keepaspectratio]{img/diagrams/DIA-04-pdf-page-classification.pdf}
+	\caption{Deterministic page- and document-level technical PDF classification flow.}
+	\label{fig:pdf-classification-flow}
+\end{figure}
 
 \section{Selective Local OCR}
 \label{sec:selective-ocr}
@@ -483,10 +493,15 @@ The TesseractOCR wrapper dependency is version 5.5.2, while the service has a
 Because package and native-engine versions differ conceptually, the thesis says
 Tesseract~5 through the wrapper until the submission runtime is verified.
 
-Figure~\ref{fig:selective-ocr-flow} will visualize the page-level route and the
+Figure~\ref{fig:selective-ocr-flow} visualizes the page-level route and the
 return to the unified extraction sequence.
 
-\thesisfigureplaceholder{DIA-05}{Selective OCR flow from Scanned-page diagnostics through bounded PDFium rendering and local Tesseract recognition.}{fig:selective-ocr-flow}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=0.90\textwidth,height=0.78\textheight,keepaspectratio]{img/diagrams/DIA-05-selective-ocr-flow.pdf}
+	\caption{Page-level selective OCR workflow.}
+	\label{fig:selective-ocr-flow}
+\end{figure}
 
 \section{Document Understanding}
 \label{sec:document-understanding}
@@ -804,10 +819,15 @@ are replaced. Romanian and English text, diacritics, and supplementary Unicode
 characters are preserved. Determinism supports testing, reproducible retrieval
 experiments, and reliable invalidation of downstream embeddings.
 
-Figure~\ref{fig:chunk-overlap} will show two adjacent chunks, their shared
-suffix, and the page/source metadata that accompanies both representations.
+Figure~\ref{fig:chunk-overlap} shows three example chunks, their shared
+suffixes, and the page/source metadata that accompanies each representation.
 
-\thesisfigureplaceholder{DIA-06}{Conceptual token-bounded chunks with non-recursive overlap and preserved page, heading, and source-section provenance.}{fig:chunk-overlap}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=0.93\textwidth]{img/diagrams/DIA-06-chunking-overlap.pdf}
+	\caption{Token-aware chunking with bounded overlap and provenance.}
+	\label{fig:chunk-overlap}
+\end{figure}
 
 \section{Embedding Generation}
 \label{sec:embedding-generation}

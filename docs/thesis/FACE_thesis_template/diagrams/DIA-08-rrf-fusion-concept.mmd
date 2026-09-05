@@ -1,12 +1,20 @@
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial, sans-serif","fontSize":"16px","primaryColor":"#f3f4f6","primaryTextColor":"#111111","primaryBorderColor":"#4b5563","lineColor":"#4b5563","secondaryColor":"#ffffff","tertiaryColor":"#e5e7eb","clusterBkg":"#fafafa","clusterBorder":"#6b7280"},"flowchart":{"curve":"linear","nodeSpacing":32,"rankSpacing":42,"htmlLabels":true}}}%%
 flowchart TB
-    V[Vector ranking\nC1, C3, C2, ...] --> S[Rank contributions\nw_v / (K + rank)]
-    L[Lexical ranking\nC2, C1, C4, ...] --> S
-    M[Metadata document ranking\nD2, D1, ...] --> S
-    S --> X[Sum contributions per unique chunk]
-    X --> T[Stable descending fused score]
-    T --> O[Hybrid ordering]
+    Vector[Vector Ranking<br/>1. C1<br/>2. C3<br/>3. C2]
+    Lexical[Lexical Ranking<br/>1. C2<br/>2. C1<br/>3. C4]
+    Metadata[Metadata Document Ranking<br/>1. D2<br/>2. D1]
 
-    N[Metadata changes priority only; chunk content remains the answer evidence]:::note
-    N -. constraint .-> X
-    classDef note fill:#fff8dc,stroke:#8a6d1d,color:#111;
+    Vector --> Fusion[Weighted RRF<br/><i>rank-based contributions</i>]
+    Lexical --> Fusion
+    Metadata -. weaker document signal .-> Fusion
 
+    Fusion --> Unified[Unified Ranking<br/>1. C1<br/>2. C2<br/>3. C3<br/>4. C4]
+
+    Note[Metadata changes priority only;<br/>answer evidence still comes from retrieved chunks] -. constraint .-> Fusion
+
+    classDef list fill:#ffffff,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef stage fill:#e5e7eb,stroke:#374151,stroke-width:1.5px,color:#111111;
+    classDef note fill:#fafafa,stroke:#6b7280,stroke-dasharray:5 3,color:#111111;
+    class Vector,Lexical,Metadata list;
+    class Fusion,Unified stage;
+    class Note note;

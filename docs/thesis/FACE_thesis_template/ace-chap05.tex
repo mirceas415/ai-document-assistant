@@ -86,7 +86,12 @@ The three retrieval channels produce different kinds of numerical values. Cosine
 
 Figure~\ref{fig:hybrid-retrieval-pipeline} shows the complete first-stage path. Semantic and lexical searches supply chunk candidates, while metadata supplies document ranks that can boost only those existing candidates. The fused list is bounded before it crosses the reranking provider boundary.
 
-\thesisfigureplaceholder{DIA-07}{Hybrid retrieval pipeline combining semantic chunks, lexical chunks, and soft document-metadata signals before reranking.}{fig:hybrid-retrieval-pipeline}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=0.92\textwidth]{img/diagrams/DIA-07-hybrid-retrieval-pipeline.pdf}
+	\caption{Hybrid retrieval and candidate-fusion pipeline.}
+	\label{fig:hybrid-retrieval-pipeline}
+\end{figure}
 
 For a chunk $c$, the implemented weighted score is
 
@@ -161,9 +166,14 @@ Before scoring, each input list is converted to a unique chunk-to-rank map; the 
 	\end{algorithmic}
 \end{algorithm}
 
-Figure~\ref{fig:rrf-fusion-concept} will visualize the same idea as contributions entering one rank-based score. It is deliberately a conceptual diagram rather than a graph of measured project quality.
+Figure~\ref{fig:rrf-fusion-concept} visualizes the same idea as contributions entering one rank-based score. It is deliberately a conceptual diagram rather than a graph of measured project quality.
 
-\thesisfigureplaceholder{DIA-08}{Weighted Reciprocal Rank Fusion contributions from vector rank, lexical rank, and an optional weaker metadata-document rank.}{fig:rrf-fusion-concept}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=0.90\textwidth]{img/diagrams/DIA-08-rrf-fusion-concept.pdf}
+	\caption{Conceptual weighted Reciprocal Rank Fusion of vector, lexical, and metadata rankings.}
+	\label{fig:rrf-fusion-concept}
+\end{figure}
 
 Table~\ref{tab:rrf-worked-example} gives a small fictional example using the actual default formula. It is explanatory and is not an evaluation result. Chunk A is strongest semantically but fifth lexically and has no metadata match. Chunk B is first lexically, fourth semantically, and belongs to the first metadata-ranked document with an exact identifier match.
 
@@ -271,7 +281,12 @@ Reranking is deliberately skipped when disabled, when zero or one candidate exis
 
 Figure~\ref{fig:reranking-fallback} emphasizes this two-outcome design.
 
-\thesisfigureplaceholder{DIA-09}{Bounded model reranking with structured validation and fail-open return to the hybrid order.}{fig:reranking-fallback}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=0.75\textwidth,height=0.80\textheight,keepaspectratio]{img/diagrams/DIA-09-reranking-pipeline.pdf}
+	\caption{Model-based reranking with fail-open behavior.}
+	\label{fig:reranking-fallback}
+\end{figure}
 
 The design has an explicit latency and cost trade-off. Candidate generation requires one query embedding and database retrieval; reranking adds a second model request before answer generation. Larger candidate sets may improve the chance of presenting useful passages to the reranker, but consume more tokens and response time. The selected bounds make that cost predictable for the current system. Whether the additional request produces a measurable ranking benefit is an empirical question reserved for Chapter~\ref{chap:testing-evaluation}.
 
@@ -308,7 +323,12 @@ After generation, the backend extracts citation markers matching \texttt{[S1]}, 
 
 Figure~\ref{fig:grounded-citation-flow} shows the division of responsibility, and Table~\ref{tab:citation-authority} makes the trust boundary explicit.
 
-\thesisfigureplaceholder{DIA-10}{Grounded answer and citation flow from backend-assigned source identifiers to validated source snapshots.}{fig:grounded-citation-flow}
+\begin{figure}[!htbp]
+	\centering
+	\includegraphics[width=0.70\textwidth,height=0.82\textheight,keepaspectratio]{img/diagrams/DIA-10-grounded-citation-flow.pdf}
+	\caption{Backend-controlled source and citation flow.}
+	\label{fig:grounded-citation-flow}
+\end{figure}
 
 \begin{table}[!htbp]
 	\centering

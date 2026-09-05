@@ -1,22 +1,41 @@
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial, sans-serif","fontSize":"16px","primaryColor":"#f3f4f6","primaryTextColor":"#111111","primaryBorderColor":"#4b5563","lineColor":"#4b5563","secondaryColor":"#ffffff","tertiaryColor":"#e5e7eb","clusterBkg":"#fafafa","clusterBorder":"#6b7280"},"flowchart":{"curve":"linear","nodeSpacing":28,"rankSpacing":38,"htmlLabels":true}}}%%
 flowchart LR
-    A[Authenticated upload] --> B[Validate type, signature, size, ownership]
-    B --> C[Store under generated local name]
-    C --> D[Enqueue document ID]
-    D --> E[Technical PDF analysis]
-    E --> F[Native PDF or DOCX extraction]
-    E --> G[Select scanned PDF pages]
-    G --> H[Local OCR]
-    F --> I[Ordered raw sections]
-    H --> I
-    I --> J[Conservative normalization]
-    J --> K[Document Understanding]
-    K --> L[Token-aware chunking]
-    J --> L
-    L --> M[Batch embedding generation]
-    M --> N[Transactional section, chunk, vector persistence]
-    N --> O[Document Ready]
+    subgraph Intake[Document Intake]
+        direction TB
+        Upload[Document Upload] --> Store[Validation / Storage]
+        Store --> Queue[Queued Processing]
+    end
 
-    E -. independent failure .-> F
-    K -. non-fatal failure .-> L
-    H -. partial OCR still yields usable pages .-> I
+    subgraph Extraction[Local Format Processing]
+        direction TB
+        Format{Document format?}
+        Format -- PDF --> Analysis[Technical PDF Analysis]
+        Analysis --> NativePdf[Native PDF Extraction<br/><i>PdfPig</i>]
+        NativePdf --> Scanned{Any page classified<br/>Scanned?}
+        Scanned -- Yes --> Render[PDF Rendering<br/><i>PDFium, local</i>]
+        Render --> OCR[OCR<br/><i>Tesseract, local</i>]
+        OCR --> Merge[Page-aware Merge<br/>in source order]
+        Scanned -- No --> Merge
 
+        Format -- DOCX --> NativeDocx[Native DOCX Extraction<br/><i>OpenXML</i>]
+        NativeDocx --> Merge
+    end
+
+    subgraph Searchable[Enrichment and Persistence]
+        direction TB
+        Normalize[Normalization]
+        Normalize --> Understanding[Document Understanding<br/><i>non-blocking enrichment</i>]
+        Understanding --> Chunking[Chunking]
+        Chunking --> Embeddings[Embedding Generation]
+        Embeddings --> Persist[(Persisted Searchable Representation<br/>PostgreSQL + pgvector)]
+    end
+
+    Intake --> Extraction
+    Extraction --> Searchable
+
+    classDef stage fill:#e5e7eb,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef local fill:#ffffff,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef decision fill:#fafafa,stroke:#374151,stroke-width:1.4px,color:#111111;
+    class Upload,Store,Queue,Analysis,Merge,Normalize,Understanding,Chunking,Embeddings stage;
+    class NativePdf,NativeDocx,Render,OCR local;
+    class Format,Scanned decision;

@@ -1,18 +1,32 @@
-erDiagram
-    APPLICATION_USER ||--o{ PROJECT : owns
-    PROJECT ||--o{ DOCUMENT : contains
-    PROJECT ||--o{ CONVERSATION : contains
-    DOCUMENT ||--o{ DOCUMENT_TEXT_SECTION : yields
-    DOCUMENT ||--o{ DOCUMENT_CHUNK : yields
-    DOCUMENT ||--o| DOCUMENT_UNDERSTANDING : has
-    DOCUMENT_UNDERSTANDING ||--o{ DOCUMENT_METADATA_ENTRY : contains
-    DOCUMENT ||--o| DOCUMENT_TECHNICAL_ANALYSIS : has
-    DOCUMENT_TECHNICAL_ANALYSIS ||--o{ DOCUMENT_PAGE_TECHNICAL_ANALYSIS : contains
-    DOCUMENT ||--o| DOCUMENT_OCR_ANALYSIS : has
-    DOCUMENT_OCR_ANALYSIS ||--o{ DOCUMENT_PAGE_OCR_RESULT : contains
-    CONVERSATION ||--o{ CONVERSATION_MESSAGE : contains
-    CONVERSATION_MESSAGE ||--o{ CONVERSATION_MESSAGE_SOURCE : snapshots
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial, sans-serif","fontSize":"16px","primaryColor":"#f3f4f6","primaryTextColor":"#111111","primaryBorderColor":"#4b5563","lineColor":"#4b5563","secondaryColor":"#ffffff","tertiaryColor":"#e5e7eb","clusterBkg":"#fafafa","clusterBorder":"#6b7280"},"flowchart":{"curve":"linear","nodeSpacing":28,"rankSpacing":40,"htmlLabels":true}}}%%
+flowchart TB
+    User([User]) -->|owns 0..many| Workspace[Workspace<br/><i>backend domain: Project</i>]
+    Workspace -->|contains 0..many| Document[Document]
+    Workspace -->|contains 0..many| Conversation[Conversation]
 
-%% The UI calls PROJECT a Workspace. Source snapshots deliberately retain scalar
-%% document/chunk identifiers rather than foreign keys to live document rows.
+    subgraph DocumentArtifacts[Reusable Document Representation]
+        direction TB
+        Sections[Text Sections]
+        Chunks[Chunks]
+        Understanding[Understanding / Metadata]
+        Technical[Technical Analysis]
+        OCR[OCR Analysis]
+    end
 
+    Document --> Sections
+    Document --> Chunks
+    Document --> Understanding
+    Document --> Technical
+    Document --> OCR
+
+    Conversation -->|contains ordered| Messages[Messages]
+    Messages -->|assistant messages snapshot| Sources[Message Sources]
+
+    Reuse[Documents belong to the Workspace<br/>and can support multiple Conversations] -. shared scope .-> Workspace
+
+    classDef primary fill:#e5e7eb,stroke:#374151,stroke-width:1.5px,color:#111111;
+    classDef artifact fill:#ffffff,stroke:#4b5563,stroke-width:1.2px,color:#111111;
+    classDef note fill:#fafafa,stroke:#6b7280,stroke-dasharray:5 3,color:#111111;
+    class Workspace,Document,Conversation,Messages,Sources primary;
+    class Sections,Chunks,Understanding,Technical,OCR artifact;
+    class Reuse note;

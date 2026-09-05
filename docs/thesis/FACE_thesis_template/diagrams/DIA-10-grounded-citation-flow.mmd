@@ -1,17 +1,23 @@
-sequenceDiagram
-    participant R as Retrieval service
-    participant B as Context builder
-    participant M as Answer model
-    participant V as Backend validator
-    participant C as Conversation store
-    participant U as User interface
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial, sans-serif","fontSize":"16px","primaryColor":"#f3f4f6","primaryTextColor":"#111111","primaryBorderColor":"#4b5563","lineColor":"#4b5563","secondaryColor":"#ffffff","tertiaryColor":"#e5e7eb","clusterBkg":"#fafafa","clusterBorder":"#6b7280"},"flowchart":{"curve":"linear","nodeSpacing":28,"rankSpacing":38,"htmlLabels":true}}}%%
+flowchart TB
+    Chunk[Retrieved Chunk<br/>with Provenance] --> Map[Backend Assigns S1, S2, ...<br/>and Keeps the Source Map]
+    Map --> Context["Evidence Context Contains<br/>[S1] + Authoritative Chunk Text"]
+    Context --> Model["Answer Model May Reference [S1]"]
+    Model --> Validate[Backend Validates Every Citation<br/>Against Its Source Map]
 
-    R->>B: Final evidence chunks with provenance
-    B->>B: Assign S1, S2, ... and enforce context budget
-    B->>M: Untrusted labelled context + question
-    M-->>V: Answer text containing candidate markers such as [S1]
-    V->>V: Keep only identifiers assigned to supplied chunks
-    V->>C: Persist answer and bounded source snapshots
-    C-->>U: Answer plus authoritative source metadata
-    U->>U: Open source details by validated identifier
+    Validate -->|known source ID| Valid[Validated Citation<br/>Mapped to Retrieved Evidence]
+    Validate -->|unknown source ID| Invalid[Remove Marker from Answer<br/>Do Not Accept It as a Source]
 
+    Valid --> Snapshot[Stored ConversationMessageSource<br/>Snapshot]
+    Snapshot --> UI[UI Source Details]
+
+    Authority[The model can reference supplied IDs;<br/>it cannot create authoritative sources] -. trust boundary .-> Model
+
+    classDef stage fill:#e5e7eb,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef external fill:#ffffff,stroke:#374151,stroke-width:1.4px,stroke-dasharray:6 4,color:#111111;
+    classDef rejected fill:#fafafa,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef note fill:#fafafa,stroke:#6b7280,stroke-dasharray:5 3,color:#111111;
+    class Chunk,Map,Context,Validate,Valid,Snapshot,UI stage;
+    class Model external;
+    class Invalid rejected;
+    class Authority note;

@@ -45,12 +45,37 @@ pdflatex -interaction=nonstopmode -file-line-error ace-thesis.tex
 
 The current first draft has no verified bibliography entries and deliberately contains visible citation-needed markers. BibTeX may report that there are no citations until the dedicated verified bibliography pass is complete. For a temporary prose-only preview, omit the BibTeX command, run MakeIndex after the first LaTeX pass, and run pdfLaTeX twice more. The final submitted build must include the verified bibliography pass.
 
-## Inserting graphical assets before the final build
+## Rerendering Mermaid diagrams
 
-1. Render each `diagrams/DIA-*.mmd` file to PDF or high-resolution PNG using a consistent Mermaid theme.
+The ten committed conceptual figures are vector PDFs under `img/diagrams/`. Mermaid CLI is not an application dependency. The diagrams in this draft were rendered with Mermaid CLI 11.17.0 through a temporary `npx` invocation and the existing local Chrome installation; this does not modify either application package manifest.
+
+From the thesis-template directory, rerender one diagram with:
+
+```powershell
+$env:PUPPETEER_SKIP_DOWNLOAD = 'true'
+$env:PUPPETEER_EXECUTABLE_PATH = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+npx.cmd --yes @mermaid-js/mermaid-cli@11.17.0 -i 'diagrams/DIA-01-high-level-architecture.mmd' -o 'img/diagrams/DIA-01-high-level-architecture.pdf' -e pdf -b white --pdfFit
+```
+
+Rerender all conceptual diagrams with:
+
+```powershell
+$env:PUPPETEER_SKIP_DOWNLOAD = 'true'
+$env:PUPPETEER_EXECUTABLE_PATH = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+Get-ChildItem -LiteralPath 'diagrams' -Filter 'DIA-*.mmd' | Sort-Object Name | ForEach-Object {
+    $outputName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name) + '.pdf'
+    npx.cmd --yes @mermaid-js/mermaid-cli@11.17.0 -i $_.FullName -o (Join-Path 'img/diagrams' $outputName) -e pdf -b white --pdfFit
+}
+```
+
+If `mmdc` is already installed, it can replace the `npx.cmd --yes @mermaid-js/mermaid-cli@11.17.0` prefix. Adjust `PUPPETEER_EXECUTABLE_PATH` if Chrome is installed elsewhere.
+
+## Inserting remaining graphical assets before the final build
+
+1. Rerender a conceptual PDF only when its Mermaid source changes.
 2. Capture the five real application screenshots according to `FIGURE_CAPTURE_PLAN.md` and place them under `img/screenshots/`.
 3. Create the three evaluation plots only after verified measurements exist.
-4. Replace each `\thesisfigureplaceholder` invocation with a standard `figure` containing `\includegraphics`, preserving the existing `\caption` text and `\label` value.
+4. Replace only the corresponding remaining UI or evaluation `\thesisfigureplaceholder` invocation after its real asset exists, preserving its `\label`.
 5. Rebuild and inspect the Table of Contents, List of Figures, List of Tables, and List of Algorithms.
 
 ## Final log checks
@@ -69,4 +94,3 @@ Inspect `ace-thesis.log` and the console output for:
 The faculty class defines checkbox commands using `\checkmark` and `\square` but does not explicitly load `amssymb`. The supplied reference PDF proves that its original environment compiled, but a different distribution may report undefined symbols. If that occurs, record the exact error in `FACT_CHECK_AND_TODO.md` and prefer a small document-preamble compatibility import such as `\usepackage{amssymb}` over modifying `ace-thesis.cls`.
 
 After the final build, verify visually that preliminary pages use lower-case Roman numerals and Chapter 1 restarts with Arabic page 1, and that every placeholder has either been intentionally retained for review or replaced with confirmed information.
-

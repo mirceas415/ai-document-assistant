@@ -1,20 +1,31 @@
-flowchart LR
-    Q[Current user question] --> A[Deterministic query analysis]
-    Q --> E[One query embedding]
-    E --> V[Vector candidate search]
-    A --> L[Lexical candidate search]
-    A --> M[Metadata document search]
-    V --> F[Weighted reciprocal-rank fusion]
-    L --> F
-    M --> F
-    F --> D[Deduplicated hybrid candidates]
-    D --> R[Bounded model reranking]
-    R --> K[Final Top-K evidence chunks]
-    R -. failure or invalid output .-> H[Retain hybrid ordering]
-    H --> K
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial, sans-serif","fontSize":"16px","primaryColor":"#f3f4f6","primaryTextColor":"#111111","primaryBorderColor":"#4b5563","lineColor":"#4b5563","secondaryColor":"#ffffff","tertiaryColor":"#e5e7eb","clusterBkg":"#fafafa","clusterBorder":"#6b7280"},"flowchart":{"curve":"linear","nodeSpacing":28,"rankSpacing":38,"htmlLabels":true}}}%%
+flowchart TB
+    Question[User Question]
 
-    B[Owner + workspace + Ready + current embedding filters]:::guard -. applies .-> V
-    B -. applies .-> L
-    B -. applies .-> M
-    classDef guard fill:#eef7ee,stroke:#31733b,color:#111;
+    Question --> QueryEmbedding[Query Embedding]
+    QueryEmbedding --> Vector[Vector Retrieval]
 
+    Question --> LexicalQuery[Lexical Query Processing]
+    LexicalQuery --> Lexical[PostgreSQL Full-Text Retrieval]
+
+    Question --> MetadataMatch[Metadata Matching]
+    MetadataMatch --> Metadata[Metadata Signals<br/><i>ranking signal only</i>]
+
+    Vector --> Fusion[Weighted Reciprocal Rank Fusion]
+    Lexical --> Fusion
+    Metadata -. boosts only existing<br/>content candidates .-> Fusion
+
+    Fusion --> Ranking[Deduplicated Candidate Ranking]
+    Ranking --> Rerank[Model-based Reranking]
+    Rerank --> Evidence[Evidence Context]
+
+    Guard[Owner + Workspace + Ready-document filters] -. applies .-> Vector
+    Guard -. applies .-> Lexical
+    Guard -. applies .-> MetadataMatch
+
+    classDef stage fill:#e5e7eb,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef channel fill:#ffffff,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef note fill:#fafafa,stroke:#6b7280,stroke-dasharray:5 3,color:#111111;
+    class Question,Fusion,Ranking,Rerank,Evidence stage;
+    class QueryEmbedding,Vector,LexicalQuery,Lexical,MetadataMatch,Metadata channel;
+    class Guard note;

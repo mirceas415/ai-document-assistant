@@ -38,17 +38,17 @@ This file is the authoritative checklist for information that must not be guesse
 
 ## Figures and visual material
 
-- [ ] Render all ten Mermaid sources under `diagrams/` to vector PDF or high-resolution PNG using a consistent thesis style.
-- [ ] Replace DIA-01 placeholder: high-level system architecture.
-- [ ] Replace DIA-02 placeholder: domain/workspace model.
-- [ ] Replace DIA-03 placeholder: complete ingestion pipeline.
-- [ ] Replace DIA-04 placeholder: technical PDF classification flow.
-- [ ] Replace DIA-05 placeholder: selective OCR flow.
-- [ ] Replace DIA-06 placeholder: chunk overlap and provenance.
-- [ ] Replace DIA-07 placeholder: hybrid retrieval pipeline.
-- [ ] Replace DIA-08 placeholder: weighted RRF fusion concept.
-- [ ] Replace DIA-09 placeholder: reranking and fail-open fallback.
-- [ ] Replace DIA-10 placeholder: grounded citation/source flow.
+- [x] Render all ten Mermaid sources under `diagrams/` to vector PDF using a consistent thesis style.
+- [x] Replace DIA-01 placeholder: high-level system architecture.
+- [x] Replace DIA-02 placeholder: domain/workspace model.
+- [x] Replace DIA-03 placeholder: complete ingestion pipeline.
+- [x] Replace DIA-04 placeholder: technical PDF classification flow.
+- [x] Replace DIA-05 placeholder: selective OCR flow.
+- [x] Replace DIA-06 placeholder: chunk overlap and provenance.
+- [x] Replace DIA-07 placeholder: hybrid retrieval pipeline.
+- [x] Replace DIA-08 placeholder: weighted RRF fusion concept.
+- [x] Replace DIA-09 placeholder: reranking and fail-open fallback.
+- [x] Replace DIA-10 placeholder: grounded citation/source flow.
 - [ ] Capture UI-02: grounded answer with multiple citations.
 - [ ] Capture UI-03: source-details modal.
 - [ ] Capture UI-04: document management with real processing states.
@@ -126,4 +126,3 @@ This file is the authoritative checklist for information that must not be guesse
 - [x] Ten conceptual Mermaid diagram sources created.
 - [x] Five compile-safe UI placeholders and three pending-results figure placeholders created.
 - [x] One full backend test run completed: 345 passed, 0 failed, 0 skipped. It must not be repeated for this drafting task.
-

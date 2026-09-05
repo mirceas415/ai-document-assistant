@@ -1,18 +1,35 @@
-flowchart TD
-    A[Inspect PDF page locally] --> B[Count Unicode letters/digits and useful words]
-    A --> C[Measure non-mask raster placements]
-    B --> D{Meaningful text?}
-    C --> E[Largest single-image page coverage]
-    D -- Yes --> F{Coverage at least 0.30?}
-    F -- Yes --> G[Mixed]
-    F -- No --> H[TextBased]
-    D -- No --> I{Coverage at least 0.80?}
-    I -- Yes --> J[Scanned]
-    I -- No --> K{Any raster image?}
-    K -- Yes --> L[ImageBased]
-    K -- No --> M[Unknown]
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial, sans-serif","fontSize":"16px","primaryColor":"#f3f4f6","primaryTextColor":"#111111","primaryBorderColor":"#4b5563","lineColor":"#4b5563","secondaryColor":"#ffffff","tertiaryColor":"#e5e7eb","clusterBkg":"#fafafa","clusterBorder":"#6b7280"},"flowchart":{"curve":"linear","nodeSpacing":25,"rankSpacing":36,"htmlLabels":true}}}%%
+flowchart TB
+    Page[Inspect PDF Page Locally] --> Text[Measure Text Content]
+    Page --> Raster[Measure Raster Images<br/>and Largest Image Coverage]
+    Text --> Meaningful{Meaningful text?}
+    Raster --> Meaningful
 
-    N[Meaningful text: at least 40 alphanumeric characters OR at least 8 useful words]:::note
-    N -. versioned rule .-> D
-    classDef note fill:#fff8dc,stroke:#8a6d1d,color:#111;
+    Meaningful -- Yes --> Significant{Significant image<br/>coverage too?}
+    Significant -- No --> TextBased[TextBased]
+    Significant -- Yes --> Mixed[Mixed]
 
+    Meaningful -- No --> PageSized{Page-sized<br/>raster image?}
+    PageSized -- Yes --> Scanned[Scanned]
+    PageSized -- No --> AnyImage{Any raster image?}
+    AnyImage -- Yes --> ImageBased[ImageBased]
+    AnyImage -- No --> Unknown[Unknown]
+
+    TextBased --> Aggregate[Aggregate Ordered<br/>Page Classifications]
+    Mixed --> Aggregate
+    Scanned --> Aggregate
+    ImageBased --> Aggregate
+    Unknown --> Aggregate
+    Aggregate --> DocumentType[Document Type<br/>dominant type, Mixed, or Unknown]
+
+    Rule[Deterministic, versioned rules;<br/>numeric thresholds remain in the text and table] -. constrains .-> Meaningful
+    Rule -. constrains .-> Aggregate
+
+    classDef stage fill:#e5e7eb,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef outcome fill:#ffffff,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef decision fill:#fafafa,stroke:#374151,stroke-width:1.4px,color:#111111;
+    classDef note fill:#fafafa,stroke:#6b7280,stroke-dasharray:5 3,color:#111111;
+    class Page,Text,Raster,Aggregate,DocumentType stage;
+    class TextBased,Mixed,Scanned,ImageBased,Unknown outcome;
+    class Meaningful,Significant,PageSized,AnyImage decision;
+    class Rule note;

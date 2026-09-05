@@ -2,6 +2,23 @@
 
 This plan covers every manual application screenshot referenced by the LaTeX draft. Only synthetic or explicitly redistributable evaluation documents may be used. Before capturing, use a dedicated demonstration account with a neutral display name, close developer tools, clear unrelated conversations, and verify that no API key, connection string, local storage path, private filename, browser autofill value, notification, bookmark, or unrelated personal information is visible.
 
+## Conceptual diagrams — GENERATED / RENDERED
+
+The ten conceptual Mermaid sources were reviewed, rendered to vector PDF, and integrated into the LaTeX chapters. Their editable sources remain under `diagrams/`, and their thesis-ready assets are under `img/diagrams/`.
+
+- **DIA-01 — GENERATED / RENDERED:** high-level system architecture.
+- **DIA-02 — GENERATED / RENDERED:** workspace/domain model.
+- **DIA-03 — GENERATED / RENDERED:** document-ingestion pipeline.
+- **DIA-04 — GENERATED / RENDERED:** technical PDF classification flow.
+- **DIA-05 — GENERATED / RENDERED:** selective OCR flow.
+- **DIA-06 — GENERATED / RENDERED:** chunking with bounded overlap.
+- **DIA-07 — GENERATED / RENDERED:** hybrid retrieval pipeline.
+- **DIA-08 — GENERATED / RENDERED:** weighted RRF concept.
+- **DIA-09 — GENERATED / RENDERED:** model-based reranking flow.
+- **DIA-10 — GENERATED / RENDERED:** grounded citation/source flow.
+
+The manual screenshot plan below is unchanged; none of its entries is complete.
+
 The five screenshots below are intentionally the minimum useful UI set. Other suggested IDs (`UI-01`, `UI-05`, `UI-06`, `UI-08`, `UI-09`, and `UI-11`) are not referenced in the first draft because their information is already represented by conceptual diagrams or would substantially overlap these figures. They may be added later only if the final editorial pass identifies a concrete explanatory gap.
 
 When a capture is approved, save it under `img/screenshots/` using the figure ID, preferably as a lossless PNG (for example, `UI-02.png`). Replace the corresponding `\thesisfigureplaceholder` call with a normal centered `\includegraphics` figure while retaining the existing caption and `\label`.
@@ -109,4 +126,3 @@ When a capture is approved, save it under `img/screenshots/` using the figure ID
 - Remove cursor tooltips and transient hover states unless the tooltip itself is the subject.
 - Record the application revision and capture date in the evaluation notes, not inside the image.
 - After insertion, update the List of Figures through the normal LaTeX build and verify every figure is referenced in surrounding prose.
-
