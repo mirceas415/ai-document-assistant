@@ -5,6 +5,7 @@ This chapter introduces the concepts needed to understand the implemented assist
 
 \section{Information Retrieval for Documents}
 \label{sec:background-ir}
+\index{information retrieval}
 
 Information retrieval concerns the selection and ranking of items that are relevant to an information need. In a document assistant, the user's question expresses that need, while the searchable collection consists of smaller passages derived from uploaded documents. A retrieval system normally returns a ranked list rather than a single binary match because relevance is gradual: one passage may answer the question directly, another may provide useful context, and many may share only superficial vocabulary \cite{Manning2008IR}.
 
@@ -12,7 +13,7 @@ The distinction between a \emph{document} and a \emph{retrieval unit} is importa
 
 Retrieval quality can be discussed in terms of precision and recall. Precision asks how much of the returned material is relevant. Recall asks how much of the relevant material was found. The first retrieval stage in this project is designed to obtain a sufficiently diverse candidate set, which favors recall. A later reranking stage can then concentrate on ordering the strongest candidates more precisely. This division helps explain why the system uses more than one search signal.
 
-Provenance adds an application-specific requirement to ordinary ranking. A useful chunk must not only contain relevant text; the application must also know its document, order, page or heading when available, and source sections. That information is carried through ingestion so that a selected passage can become an inspectable citation rather than anonymous model context.
+Provenance adds an application-specific requirement to ordinary ranking.\index{provenance} A useful chunk must not only contain relevant text; the application must also know its document, order, page or heading when available, and source sections. That information is carried through ingestion so that a selected passage can become an inspectable citation rather than anonymous model context.
 
 \section{Text Extraction from Structured Documents}
 \label{sec:background-extraction}
@@ -25,6 +26,7 @@ Some PDF pages contain no useful text layer at all. They may consist of a full-p
 
 \section{Optical Character Recognition}
 \label{sec:background-ocr}
+\index{OCR}
 
 Optical character recognition (OCR) converts an image containing written or printed symbols into machine-readable text. A typical OCR route rasterizes a page, detects and recognizes character shapes using one or more language models, and returns text together with optional confidence information. Tesseract is the local OCR engine used by this project \cite{Smith2007Tesseract,TesseractDocs}.
 
@@ -54,6 +56,7 @@ Token counts serve two related purposes. During ingestion, they prevent a chunk 
 
 \section{Document Chunking}
 \label{sec:background-chunking}
+\index{chunking}
 
 Chunking divides an ordered document representation into bounded passages suitable for embedding, retrieval, and model context. Passage-level dense retrieval provides the general setting for this design \cite{Karpukhin2020DPR,Luan2021SparseDense}. Without chunking, a long document would produce one broad vector and one expensive context item. The broad vector could obscure a short relevant clause, and retrieving the whole document would consume the context budget. At the other extreme, splitting every sentence independently can remove definitions, headings, and qualifications needed to interpret a result.
 
@@ -71,6 +74,7 @@ The detailed algorithm in Section~\ref{sec:document-chunking} uses natural line 
 
 \section{Vector Embeddings}
 \label{sec:background-embeddings}
+\index{embeddings}
 
 A text embedding is a fixed-length numerical vector intended to place texts with related meanings near one another in a high-dimensional space. The vector coordinates are not manually assigned topics and generally do not have a useful independent interpretation. Their value lies in comparing complete vectors. A question and a passage can share a semantic neighborhood even when they do not use exactly the same words \cite{Karpukhin2020DPR,OpenAIEmbeddingModel}.
 
@@ -104,6 +108,7 @@ The distance is a ranking signal, not a calibrated probability that a passage an
 
 \section{Vector Databases and pgvector}
 \label{sec:background-pgvector}
+\index{pgvector}
 
 A vector-capable database stores embeddings in a native numerical type and provides distance operators that can participate in queries. The \emph{pgvector} extension adds this ability to PostgreSQL. It allows relational predicates and vector ordering to be expressed together, so a query can restrict rows by owner, workspace, document status, and embedding validity before returning the nearest chunks \cite{PgvectorDocs}.
 
@@ -111,6 +116,7 @@ Co-locating relational data and vectors simplifies lifecycle management in this 
 
 \section{Retrieval-Augmented Generation}
 \label{sec:background-rag}
+\index{Retrieval-Augmented Generation (RAG)}
 
 Retrieval-Augmented Generation (RAG) connects information retrieval to language generation. A typical sequence retrieves passages for the current question, serializes a bounded evidence context, and asks a language model to answer using that context. The model is not used as the database: retrieval decides what evidence is made available, while generation turns that evidence into a readable response \cite{Lewis2020RAG}.
 
@@ -120,6 +126,7 @@ The implemented design uses the current question to retrieve project-owned chunk
 
 \section{Lexical and Full-Text Retrieval}
 \label{sec:background-lexical}
+\index{PostgreSQL full-text search}
 
 Lexical retrieval ranks text through the occurrence and distribution of query terms. Unlike semantic embeddings, it directly rewards shared textual forms. This is valuable for strings whose importance depends on exact spelling: contract identifiers, invoice numbers, monetary values, organization names, and quoted phrases. A lexical method may also fail when the user paraphrases a concept using different vocabulary \cite{Manning2008IR}.
 
@@ -129,6 +136,7 @@ User input must not be concatenated into SQL or manually interpreted as trusted 
 
 \section{Hybrid Retrieval}
 \label{sec:background-hybrid}
+\index{hybrid retrieval}
 
 Hybrid retrieval combines channels that express different forms of relevance. Semantic search handles paraphrase and conceptual similarity; lexical search rewards matching terms and identifiers; metadata can express that a candidate belongs to a document whose known type, title, or extracted fields correspond to the query. Research comparing sparse and dense text representations provides the general motivation for combining complementary retrieval signals \cite{Luan2021SparseDense}.
 
@@ -155,6 +163,7 @@ A crucial distinction is that a ranking signal is not necessarily answer evidenc
 
 \section{Reciprocal Rank Fusion}
 \label{sec:background-rrf}
+\index{Reciprocal Rank Fusion (RRF)}
 
 Raw semantic distance and lexical full-text score do not share a meaningful numerical scale. Adding them directly would make the result depend on arbitrary score ranges and tuning. Reciprocal Rank Fusion (RRF) instead uses the ordinal position of an item in each ranked list. In a weighted form, the generic score for candidate $c$ is
 
@@ -170,6 +179,7 @@ The constant $k$ smooths the difference between adjacent ranks. Channel weights 
 
 \section{Reranking}
 \label{sec:background-reranking}
+\index{reranking}
 
 First-stage retrieval must search a potentially large collection efficiently, often using independent query--candidate scores. A reranker receives a smaller candidate set and can compare each candidate more directly with the complete question. Its objective is to improve precision among candidates that have already passed a recall-oriented stage \cite{Nogueira2019BERT}.
 
@@ -179,6 +189,7 @@ Reranking introduces a trade-off. It can consider the relationship between a que
 
 \section{Grounding and Citations}
 \label{sec:background-grounding}
+\index{citations}
 
 A grounded answer is constrained to supplied evidence instead of being encouraged to fill gaps from general model knowledge. Grounding requires more than telling a model to ``use the documents.'' The application must select an evidence set, state the boundary between instructions and data, define what to do when evidence is insufficient, and preserve a mapping from labels in the model context to authoritative source records. Verifiability research further distinguishes the presence of citations from whether those citations actually support the associated claims \cite{Liu2023Verifiability}.
 
@@ -188,6 +199,7 @@ Identifier validation is necessary but not sufficient for citation correctness. 
 
 \section{Prompt Injection in Document-Based Systems}
 \label{sec:background-prompt-injection}
+\index{prompt injection}
 
 Prompt injection occurs when untrusted input contains text that attempts to alter a model's task or reveal protected information. In a document-based assistant, an uploaded file may contain a sentence such as ``ignore previous instructions'' even though the user asked an ordinary factual question. This is an indirect prompt-injection risk because the instruction-like text reaches a model through retrieved data \cite{Abdelnabi2023IndirectPromptInjection,OWASPPromptInjection}.
 
@@ -203,4 +215,4 @@ No single prompt can prove that prompt injection has been completely solved. A d
     \item secrets, storage paths, vectors, and provider configuration are omitted from prompts and response contracts.
 \end{itemize}
 
-Residual risk remains because model behavior is probabilistic and an apparently ordinary passage can carry adversarial text. The evaluation plan therefore includes malicious synthetic document content, unsupported questions, malformed structured responses, and verification that no real secret is displayed during testing. The project treats prompt injection as a security boundary to test and constrain, not as a problem that can be declared universally eliminated.
+Residual risk remains because model behavior is probabilistic and an apparently ordinary passage can carry adversarial text. The completed evidence therefore combines automated tests of malformed structured responses with application-level cases involving malicious synthetic document content, unsupported questions, and secret-disclosure requests. The project treats prompt injection as a security boundary to test and constrain, not as a problem that can be declared universally eliminated.

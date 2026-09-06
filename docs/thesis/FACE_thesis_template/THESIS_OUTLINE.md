@@ -27,7 +27,7 @@ The main technical content is expected to occupy approximately 41--51 pages, and
 ### Official cover and title page
 
 - **Purpose:** identify the institution, diploma-project type, title, candidate, supervisor, and submission session while preserving the official Romanian layout.
-- **Key material:** confirmed English working title; visible placeholders for the Romanian title, candidate, supervisor, programme, and date.
+- **Key material:** confirmed Romanian and English titles, candidate, supervisor, programme, location, and submission month/year.
 - **Estimated pages:** 2.
 - **Figures:** official University and Faculty logos already supplied by the template.
 - **Tables:** none.
@@ -53,7 +53,7 @@ The main technical content is expected to occupy approximately 41--51 pages, and
 ### Dedication, acknowledgements, and foreword
 
 - **Purpose:** retain official optional-page architecture without presenting template examples as student-authored content.
-- **Key material:** visible completion/omission placeholders.
+- **Key material:** omitted because no dedication, acknowledgements, or foreword text was supplied.
 - **Estimated pages:** 2--3 if retained in the submitted version.
 - **Figures/tables/citations:** none.
 
@@ -570,21 +570,21 @@ The main technical content is expected to occupy approximately 41--51 pages, and
 ### Source code
 
 - **Purpose:** state how the code is supplied electronically; optionally show only a concise module map.
-- **Key material:** `[PROJECT REPOSITORY URL]` pending confirmation; no large source listings.
+- **Key material:** confirmed GitHub repository URL; no large source listings.
 - **Estimated pages:** 1.
 - **Citations needed:** none.
 
 ### Project website
 
 - **Purpose:** preserve the official appendix while avoiding an invented deployment URL.
-- **Key material:** visible placeholder or explicit confirmation that no public project site is submitted.
+- **Key material:** optional page omitted because no public deployment URL was supplied.
 - **Estimated pages:** 0.5.
 - **Citations needed:** none.
 
 ### Media support
 
 - **Purpose:** preserve the official appendix and identify the Faculty-approved electronic submission medium when known.
-- **Key material:** visible placeholder; no invented CD/DVD or link.
+- **Key material:** optional page omitted because no Faculty-approved delivery medium was supplied.
 - **Estimated pages:** 0.5.
 - **Citations needed:** none.
 
@@ -603,5 +603,4 @@ Ten Mermaid source diagrams are planned under `diagrams/`:
 9. DIA-09 -- reranking and fail-open fallback.
 10. DIA-10 -- grounded citation/source flow.
 
-The LaTeX draft will use compile-safe placeholders until these sources are rendered. To keep the final graphical component near the requested range, the first draft plans five essential manual UI screenshots (grounded answer, source details, document states, OCR diagnostics, and advanced retrieval diagnostics) plus three pending evaluation plots. This produces 18 thesis figure placeholders in total: ten conceptual diagrams, five manual screenshots, and three future results figures.
-
+The final graphical component contains ten conceptual diagrams, five essential UI screenshots (grounded answer, source details, document states, OCR diagnostics, and advanced retrieval diagnostics), and three measured evaluation plots, for 18 figures in total.

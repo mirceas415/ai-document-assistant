@@ -198,8 +198,9 @@ After scoring, ties are resolved by the best individual rank across the availabl
 
 \section{Model-Based Reranking}
 \label{sec:model-reranking}
+\leavevmode\par
 
-First-stage hybrid retrieval is designed to maximize the chance that useful evidence enters a bounded candidate set. Its signals remain relatively shallow: embedding similarity, term matching, and structured document hints. Model-based reranking performs a different task. It reads the strongest candidate passages in relation to the original question and attempts to order them by direct usefulness for a grounded answer. This is a precision-oriented second stage, not a replacement for candidate generation \cite{Nogueira2019BERT}. The final evaluation will compare hybrid ordering with hybrid plus reranking; no improvement is assumed before those measurements exist.
+First-stage hybrid retrieval is designed to maximize the chance that useful evidence enters a bounded candidate set. Its signals remain relatively shallow: embedding similarity, term matching, and structured document hints. Model-based reranking performs a different task. It reads the strongest candidate passages in relation to the original question and attempts to order them by direct usefulness for a grounded answer. This is a precision-oriented second stage, not a replacement for candidate generation \cite{Nogueira2019BERT}. Chapter~\ref{chap:testing-evaluation} compares vector, hybrid, and final/reranked orderings on the labelled evaluation set.
 
 With the default configuration, RRF retains up to 18 candidates for this stage, while the eventual answer still uses Top-8. Eighteen is the configured candidate count and 30 is the hard maximum accepted by the reranking subsystem. Candidate construction follows the hybrid order and assigns stable opaque identifiers \texttt{C1}, \texttt{C2}, and so on. The provider receives the original question and, for each candidate, only its opaque identifier, bounded document name, page label, optional heading, and content. It does not receive embedding vectors, cosine distances, lexical scores, metadata values, channel ranks, or the fused score. Omitting those diagnostics makes the second-stage decision content-oriented and avoids encouraging the model simply to restate the deterministic ranking.
 
@@ -288,7 +289,7 @@ Figure~\ref{fig:reranking-fallback} emphasizes this two-outcome design.
 	\label{fig:reranking-fallback}
 \end{figure}
 
-The design has an explicit latency and cost trade-off. Candidate generation requires one query embedding and database retrieval; reranking adds a second model request before answer generation. Larger candidate sets may improve the chance of presenting useful passages to the reranker, but consume more tokens and response time. The selected bounds make that cost predictable for the current system. Whether the additional request produces a measurable ranking benefit is an empirical question reserved for Chapter~\ref{chap:testing-evaluation}.
+The design has an explicit latency and cost trade-off. Candidate generation requires one query embedding and database retrieval; reranking adds a second model request before answer generation. Larger candidate sets may improve the chance of presenting useful passages to the reranker, but consume more tokens and response time. The selected bounds make that cost predictable for the current system. Chapter~\ref{chap:testing-evaluation} reports the measured comparison and its limits.
 
 \section{RAG Context Construction}
 \label{sec:rag-context}
@@ -396,4 +397,4 @@ Table~\ref{tab:prompt-injection-controls} relates representative threats to cont
 	\end{tabular}
 \end{table}
 
-The security claim is therefore deliberately limited. The system establishes ownership boundaries, bounded requests, structured validation, fail-open reranking, evidence-only instructions, and authoritative citation membership. It does not claim to have solved prompt injection or to guarantee factual entailment. Chapter~\ref{chap:testing-evaluation} defines no-evidence, citation, and prompt-injection cases that must be measured against the final evaluation corpus. This honest boundary is important for a bachelor engineering project: the contribution lies in combining practical controls at several layers and testing their deterministic properties, not in presenting probabilistic model behaviour as formally secure.
+The security claim is therefore deliberately limited. The system establishes ownership boundaries, bounded requests, structured validation, fail-open reranking, evidence-only instructions, and authoritative citation membership. It does not claim to have solved prompt injection or to guarantee factual entailment. Chapter~\ref{chap:testing-evaluation} reports the no-evidence, citation, and prompt-injection cases measured in the final evaluation corpus. This honest boundary is important for a bachelor engineering project: the contribution lies in combining practical controls at several layers and testing their deterministic properties, not in presenting probabilistic model behaviour as formally secure.

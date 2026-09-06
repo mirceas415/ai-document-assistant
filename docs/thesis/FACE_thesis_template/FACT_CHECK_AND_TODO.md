@@ -2,38 +2,50 @@
 
 This file is the authoritative checklist for information that must not be guessed. A checked item should be marked complete only after confirmation from the student, scientific supervisor, Faculty, current runtime configuration, or final measured evaluation, as appropriate.
 
+## Pre-final cleanup pass
+
+- [x] Insert the confirmed candidate name, scientific supervisor, study programme, Romanian and English titles, submission month/year, location, and repository URL where required.
+- [x] Update both project summaries with the completed evaluation results and complete the Romanian language pass requested for the summary.
+- [x] Remove obsolete evaluation-pending and document-drafting language from Chapters 1, 2, and 5 and from Conclusions.
+- [x] Remove the unused dedication, acknowledgements, foreword, project-website, and media-support pages from the compiled thesis.
+- [x] Rewrite the source-code appendix around the confirmed GitHub repository without claiming an unverified Faculty submission mechanism.
+- [x] Replace development-style placeholders in mandatory official forms with confirmed values or clean blank fields for later authorized completion.
+- [x] Add a modest set of technical index entries at existing explanatory locations.
+- [ ] Perform the separate final Astra whole-thesis audit; this remains explicitly outside the cleanup pass.
+
 ## Identity, programme, and titles
 
-- [ ] Replace every `[CANDIDATE FULL NAME]` with the candidate's official full name, preserving the spelling and capitalization required by FACE.
-- [ ] Confirm `[SCIENTIFIC SUPERVISOR NAME AND TITLE]`, including academic and engineering titles and official ordering.
-- [ ] Confirm `[OFFICIAL STUDY PROGRAM]`. The student is in the English-taught Computers programme, but the exact diploma/form wording must come from an official source.
-- [ ] Confirm the official Romanian thesis title and replace `[ROMANIAN TITLE TO BE CONFIRMED]` everywhere it appears.
-- [ ] Obtain final approval for the working English title, **Intelligent Assistant for Semantic Document Analysis and Querying**.
+- [x] Candidate name confirmed and inserted as **Mircea Smărăndăchescu**.
+- [x] Scientific supervisor confirmed and inserted as **Prof. dr. ing. Nicolae Iulian Enescu**.
+- [x] Official study programme confirmed and inserted as **Calculatoare și Tehnologia Informației**.
+- [x] Romanian title confirmed and inserted as **Asistent inteligent pentru analiza și interogarea semantică a documentelor**.
+- [x] English title confirmed as **Intelligent Assistant for Semantic Document Analysis and Querying** and kept consistent throughout the front matter.
 - [ ] Confirm whether the Romanian forms require the English title as a secondary line and whether punctuation/capitalization must follow a Faculty register.
 - [ ] Confirm the current official department name already printed by the template.
-- [ ] Confirm `[DEPARTMENT DIRECTOR NAME AND TITLE]`; do not restore the sample director from the extracted template without verification.
+- [ ] Obtain the department director's official name and title; the field remains blank and no sample name has been restored.
 - [ ] Check gender-dependent Romanian administrative wording such as `Subsemnatul`, `absolvent`, and `susținută` against the candidate and the official form.
 
 ## Dates, session, signatures, and administrative forms
 
-- [ ] Replace `[SUBMISSION MONTH AND YEAR]` with the official diploma session wording.
-- [ ] Complete every `[DATE TO BE COMPLETED]`: assignment release, department approval, estimated submission, actual submission, originality declaration, supervisor report, and any signature dates.
-- [ ] Obtain every `[SIGNATURE]` required from the candidate, supervisor, and department representative.
-- [ ] Confirm the official consultation schedule in `[CONSULTATION SCHEDULE]`.
-- [ ] Complete the project-form initial data, concise project contents, and mandatory graphical material fields marked `[TO COMPLETE WITH SUPERVISOR]`.
+- [x] Submission session confirmed and inserted as **Septembrie 2026**.
+- [ ] Obtain the exact assignment-release, department-approval, estimated-delivery, actual-delivery, declaration, review, and signature dates; their form fields remain blank.
+- [ ] Obtain the candidate, supervisor, and department-representative signatures; their form fields remain blank.
+- [ ] Confirm the official consultation schedule; the project-sheet field remains blank.
+- [ ] Complete the project-sheet initial data, concise project contents, and mandatory graphical-material requirements with the supervisor; these fields remain blank.
 - [ ] Confirm the documentation/practice location checkboxes in the supervisor report. The sample pre-selected `În facultate` box was cleared.
 - [ ] Leave all supervisor-evaluation checkboxes and comments for the supervisor; verify whether this page is completed before or after binding.
-- [ ] Confirm whether the optional dedication, acknowledgements, and foreword pages must be completed, retained as blank pages, or omitted with Faculty approval. Their template positions are currently preserved with explicit placeholders.
-- [ ] Verify the Romanian originality-declaration wording against the final 2026 Faculty form before signing; content architecture was preserved but placeholders were made explicit.
-- [ ] Confirm whether the separate English and Romanian summary order must remain exactly as in the supplied template (Romanian first, English second).
-- [ ] Perform a final manual Romanian-language review of `ace-summary.tex`, including terminology for RAG, reranking, source provenance, and prompt injection.
+- [x] Remove the optional dedication, acknowledgements, and foreword pages because no genuine text was supplied.
+- [ ] Verify the Romanian originality-declaration wording against the final 2026 Faculty form before signing; confirmed fields are filled and the date/signature lines remain blank.
+- [x] Preserve both summaries in the supplied order: Romanian first, English second.
+- [x] Complete the pre-final Romanian-language review of `ace-summary.tex`, including evaluation wording and diacritics.
 
 ## Repository, website, and submission media
 
-- [ ] Replace `[PROJECT REPOSITORY URL]` only after the repository location and access policy are confirmed.
+- [x] Insert the confirmed repository URL: <https://github.com/mirceas415/ai-document-assistant>.
 - [ ] Confirm the approved electronic source-code submission mechanism and update `ace-sourcecode.tex`.
-- [ ] Confirm whether a public project website or deployment URL exists. Do not invent one; update `ace-proj-website.tex` or state approved non-applicability.
-- [ ] Confirm whether the Faculty requires a CD, DVD, archive, cloud upload, or another medium; update `ace-media-support.tex` accordingly.
+- [x] Remove the empty optional project-website page; no public deployment URL was supplied and the GitHub repository is not presented as one.
+- [x] Remove the empty optional media-support page rather than invent a delivery medium.
+- [ ] Confirm whether the Faculty ultimately requires a separate media-support statement or page and, if so, supply the approved medium.
 - [ ] Confirm whether the application will be demonstrated only locally or deployed before submission. The current thesis does not claim an existing production deployment.
 
 ## Figures and visual material
@@ -88,13 +100,14 @@ Unmeasured extensions and reproduction details remain open; none is represented 
 - [ ] Score backend citation mapping and semantic claim support separately, and evaluate historical-source behavior.
 - [ ] Extend experimental security coverage to empty collections, cross-owner/workspace cases, unknown citation markers, and additional attacks using synthetic data.
 - [ ] Record latency, per-case reranking applied/fallback state, and provider usage for descriptive discussion.
-- [ ] Review English/Romanian summaries and broader conclusions during the separate final full-thesis audit.
+- [x] Integrate the completed results into both summaries and remove obsolete pending-evaluation wording from the surrounding thesis prose.
+- [ ] Review the whole thesis comprehensively during the separate final Astra audit.
 
 ## Bibliography and academic integrity
 
-- [ ] Perform the dedicated verified bibliography pass described in `CITATIONS_NEEDED.md`.
-- [ ] Verify every author, title, venue/publisher, year, edition, DOI, and URL before adding a BibTeX entry.
-- [ ] Replace each visible `[CITATION NEEDED: ...]` marker with an actual citation only after its entry is verified.
+- [x] Complete the dedicated verified bibliography pass described in `CITATIONS_NEEDED.md`.
+- [x] Verify the 25 retained bibliography entries before inclusion.
+- [x] Remove all visible citation-needed markers after replacing them with verified citations.
 - [ ] Prefer original academic papers for RAG and RRF, authoritative textbooks/surveys for information retrieval, standards for PDF/Open XML, and official project/vendor documentation for implementation technologies.
 - [ ] Check that standard methods are attributed as existing concepts and that the personal contribution is limited to design, implementation, integration, and evaluation in this application.
 - [ ] The 26 sample bibliography/example entries supplied with the FACE template were removed; none was treated as a verified thesis source.
@@ -127,9 +140,11 @@ Unmeasured extensions and reproduction details remain open; none is represented 
 - [x] Confirm the title/front-matter pages and official logo layout render as expected in the current 2026 toolchain. The final logo page no longer resets the PDF page label.
 - [x] Replace the supplied reference `ace-thesis.pdf` with the newly compiled thesis output and create a clearly named review copy under `docs/thesis/output/`.
 - [x] Perform the first real page-count/layout adjustment after real figures, citations, and evaluation results were inserted, without padding prose.
-- [ ] Replace all remaining visible placeholders and re-run a repository-wide placeholder search before submission.
+- [x] Remove visible development placeholders from the compiled thesis; confirmed data is inserted and unresolved official-form fields are clean blank lines.
 
 First real build record (5 September 2026): the manual `pdflatex`, `bibtex`, `makeindex`, `pdflatex`, `pdflatex` sequence completed successfully from this directory. The converged PDF has 104 physical pages; Chapter 1 begins on physical page 18 with Arabic page 1, and the main content runs through physical page 96 / Arabic page 79. The build has 25 resolved bibliography items, 18 figure-list entries, 29 table-list entries, and 5 algorithm-list entries. No undefined citations/references, duplicate destinations, missing images, or overfull boxes remain. Harmless underfull boxes and two longtable glue-shrink diagnostics remain after visual inspection. Administrative placeholders, the manual Romanian-language check, Faculty approval of the List of Algorithms, and the separate whole-thesis review remain open; this draft is not marked submission-ready.
+
+Pre-final cleanup build record (6 September 2026): the documented multi-pass sequence completed successfully and produced 99 physical pages. The preliminary matter occupies 14 physical pages: two title pages followed by Roman pages i--xii. Chapter 1 begins on physical page 15 / Arabic page 1, and the main chapters conclude on physical page 93 / Arabic page 79. The bibliography occupies physical pages 94--96 / Arabic pages 80--82, the source-code appendix is physical page 97 / Arabic page 83, the index is physical page 98 / Arabic page 84, and the official logo page is physical page 99. The build contains 25 bibliography items, 18 figure-list entries, 29 table-list entries, 5 algorithm-list entries, and 18 alphabetical-index entries. No undefined citations or references, duplicate destinations, missing images, or overfull boxes remain. The existing underfull-box notices and two longtable glue-shrink diagnostics remain visually harmless. The optional empty pages were removed, administrative unknowns are presented as blank form fields, and the separate final Astra whole-thesis audit remains open.
 
 ## Verified items already complete
 
@@ -137,7 +152,7 @@ First real build record (5 September 2026): the manual `pdflatex`, `bibtex`, `ma
 - [x] Official logos, class, cover/page architecture, front-matter order, numbering split, bibliography mechanism, appendices, and index preserved.
 - [x] English working title applied to the title page and thesis documentation.
 - [x] Main Chapters 1--7 and separate Chapter 8 conclusions drafted in English.
-- [x] Romanian and English project summaries drafted without invented experimental results.
+- [x] Romanian and English project summaries updated with the completed, verified experimental results.
 - [x] Ten conceptual Mermaid diagram sources created.
 - [x] Five UI screenshots and three measured evaluation plots integrated; the original placeholders have been replaced.
 - [x] One full backend test run completed: 345 passed, 0 failed, 0 skipped. It must not be repeated for this drafting task.

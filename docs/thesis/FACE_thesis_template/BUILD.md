@@ -46,11 +46,11 @@ pdflatex -interaction=nonstopmode -file-line-error ace-thesis.tex
 pdflatex -interaction=nonstopmode -file-line-error ace-thesis.tex
 ```
 
-The current draft contains 25 verified bibliography entries, so the BibTeX pass is required. Run another pdfLaTeX pass if the log reports changed labels or rerun requirements. The validated review build has 104 physical PDF pages and is also copied to `../output/AI_Document_Assistant_Thesis_Draft.pdf`; it is a review artifact, not the submitted thesis.
+The current review document contains 25 verified bibliography entries, so the BibTeX pass is required. Run another pdfLaTeX pass if the log reports changed labels or rerun requirements. The converged pre-final cleanup build has 99 physical PDF pages and is also copied to `../output/AI_Document_Assistant_Thesis_Draft.pdf`; it is a review artifact, not the submitted thesis. Chapter 1 begins on physical page 15 with Arabic page 1, the main chapters end on physical page 93 / Arabic page 79, and the bibliography occupies Arabic pages 80--82.
 
 ## Rerendering Mermaid diagrams
 
-The ten committed conceptual figures are vector PDFs under `img/diagrams/`. Mermaid CLI is not an application dependency. The diagrams in this draft were rendered with Mermaid CLI 11.17.0 through a temporary `npx` invocation and the existing local Chrome installation; this does not modify either application package manifest.
+The ten committed conceptual figures are vector PDFs under `img/diagrams/`. Mermaid CLI is not an application dependency. The diagrams in the current thesis were rendered with Mermaid CLI 11.17.0 through a temporary `npx` invocation and the existing local Chrome installation; this does not modify either application package manifest.
 
 From the thesis-template directory, rerender one diagram with:
 
