@@ -1,4 +1,4 @@
-\chapter{Background and Fundamental Concepts}
+\chapter[Background and Fundamental Concepts]{Background and\\Fundamental Concepts}
 \label{chap:background}
 
 This chapter introduces the concepts needed to understand the implemented assistant. Its purpose is not to provide an exhaustive account of artificial intelligence or database theory. Instead, it establishes a vocabulary for the two connected flows studied in the remainder of the thesis: transforming heterogeneous documents into searchable evidence, and transforming a user question into a grounded answer. The techniques discussed here are established methods. The personal contribution of the project lies in selecting, implementing, constraining, and integrating them in one application, as described in Chapters~\ref{chap:requirements-architecture}--\ref{chap:application-ux}.
@@ -122,7 +122,7 @@ Retrieval-Augmented Generation (RAG) connects information retrieval to language 
 
 RAG can reduce unsupported use of a model's general knowledge, but the acronym does not guarantee correctness. A relevant passage may be missed, a weak passage may be selected, a context may be truncated, or the model may interpret evidence incorrectly. The system must specify no-evidence behavior, keep source provenance, bound context and output, and evaluate both retrieval and the final response.
 
-The implemented design uses the current question to retrieve project-owned chunks, optionally reranks them, labels the final evidence, and places it inside explicit untrusted-document delimiters. Conversation history is supplied separately for linguistic continuity and is declared non-authoritative. This prevents a previous assistant response from silently becoming the factual basis of the next answer.
+The implemented design uses the current question to retrieve project-owned chunks, optionally reranks them, labels the final evidence, and places it inside explicit untrusted-document delimiters. Conversation history is supplied separately for linguistic continuity and is declared non-authoritative. The answer model is instructed to use retrieved passages as evidence and previous messages only for continuity.
 
 \section{Lexical and Full-Text Retrieval}
 \label{sec:background-lexical}
@@ -130,7 +130,7 @@ The implemented design uses the current question to retrieve project-owned chunk
 
 Lexical retrieval ranks text through the occurrence and distribution of query terms. Unlike semantic embeddings, it directly rewards shared textual forms. This is valuable for strings whose importance depends on exact spelling: contract identifiers, invoice numbers, monetary values, organization names, and quoted phrases. A lexical method may also fail when the user paraphrases a concept using different vocabulary \cite{Manning2008IR}.
 
-PostgreSQL full-text search represents document text as a \texttt{tsvector} and a query as a \texttt{tsquery}. A GIN index can efficiently locate rows containing query lexemes. The \texttt{simple} configuration is language-neutral: it tokenizes and normalizes without applying an English-only or Romanian-only stemmer. That choice is appropriate for a multilingual collection and for identifiers that should not be transformed according to one language \cite{PostgreSQLFTS}.
+PostgreSQL full-text search represents document text as a \texttt{tsvector} and a query as a \texttt{tsquery}. A Generalized Inverted Index (GIN) can efficiently locate rows containing query lexemes. The \texttt{simple} configuration is language-neutral: it tokenizes and normalizes without applying an English-only or Romanian-only stemmer. That choice is appropriate for a multilingual collection and for identifiers that should not be transformed according to one language \cite{PostgreSQLFTS}.
 
 User input must not be concatenated into SQL or manually interpreted as trusted query syntax. The current implementation uses parameterized PostgreSQL functions designed for web-style search text and combines an original and deterministically relaxed query. Chapter~\ref{chap:retrieval-grounding} describes that implementation without exposing database internals to the user.
 
@@ -173,9 +173,9 @@ Raw semantic distance and lexical full-text score do not share a meaningful nume
     \label{eq:generic-rrf}
 \end{equation}
 
-where $n$ is the number of ranking channels, $w_i$ is the weight of channel $i$, $k$ is a positive rank constant, and $r_i(c)$ is the one-based rank of candidate $c$ in that channel. If the candidate is absent from a channel, that channel contributes zero \cite{Cormack2009RRF}.
+where $n$ is the number of ranking channels, $w_i$ is the weight of channel $i$, $k$ is a positive rank constant, and $r_i(c)$ is the one-based rank of candidate $c$ in that channel. If the candidate is absent from a channel, that channel contributes zero.
 
-The constant $k$ smooths the difference between adjacent ranks. Channel weights express an engineering preference but do not convert ranks into probabilities. RRF is an established information-retrieval technique; it was not invented for this project. The project contribution is its concrete weighted implementation with semantic, lexical, and bounded document-metadata contributions, deterministic deduplication, and stable tie-breaking. Section~\ref{sec:hybrid-rrf} gives the actual formula and configuration.
+The constant $k$ smooths the difference between adjacent ranks. Channel weights express an engineering preference but do not convert ranks into probabilities. RRF is an established information-retrieval technique \cite{Cormack2009RRF}. In this project, it is adapted through a weighted formulation that combines semantic, lexical, and bounded document-metadata contributions, together with deterministic deduplication and stable tie-breaking. Section~\ref{sec:hybrid-rrf} gives the actual formula and configuration.
 
 \section{Reranking}
 \label{sec:background-reranking}
@@ -183,7 +183,7 @@ The constant $k$ smooths the difference between adjacent ranks. Channel weights 
 
 First-stage retrieval must search a potentially large collection efficiently, often using independent query--candidate scores. A reranker receives a smaller candidate set and can compare each candidate more directly with the complete question. Its objective is to improve precision among candidates that have already passed a recall-oriented stage \cite{Nogueira2019BERT}.
 
-A model-based reranker is not an answer generator. It should return candidate identifiers and bounded relevance grades, not prose or new facts. Local validation is required because structured-output requests can still fail, omit items, repeat identifiers, or return invalid values. The safest availability strategy is fail-open: if reranking cannot provide a valid ordering within its time and token limits, the deterministic hybrid order remains usable.
+A model-based reranker is not an answer generator. It should return candidate identifiers and bounded relevance grades, not prose or new facts. Local validation is required because structured-output requests can still fail, omit items, repeat identifiers, or return invalid values. A fail-open strategy preserves retrieval availability: if reranking cannot provide a valid ordering within its time and token limits, the deterministic hybrid order remains usable.
 
 Reranking introduces a trade-off. It can consider the relationship between a question and longer candidate text more flexibly than an independent vector distance, but it adds provider latency and cost and can itself make ranking errors. A fair evaluation must therefore compare the same labelled queries under vector-only, hybrid, and hybrid-plus-reranking variants rather than assuming an improvement.
 

@@ -8,7 +8,7 @@ The user interface is deliberately chat-first, but the chat is not the whole pro
 \section{Technology Stack}
 \label{sec:technology-stack}
 
-Table~\ref{tab:technology-stack} summarizes the principal technologies and their roles. The table describes their use in this application rather than attempting a general comparison of web frameworks or databases. Version-specific claims in the final submission should be checked once more against the locked project files.
+Table~\ref{tab:technology-stack} summarizes the principal technologies and their roles. The table describes their use in this application rather than attempting a general comparison of web frameworks or databases.
 
 \begin{table}[!htbp]
     \centering
@@ -33,10 +33,11 @@ Table~\ref{tab:technology-stack} summarizes the principal technologies and their
     \end{tabular}
 \end{table}
 
-The server targets .NET 10. The client uses React 19 and TypeScript and is built with Vite. PostgreSQL is not used merely as a conventional record store: the application also relies on a generated full-text search column with a Generalized Inverted Index (GIN) and a fixed-size \texttt{vector(1536)} column. This reduces the number of separate infrastructure components needed for a bachelor-project implementation. It also means that deleting a document through its relational ownership path removes its chunks and their vectors through the same database lifecycle.
+The server targets .NET 10. The client uses React 19 and TypeScript and is built with Vite. PostgreSQL is not used merely as a conventional record store: the application also relies on a generated full-text search column with a GIN index and a fixed-size \texttt{vector(1536)} column. This reduces the number of separate infrastructure components needed for a bachelor-project implementation. It also means that deleting a document through its relational ownership path removes its chunks and their vectors through the same database lifecycle.
 
 External model access is restricted to explicit application services. The browser never receives provider credentials, physical upload paths, stored filenames, system instructions, or raw provider responses. The server supplies only the contracts needed by the current screen. Local extraction and OCR services likewise have narrow boundaries: a PDF renderer renders a requested page under a safety limit, while the OCR service recognizes the supplied image. This separation makes the implementation easier to substitute in tests and prevents UI concerns from acquiring file-system or provider responsibilities.
 
+\clearpage
 \section{Authentication and Workspaces}
 \label{sec:authentication-workspaces}
 

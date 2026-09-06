@@ -10,12 +10,12 @@ is an integrated pipeline that converts an authenticated upload into
 searchable, traceable knowledge while preserving enough diagnostic state to
 explain how that result was obtained.
 
-The implemented path proceeds from validation through extraction, technical
-PDF analysis, selective optical character recognition (OCR), normalization,
+The implemented path proceeds from validation through technical PDF analysis,
+extraction, selective optical character recognition (OCR), normalization,
 document-level intelligence, token-bounded chunks, and vector embeddings.
 Extraction, normalization, chunking, and embedding are required for retrieval;
 technical analysis and Document Understanding are separately observable
-enrichments. This chapter follows the data in that order.
+enrichments. This chapter explains these stages and their dependencies.
 
 \section{Upload and Validation}
 \label{sec:upload-validation}
@@ -456,7 +456,7 @@ and unification with native extraction.
 		\EndIf
 		\State Select at most the first 200 candidate pages
 		\ForAll{selected candidate pages}
-			\State Render at the highest DPI that satisfies the 25,000,000-pixel limit
+			\State Render at up to 300 DPI within the 25,000,000-pixel limit
 			\State Run local Tesseract with \texttt{ron+eng}
 			\State Persist Ready text, Empty, or safe Failed page diagnostics
 		\EndFor
@@ -491,8 +491,8 @@ or failed results are rerun, and force always bypasses reuse.
 
 The TesseractOCR wrapper dependency is version 5.5.2, while the service has a
 5.5.1 fallback engine label and can later record the native engine's value.
-Because package and native-engine versions differ conceptually, the thesis says
-Tesseract~5 through the wrapper until the submission runtime is verified.
+The wrapper package version and fallback label do not establish the exact
+native-engine version used in the recorded evaluation.
 
 Figure~\ref{fig:selective-ocr-flow} visualizes the page-level route and the
 return to the unified extraction sequence.

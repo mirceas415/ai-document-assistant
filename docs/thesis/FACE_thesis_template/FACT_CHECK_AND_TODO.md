@@ -11,17 +11,19 @@ This file is the authoritative checklist for information that must not be guesse
 - [x] Rewrite the source-code appendix around the confirmed GitHub repository without claiming an unverified Faculty submission mechanism.
 - [x] Replace development-style placeholders in mandatory official forms with confirmed values or clean blank fields for later authorized completion.
 - [x] Add a modest set of technical index entries at existing explanatory locations.
-- [ ] Perform the separate final Astra whole-thesis audit; this remains explicitly outside the cleanup pass.
+- [x] Complete the separate final Astra whole-thesis audit (6 September 2026); see [`../FINAL_THESIS_AUDIT.md`](../FINAL_THESIS_AUDIT.md) for findings, corrections, validation, and remaining administrative items.
 
 ## Identity, programme, and titles
 
 - [x] Candidate name confirmed and inserted as **Mircea Smărăndăchescu**.
 - [x] Scientific supervisor confirmed and inserted as **Prof. dr. ing. Nicolae Iulian Enescu**.
-- [x] Official study programme confirmed and inserted as **Calculatoare și Tehnologia Informației**.
+- [x] Official study field confirmed as **Calculatoare și Tehnologia Informației**; the title-page `În domeniul de studii` field retains this value.
+- [x] Official study programme confirmed as **Calculatoare (în limba engleză)**; the Declaration of Originality now uses this programme after `absolvent al programului de studii`.
+- [x] Review administrative occurrences individually: preserve field/programme/department distinctions and introduce no unnecessary English programme translation.
 - [x] Romanian title confirmed and inserted as **Asistent inteligent pentru analiza și interogarea semantică a documentelor**.
 - [x] English title confirmed as **Intelligent Assistant for Semantic Document Analysis and Querying** and kept consistent throughout the front matter.
 - [ ] Confirm whether the Romanian forms require the English title as a secondary line and whether punctuation/capitalization must follow a Faculty register.
-- [ ] Confirm the current official department name already printed by the template.
+- [x] Preserve the FACE template department wording **Calculatoare și Tehnologia Informației** in Department fields; do not substitute the study programme.
 - [ ] Obtain the department director's official name and title; the field remains blank and no sample name has been restored.
 - [ ] Check gender-dependent Romanian administrative wording such as `Subsemnatul`, `absolvent`, and `susținută` against the candidate and the official form.
 
@@ -88,7 +90,7 @@ Final evaluation pass completed on 5 September 2026. The read-only source is [`.
 - [x] Generate and integrate EVAL-02: `img/evaluation/evaluation_answer_metrics.pdf`. The former OCR-only slot now presents answer/grounding results; measured M12 outcomes are included in EVAL-03.
 - [x] Generate and integrate EVAL-03: `img/evaluation/evaluation_document_processing_metrics.pdf`, covering M10, M11, and M12 with separate denominators.
 - [x] Complete the Chapter 7 evaluation write-up, qualitative failure analysis, and threats to validity; remove all evaluation placeholders and discussion TODO markers.
-- [x] Correct only the obsolete evaluation-pending statements in Conclusions; broader conclusions and summary integration remain for the later full-thesis audit.
+- [x] Correct the obsolete evaluation-pending statements in Conclusions; broader Conclusions and summary integration were subsequently reviewed in the final whole-thesis audit.
 
 Unmeasured extensions and reproduction details remain open; none is represented as a completed experiment:
 
@@ -101,15 +103,15 @@ Unmeasured extensions and reproduction details remain open; none is represented 
 - [ ] Extend experimental security coverage to empty collections, cross-owner/workspace cases, unknown citation markers, and additional attacks using synthetic data.
 - [ ] Record latency, per-case reranking applied/fallback state, and provider usage for descriptive discussion.
 - [x] Integrate the completed results into both summaries and remove obsolete pending-evaluation wording from the surrounding thesis prose.
-- [ ] Review the whole thesis comprehensively during the separate final Astra audit.
+- [x] Review the whole thesis comprehensively in the final Astra audit, including Introduction-to-Conclusions alignment, both summaries, methodology, denominators, case interpretations, and limitations; retain all verified evaluation values.
 
 ## Bibliography and academic integrity
 
 - [x] Complete the dedicated verified bibliography pass described in `CITATIONS_NEEDED.md`.
 - [x] Verify the 25 retained bibliography entries before inclusion.
 - [x] Remove all visible citation-needed markers after replacing them with verified citations.
-- [ ] Prefer original academic papers for RAG and RRF, authoritative textbooks/surveys for information retrieval, standards for PDF/Open XML, and official project/vendor documentation for implementation technologies.
-- [ ] Check that standard methods are attributed as existing concepts and that the personal contribution is limited to design, implementation, integration, and evaluation in this application.
+- [x] Confirm appropriate use of the existing original RAG/RRF papers, information-retrieval sources, standards, and official technology documentation; retain the 25-source bibliography and legitimate access dates without restarting research.
+- [x] Check that standard methods are attributed as existing concepts and that the personal contribution is design, implementation, integration, constraints, diagnostics, and evaluation in this application.
 - [ ] The 26 sample bibliography/example entries supplied with the FACE template were removed; none was treated as a verified thesis source.
 
 ## Runtime and implementation facts requiring final confirmation
@@ -145,6 +147,22 @@ Unmeasured extensions and reproduction details remain open; none is represented 
 First real build record (5 September 2026): the manual `pdflatex`, `bibtex`, `makeindex`, `pdflatex`, `pdflatex` sequence completed successfully from this directory. The converged PDF has 104 physical pages; Chapter 1 begins on physical page 18 with Arabic page 1, and the main content runs through physical page 96 / Arabic page 79. The build has 25 resolved bibliography items, 18 figure-list entries, 29 table-list entries, and 5 algorithm-list entries. No undefined citations/references, duplicate destinations, missing images, or overfull boxes remain. Harmless underfull boxes and two longtable glue-shrink diagnostics remain after visual inspection. Administrative placeholders, the manual Romanian-language check, Faculty approval of the List of Algorithms, and the separate whole-thesis review remain open; this draft is not marked submission-ready.
 
 Pre-final cleanup build record (6 September 2026): the documented multi-pass sequence completed successfully and produced 99 physical pages. The preliminary matter occupies 14 physical pages: two title pages followed by Roman pages i--xii. Chapter 1 begins on physical page 15 / Arabic page 1, and the main chapters conclude on physical page 93 / Arabic page 79. The bibliography occupies physical pages 94--96 / Arabic pages 80--82, the source-code appendix is physical page 97 / Arabic page 83, the index is physical page 98 / Arabic page 84, and the official logo page is physical page 99. The build contains 25 bibliography items, 18 figure-list entries, 29 table-list entries, 5 algorithm-list entries, and 18 alphabetical-index entries. No undefined citations or references, duplicate destinations, missing images, or overfull boxes remain. The existing underfull-box notices and two longtable glue-shrink diagnostics remain visually harmless. The optional empty pages were removed, administrative unknowns are presented as blank form fields, and the separate final Astra whole-thesis audit remains open.
+
+## Final whole-thesis audit and build record — 6 September 2026
+
+- [x] Complete the audit before substantial prose edits: all included thesis files, Chapters 1–8, front matter, both summaries, bibliography use, appendix, index, planning/register files, and the complete rendered PDF.
+- [x] Apply the confirmed study-programme correction and high-confidence academic/technical corrections documented in [`../FINAL_THESIS_AUDIT.md`](../FINAL_THESIS_AUDIT.md), without a chapter-wide rewrite.
+- [x] Verify precise checked-in technology/configuration claims through selective read-only repository inspection; remove remaining thesis-preparation instructions. The open experimental-runtime questions above remain open.
+- [x] Verify Introduction-to-Conclusions promises, established-method versus personal-contribution attribution, terminology, citation use, summary alignment, and all authoritative evaluation results and interpretations.
+- [x] Review all 18 figures, 29 tables, and 5 algorithms; preserve all screenshot, diagram, and plot assets.
+- [x] Rebuild through the documented `pdflatex`, `bibtex`, `makeindex`, and repeated `pdflatex` workflow; inspect the rebuilt pages and confirm converged navigation and index.
+- [x] Confirm final output: **99 physical pages**, with main Chapters 1–8 on **Arabic pages 1–79** (physical pages 15–93). Bibliography is Arabic 80–82, source-code appendix 83, and index 84; the closing logo page is physical page 99.
+- [x] Confirm 25 resolved bibliography entries, 18 figure-list entries, 29 table-list entries, 5 algorithm-list entries, and 18 index entries; no undefined citations/references, duplicate labels/destinations, missing images, or visible overfull/clipped content.
+- [x] Visually confirm Romanian diacritics and the corrected declaration, preserve the title-page study field and all Department fields, and retain blank authorized-completion fields.
+- [x] Synchronize `ace-thesis.pdf` and `../output/AI_Document_Assistant_Thesis_Draft.pdf`; verify protected evaluation hashes and `git diff --check`.
+- [x] Confirm no application code/configuration, tests, evaluation data, image assets, bibliography metadata, or class changes; no application builds/tests, web research, commits, or pushes.
+
+Final assessment: **READY FOR SUPERVISOR/SUBMISSION REVIEW**. This supersedes the readiness status in the dated earlier build records, not their historical facts. Existing harmless underfull-box notices, two longtable glue-shrink diagnostics, and class command-change warnings were visually assessed and left alone. Signing dates, signatures, supervisor/Faculty completion and approvals, official submission details, and an actual-size print proof remain manual handoff items; they are not marked complete by this audit.
 
 ## Verified items already complete
 

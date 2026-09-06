@@ -25,7 +25,7 @@ Retrieval eligibility is more restrictive than merely checking that an embedding
 	\item the stored SHA-256 embedding-content hash must equal a database-side hash of the current chunk content.
 \end{itemize}
 
-These checks prevent a stale vector from ranking text that has since changed. They also exclude a partly rebuilt document whose aggregate fields might otherwise appear valid. The policy favors consistency over partial semantic availability: a document enters the semantic channel only when its complete current chunk set has current embeddings. By contrast, the lexical channel in Section~\ref{sec:lexical-retrieval} can still retrieve ready text without current vectors. This difference is intentional and gives the hybrid design a useful degradation path.
+These checks exclude a candidate whose vector is stale relative to its current text. The query requires current document-level aggregate metadata and validates each candidate's model, dimensions, timestamp, and content hash; it does not separately validate every sibling chunk before returning an eligible row. By contrast, the lexical channel in Section~\ref{sec:lexical-retrieval} can still retrieve ready text without current vectors. This difference is intentional and gives the hybrid design a useful degradation path.
 
 The present database model does not define an HNSW or IVFFlat approximate-nearest-neighbour index. The query performs an exact cosine ordering over the eligible rows. Exact search is simple and appropriate for the current demonstration scale, but its cost grows with the number of eligible chunks. A future large deployment would need to evaluate an approximate vector index and its recall, build-time, and operational trade-offs rather than assuming that the current query plan scales without change.
 
@@ -63,7 +63,7 @@ Table~\ref{tab:retrieval-metadata-signals} summarizes the actual fields used. Ex
 		Signal & Matching behaviour & Role and limitation \\
 		\midrule
 		Document type & Controlled query aliases are compared with the classified type. & Adds a document-level score; it does not prove that a particular chunk answers the question. \\
-		Filename & Exact full-name or stem equality, plus term matches. & Useful when users identify a file by name; filenames are not inserted into answer evidence. \\
+		Filename & Exact full-name or stem equality, plus term matches. & Identifies the source; a filename match does not establish factual support. \\
 		Detected title & Exact normalized equality or term matches. & Can prioritize a likely document while leaving content channels authoritative. \\
 		Subtype and subject & Bounded term matches. & Lower-weight descriptive signals. \\
 		Identifier & Exact normalized equality or term matches in label/value fields. & Exact equality receives the strongest raw metadata score and activates the RRF multiplier. \\
@@ -82,7 +82,7 @@ Metadata is also \emph{not answer evidence}. The RAG context contains the select
 \section{Hybrid Retrieval and Weighted Reciprocal Rank Fusion}
 \label{sec:hybrid-rrf}
 
-The three retrieval channels produce different kinds of numerical values. Cosine distance is lower when a semantic candidate is better. PostgreSQL full-text rank is higher when a lexical candidate is better. Metadata has a separately designed document-level match score. Adding these raw values would make the final ranking depend on arbitrary scale and distribution differences. A normalization rule could be introduced, but its behaviour would vary with the candidate set. Reciprocal Rank Fusion (RRF) avoids this problem by using each channel's ordinal rank rather than its raw score. RRF is an established information-retrieval technique \cite{Cormack2009RRF}; the student's contribution is its weighted, metadata-aware integration and deterministic implementation in this system.
+The three retrieval channels produce different kinds of numerical values. Cosine distance is lower when a semantic candidate is better. PostgreSQL full-text rank is higher when a lexical candidate is better. Metadata has a separately designed document-level match score. Adding these raw values would make the final ranking depend on arbitrary scale and distribution differences. A normalization rule could be introduced, but its behaviour would vary with the candidate set. Reciprocal Rank Fusion (RRF) avoids this problem by using each channel's ordinal rank rather than its raw score. RRF is an established information-retrieval technique \cite{Cormack2009RRF}; the contribution of this work is its weighted, metadata-aware integration and deterministic implementation within the retrieval pipeline.
 
 Figure~\ref{fig:hybrid-retrieval-pipeline} shows the complete first-stage path. Semantic and lexical searches supply chunk candidates, while metadata supplies document ranks that can boost only those existing candidates. The fused list is bounded before it crosses the reranking provider boundary.
 
@@ -289,7 +289,7 @@ Figure~\ref{fig:reranking-fallback} emphasizes this two-outcome design.
 	\label{fig:reranking-fallback}
 \end{figure}
 
-The design has an explicit latency and cost trade-off. Candidate generation requires one query embedding and database retrieval; reranking adds a second model request before answer generation. Larger candidate sets may improve the chance of presenting useful passages to the reranker, but consume more tokens and response time. The selected bounds make that cost predictable for the current system. Chapter~\ref{chap:testing-evaluation} reports the measured comparison and its limits.
+The design has an explicit latency and cost trade-off. Candidate generation requires one query embedding and database retrieval; reranking adds a second model request before answer generation. Larger candidate sets may improve the chance of presenting useful passages to the reranker, but consume more tokens and response time. The selected bounds limit request size and waiting time; actual latency and provider cost were not measured. Chapter~\ref{chap:testing-evaluation} reports the measured comparison and its limits.
 
 \section{RAG Context Construction}
 \label{sec:rag-context}
@@ -397,4 +397,4 @@ Table~\ref{tab:prompt-injection-controls} relates representative threats to cont
 	\end{tabular}
 \end{table}
 
-The security claim is therefore deliberately limited. The system establishes ownership boundaries, bounded requests, structured validation, fail-open reranking, evidence-only instructions, and authoritative citation membership. It does not claim to have solved prompt injection or to guarantee factual entailment. Chapter~\ref{chap:testing-evaluation} reports the no-evidence, citation, and prompt-injection cases measured in the final evaluation corpus. This honest boundary is important for a bachelor engineering project: the contribution lies in combining practical controls at several layers and testing their deterministic properties, not in presenting probabilistic model behaviour as formally secure.
+The security claim is therefore deliberately limited. The system establishes ownership boundaries, bounded requests, structured validation, fail-open reranking, evidence-only instructions, and authoritative citation membership. It does not claim to have solved prompt injection or to guarantee factual entailment. Chapter~\ref{chap:testing-evaluation} reports the no-evidence, citation, and prompt-injection cases measured in the final evaluation corpus. These limitations define the scope of the security claims: the contribution lies in combining practical controls at several layers and testing their deterministic properties, rather than treating probabilistic model behaviour as formally secure.
