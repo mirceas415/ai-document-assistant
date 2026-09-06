@@ -20,15 +20,19 @@
 	\end{figure}%
 }
 
+\hypersetup{pdftitle={Intelligent Assistant for Semantic Document Analysis and Querying}}
+
 \begin{document}
 	% set the numbering style to roman style
 	% for the first part of the documentation
 	\pagenumbering{roman}
 	\selectlanguage{romanian}
+	\hypersetup{pageanchor=false}
 	
 	\input{ace-coverpage}
 	\input{ace-firstpage}
 	\input{ace-dedication}
+	\hypersetup{pageanchor=true}
 	\input{ace-originality}
 	\input{ace-project-timetable}
 	\input{ace-supervisor-remarks}
@@ -48,6 +52,7 @@
 %	\addcontentsline{toc}{chapter}{\lstlistlistingname}
 	\listofalgorithms
 	\addcontentsline{toc}{chapter}{List of Algorithms}
+	\clearpage
 
 	% set the numbering style to arabic style
 	% for the rest of the documentation
@@ -70,5 +75,7 @@
 	\input{ace-proj-website}
 	\input{ace-media-support}
 	\printindex
+	\clearpage
+	\hypersetup{pageanchor=false}
 	\input{ace-lastpage}
 \end{document}

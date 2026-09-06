@@ -1,6 +1,6 @@
 # Building the FACE Thesis on Windows
 
-The drafting machine did not have `latexmk`, `pdflatex`, `bibtex`, or `makeindex` on `PATH`. No TeX distribution was installed automatically. The existing `ace-thesis.pdf` is the 32-page reference PDF supplied with the official template; it is **not** a compiled version of this thesis draft.
+The first complete build was validated on 5 September 2026 with the per-user MiKTeX 25.12 distribution installed through `winget`. On that machine, MiKTeX's binary directory was not added to the persisted user `PATH`, and its `latexmk` wrapper could not run because Perl was not installed. The documented manual multi-pass sequence below therefore produced the thesis without adding an unrelated Perl runtime. The current `ace-thesis.pdf` is the compiled thesis draft; it replaces the original 32-page reference PDF supplied with the template.
 
 ## Prerequisites
 
@@ -36,6 +36,9 @@ Do not treat that path as a new thesis result until the timestamp changes and th
 If `latexmk` is unavailable but the standard tools are installed, run from the same directory:
 
 ```powershell
+$miktexBin = 'C:\Users\Mircea\AppData\Local\Programs\MiKTeX\miktex\bin\x64'
+$env:Path = "$miktexBin;$env:Path"
+
 pdflatex -interaction=nonstopmode -file-line-error ace-thesis.tex
 bibtex ace-thesis
 makeindex ace-thesis.idx
@@ -43,7 +46,7 @@ pdflatex -interaction=nonstopmode -file-line-error ace-thesis.tex
 pdflatex -interaction=nonstopmode -file-line-error ace-thesis.tex
 ```
 
-The current first draft has no verified bibliography entries and deliberately contains visible citation-needed markers. BibTeX may report that there are no citations until the dedicated verified bibliography pass is complete. For a temporary prose-only preview, omit the BibTeX command, run MakeIndex after the first LaTeX pass, and run pdfLaTeX twice more. The final submitted build must include the verified bibliography pass.
+The current draft contains 25 verified bibliography entries, so the BibTeX pass is required. Run another pdfLaTeX pass if the log reports changed labels or rerun requirements. The validated review build has 104 physical PDF pages and is also copied to `../output/AI_Document_Assistant_Thesis_Draft.pdf`; it is a review artifact, not the submitted thesis.
 
 ## Rerendering Mermaid diagrams
 

@@ -56,7 +56,7 @@ This file is the authoritative checklist for information that must not be guesse
 - [x] Capture and integrate UI-10: Advanced Retrieval Details for the BlueGrid Q11 query.
 - [x] Confirm the captures use thesis evaluation documents and expose no credentials or unrelated confidential information; the student's own visible account identity is acceptable.
 - [x] After inserting real assets, check screenshot legibility, caption consistency, surrounding references, and privacy-sensitive content.
-- [ ] Verify the five screenshot entries in the generated List of Figures during the final LaTeX build.
+- [x] Verify the five screenshot entries in the generated List of Figures during the final LaTeX build.
 
 ## Final experimental evaluation
 
@@ -116,18 +116,20 @@ Unmeasured extensions and reproduction details remain open; none is represented 
 
 ## LaTeX/template and final production checks
 
-- [ ] Keep `ace-thesis.cls` unchanged unless a confirmed compilation issue requires a documented document-level compatibility fix first.
-- [ ] Install/use an existing TeX environment and follow `BUILD.md`; no TeX distribution was installed during drafting.
-- [ ] Run a final multi-pass build after bibliography entries and graphical assets exist.
-- [ ] Check for unresolved references, undefined citations, overfull boxes, duplicate destinations, index warnings, and missing image files.
-- [ ] Verify Roman numbering for preliminary pages and Arabic numbering beginning at Chapter 1.
-- [ ] Verify the Table of Contents, List of Figures, List of Tables, List of Algorithms, bibliography, index, and official appendix pages.
+- [x] Keep `ace-thesis.cls` unchanged unless a confirmed compilation issue requires a documented document-level compatibility fix first.
+- [x] Install/use a TeX environment and follow `BUILD.md`. The first real build used a per-user MiKTeX 25.12 installation from the official `MiKTeX.MiKTeX` winget package.
+- [x] Run a final multi-pass build after bibliography entries and graphical assets exist.
+- [x] Check for unresolved references, undefined citations, meaningful overfull boxes, duplicate destinations, index warnings, and missing image files.
+- [x] Verify Roman numbering for preliminary pages and Arabic numbering beginning at Chapter 1.
+- [x] Verify the Table of Contents, List of Figures, List of Tables, List of Algorithms, bibliography, index, and official appendix pages.
 - [ ] Confirm whether the Faculty accepts the added List of Algorithms; it was enabled because five pseudocode algorithms are included.
-- [ ] Check whether the class's checkbox symbols compile in the final TeX distribution; if not, document the issue before adding `amssymb` in the document preamble rather than editing the class.
-- [ ] Confirm the supplied nested title-page environment and official logo layout render as expected in the current 2026 toolchain.
-- [ ] Do not mistake the supplied `ace-thesis.pdf` reference/template PDF for the newly compiled thesis output; archive or rename final output according to Faculty rules after verification.
-- [ ] Perform final page-count adjustment only after real figures, citations, and evaluation results are inserted. Do not pad prose artificially.
+- [x] Check whether the class's checkbox symbols compile in the final TeX distribution; they compile under MiKTeX 25.12 without a compatibility import.
+- [x] Confirm the title/front-matter pages and official logo layout render as expected in the current 2026 toolchain. The final logo page no longer resets the PDF page label.
+- [x] Replace the supplied reference `ace-thesis.pdf` with the newly compiled thesis output and create a clearly named review copy under `docs/thesis/output/`.
+- [x] Perform the first real page-count/layout adjustment after real figures, citations, and evaluation results were inserted, without padding prose.
 - [ ] Replace all remaining visible placeholders and re-run a repository-wide placeholder search before submission.
+
+First real build record (5 September 2026): the manual `pdflatex`, `bibtex`, `makeindex`, `pdflatex`, `pdflatex` sequence completed successfully from this directory. The converged PDF has 104 physical pages; Chapter 1 begins on physical page 18 with Arabic page 1, and the main content runs through physical page 96 / Arabic page 79. The build has 25 resolved bibliography items, 18 figure-list entries, 29 table-list entries, and 5 algorithm-list entries. No undefined citations/references, duplicate destinations, missing images, or overfull boxes remain. Harmless underfull boxes and two longtable glue-shrink diagnostics remain after visual inspection. Administrative placeholders, the manual Romanian-language check, Faculty approval of the List of Algorithms, and the separate whole-thesis review remain open; this draft is not marked submission-ready.
 
 ## Verified items already complete
 
