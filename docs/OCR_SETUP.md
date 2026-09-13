@@ -9,7 +9,7 @@ Use the official Tesseract **tessdata_fast** model family initially. Keep all se
 For local development from this repository, create:
 
 ```text
-AI.DocumentAssistant.Server\tessdata\
+AI.DocumentAssistant.Server/tessdata/
   eng.traineddata
   ron.traineddata
 ```
@@ -25,7 +25,20 @@ For a published deployment, place the same `tessdata` directory under the applic
 
 ## Native runtime prerequisite
 
-The project references `TesseractOCR` 5.5.2 and `PDFtoImage` 5.4.0. PDFtoImage brings the supported PDFium/Skia package assets through NuGet. On Windows x64, install the current **Microsoft Visual C++ Redistributable for Visual Studio 2015–2022 (x64)** if it is not already present; the Tesseract native wrapper depends on that runtime. Match the application architecture if publishing for another runtime.
+The project references `TesseractOCR` 5.5.2 and `PDFtoImage` 5.4.0. PDFtoImage brings supported Windows, Linux, Apple Silicon macOS, and Intel macOS PDFium/Skia assets through NuGet.
+
+On Windows, the application uses the in-process `TesseractOCR` wrapper. Install the current **Microsoft Visual C++ Redistributable for Visual Studio 2015–2022** matching the application architecture if it is not already present.
+
+On macOS/Unix, the Windows-native binaries in that wrapper cannot load, so the application uses the system `tesseract` CLI. On macOS install the engine and the `tessdata_fast` language bundle with Homebrew:
+
+```zsh
+brew install tesseract tesseract-lang
+dotnet user-secrets set \
+  --project AI.DocumentAssistant.Server/AI.DocumentAssistant.Server.csproj \
+  "Ocr:TessDataPath" "$(brew --prefix)/share/tessdata"
+```
+
+This provides both required languages without hardcoding the Apple Silicon `/opt/homebrew` or Intel `/usr/local` prefix. The full macOS workflow is in [MACOS_SETUP.md](MACOS_SETUP.md).
 
 Missing native libraries or traineddata do not prevent ASP.NET Core startup. They are reported only when an M11 `Scanned` page actually requires OCR; text PDFs and DOCX processing remain available.
 

@@ -55,7 +55,14 @@ builder.Services.AddScoped<IDocumentNormalizationService, DocumentNormalizationS
 builder.Services.AddScoped<IDocumentEmbeddingService, DocumentEmbeddingService>();
 builder.Services.AddScoped<IDocumentUnderstandingService, DocumentUnderstandingService>();
 builder.Services.AddScoped<IDocumentTechnicalAnalysisService, DocumentTechnicalAnalysisService>();
-builder.Services.AddScoped<IOcrService, TesseractOcrService>();
+if (OperatingSystem.IsWindows())
+{
+    builder.Services.AddScoped<IOcrService, TesseractOcrService>();
+}
+else
+{
+    builder.Services.AddScoped<IOcrService, TesseractCliOcrService>();
+}
 builder.Services.AddScoped<IDocumentOcrExtractionService, DocumentOcrExtractionService>();
 builder.Services.AddScoped<IDocumentProcessingService, DocumentProcessingService>();
 builder.Services.AddScoped<ISemanticChunkSearch, PgvectorSemanticChunkSearch>();
