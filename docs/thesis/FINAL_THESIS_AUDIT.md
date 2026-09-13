@@ -44,7 +44,7 @@ Not applied: chapter-wide stylistic rewrites; systematic removal of “bounded�
 
 Thus, two domain-source occurrences (one inactive), one programme occurrence, and four department occurrences were checked individually. No existing English-specific programme field required translation; **no English programme label was introduced**. Searches for programme/specialization wording found no additional compiled administrative programme field requiring correction.
 
-Mircea Smărăndăchescu; Prof. dr. ing. Nicolae Iulian Enescu; both confirmed thesis titles; Septembrie 2026; Craiova, România; and `https://github.com/mirceas415/ai-document-assistant` remain intact. The official forms' layout and substantive template wording were preserved.
+Mircea Smărăndăchescu; ș.l. dr. ing. Nicolae Iulian Enescu; both confirmed thesis titles; Septembrie 2026; Craiova, România; and `https://github.com/mirceas415/ai-document-assistant` remain intact. The official forms' layout and substantive template wording were preserved.
 
 ## Whole-work academic assessment
 

@@ -16,7 +16,7 @@ This file is the authoritative checklist for information that must not be guesse
 ## Identity, programme, and titles
 
 - [x] Candidate name confirmed and inserted as **Mircea Smărăndăchescu**.
-- [x] Scientific supervisor confirmed and inserted as **Prof. dr. ing. Nicolae Iulian Enescu**.
+- [x] Scientific supervisor confirmed and inserted as **ș.l. dr. ing. Nicolae Iulian Enescu**.
 - [x] Official study field confirmed as **Calculatoare și Tehnologia Informației**; the title-page `În domeniul de studii` field retains this value.
 - [x] Official study programme confirmed as **Calculatoare (în limba engleză)**; the Declaration of Originality now uses this programme after `absolvent al programului de studii`.
 - [x] Review administrative occurrences individually: preserve field/programme/department distinctions and introduce no unnecessary English programme translation.
